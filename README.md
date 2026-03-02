@@ -7,7 +7,7 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance fi
 ## What exists
 
 - **TypeScript orchestration** (~1200 lines) — Durable Object lifecycle, R2 range reads, footer caching, request routing
-- **Zig WASM engine** (163 .zig files, forked from [lanceql](https://github.com/syiin/lanceql)) — column decoding, SIMD ops, vector search, compiles to `lanceql.wasm`
+- **Zig WASM engine** (163 .zig files in `wasm/`) — column decoding, SIMD ops, vector search, compiles to `lanceql.wasm`
 - **Code-first query API** — `.table().filter().select().sort().limit().exec()`, no SQL
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
 - **Footer caching** — table footers (~4KB each) cached in DO memory + SQLite, eliminating the metadata round-trip
