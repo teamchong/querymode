@@ -46,7 +46,7 @@ export default {
       const regionName = `query-${datacenter}`;
 
       const queryId = env.QUERY_DO.idFromName(regionName);
-      const queryDo = env.QUERY_DO.get(queryId);
+      const queryDo = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint });
 
       // Pass region name via header so the Query DO can store it for Master registration
       const reqWithRegion = new Request(request.url, request);

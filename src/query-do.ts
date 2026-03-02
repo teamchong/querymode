@@ -19,6 +19,7 @@ export class QueryDO implements DurableObject {
   private wasmLoaded = new Map<string, number>(); // table → updatedAt
   private queryCount = new Map<string, number>(); // table → hit count (for VIP pinning)
   private initialized = false;
+  private registeredWithMaster = false;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -38,6 +39,7 @@ export class QueryDO implements DurableObject {
       if (!stored) await this.state.storage.put("region", region);
     }
     await this.ensureInitialized();
+    if (!this.registeredWithMaster) this.registerWithMaster();
 
     switch (new URL(request.url).pathname) {
       case "/invalidate": return this.handleInvalidation(request);
@@ -61,13 +63,22 @@ export class QueryDO implements DurableObject {
     }
 
     // Register with Master for invalidation broadcasts
+    this.registerWithMaster();
+  }
+
+  private registerWithMaster(): void {
     const master = this.env.MASTER_DO.get(this.env.MASTER_DO.idFromName("master"));
-    const region = (await this.state.storage.get<string>("region")) ?? "unknown";
-    master.fetch(new Request("http://internal/register", {
-      method: "POST",
-      body: JSON.stringify({ queryDoId: this.state.id.toString(), region }),
-      headers: { "content-type": "application/json" },
-    })).catch(() => {});
+    this.state.storage.get<string>("region").then(region => {
+      master.fetch(new Request("http://internal/register", {
+        method: "POST",
+        body: JSON.stringify({ queryDoId: this.state.id.toString(), region: region ?? "unknown" }),
+        headers: { "content-type": "application/json" },
+      })).then(() => {
+        this.registeredWithMaster = true;
+      }).catch(() => {
+        console.warn("Failed to register with Master DO, will retry on next request");
+      });
+    });
   }
 
   private async handleInvalidation(request: Request): Promise<Response> {

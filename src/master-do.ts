@@ -5,6 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.
 export class MasterDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
+  private broadcastFailures = new Map<string, number>(); // region → consecutive failure count
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -108,15 +109,32 @@ export class MasterDO implements DurableObject {
       fileSize: footer.fileSize.toString(), timestamp: Date.now(),
     });
 
+    const deadRegions: string[] = [];
     await Promise.allSettled(Object.entries(regions).map(async ([region, doId]) => {
       try {
         const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId));
         await queryDo.fetch(new Request("http://internal/invalidate", {
           method: "POST", body: payload, headers: { "content-type": "application/json" },
         }));
+        this.broadcastFailures.delete(region);
       } catch {
-        console.warn(`Broadcast to ${region} failed, will resync`);
+        const count = (this.broadcastFailures.get(region) ?? 0) + 1;
+        this.broadcastFailures.set(region, count);
+        if (count >= 3) {
+          console.warn(`Broadcast to ${region} failed ${count} times, removing`);
+          deadRegions.push(region);
+        } else {
+          console.warn(`Broadcast to ${region} failed (${count}/3)`);
+        }
       }
     }));
+
+    if (deadRegions.length > 0) {
+      for (const r of deadRegions) {
+        delete regions[r];
+        this.broadcastFailures.delete(r);
+      }
+      await this.state.storage.put("regions", regions);
+    }
   }
 }
