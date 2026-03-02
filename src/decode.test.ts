@@ -301,16 +301,16 @@ describe("bigIntReplacer", () => {
 });
 
 describe("vector search (TypeScript fallback)", () => {
-  it("returns top-K nearest rows by L2 distance", () => {
+  it("returns top-K nearest rows by cosine similarity", () => {
     const dim = 4;
     // 4 rows with 4-dim embeddings
     const embBuf = new ArrayBuffer(64);
     const embView = new DataView(embBuf);
     const vecs = [
-      [1, 0, 0, 0],  // Row 0: distance to query [1,0,0,0] = 0
-      [0, 1, 0, 0],  // Row 1: distance = 2
-      [0.9, 0.1, 0, 0], // Row 2: distance ~= 0.02
-      [0, 0, 0, 1],  // Row 3: distance = 2
+      [1, 0, 0, 0],  // Row 0: cosine similarity to query [1,0,0,0] = 1.0
+      [0, 1, 0, 0],  // Row 1: similarity = 0.0
+      [0.9, 0.1, 0, 0], // Row 2: similarity ~= 0.994
+      [0, 0, 0, 1],  // Row 3: similarity = 0.0
     ];
     let offset = 0;
     for (const vec of vecs) {
