@@ -1,0 +1,21 @@
+name = "edgeq"
+main = "src/worker.ts"
+compatibility_date = "2025-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "metal0-data"
+
+[durable_objects]
+bindings = [
+  { name = "MASTER_DO", class_name = "MasterDO" },
+  { name = "QUERY_DO", class_name = "QueryDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MasterDO", "QueryDO"]
+
+[wasm_modules]
+LANCEQL_WASM = "src/wasm/lanceql.wasm"
