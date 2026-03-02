@@ -1,0 +1,22 @@
+{
+  "name": "between_both_null",
+  "query": "a BETWEEN NULL AND NULL",
+  "result": {
+    "success": true,
+    "row_count": 0,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [],
+      "b": [],
+      "c": [],
+      "d": [],
+      "e": []
+    }
+  }
+}

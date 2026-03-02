@@ -1,0 +1,42 @@
+{
+  "name": "like_contains",
+  "query": "c LIKE '%a%'",
+  "result": {
+    "success": true,
+    "row_count": 3,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        2,
+        null,
+        0
+      ],
+      "b": [
+        null,
+        40,
+        0
+      ],
+      "c": [
+        "bar",
+        "baz",
+        "foo%bar"
+      ],
+      "d": [
+        2.0,
+        null,
+        0.0
+      ],
+      "e": [
+        false,
+        true,
+        false
+      ]
+    }
+  }
+}

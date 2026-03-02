@@ -1,0 +1,10 @@
+{
+  "note": "ORDER BY NULL handling documentation",
+  "sql_standard": {
+    "NULLS FIRST": "NULLs appear before non-NULL values",
+    "NULLS LAST": "NULLs appear after non-NULL values",
+    "default_asc": "Implementation-defined (typically NULLS LAST)",
+    "default_desc": "Implementation-defined (typically NULLS FIRST)"
+  },
+  "recommendation": "Test ORDER BY separately in executor tests"
+}

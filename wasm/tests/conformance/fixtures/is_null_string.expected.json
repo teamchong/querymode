@@ -1,0 +1,37 @@
+{
+  "name": "is_null_string",
+  "query": "c IS NULL",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        3,
+        null
+      ],
+      "b": [
+        30,
+        60
+      ],
+      "c": [
+        null,
+        null
+      ],
+      "d": [
+        3.0,
+        6.0
+      ],
+      "e": [
+        null,
+        null
+      ]
+    }
+  }
+}

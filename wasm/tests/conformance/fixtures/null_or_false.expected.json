@@ -1,0 +1,37 @@
+{
+  "name": "null_or_false",
+  "query": "a IS NULL OR b < -100",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        null,
+        null
+      ],
+      "b": [
+        40,
+        60
+      ],
+      "c": [
+        "baz",
+        null
+      ],
+      "d": [
+        null,
+        6.0
+      ],
+      "e": [
+        true,
+        null
+      ]
+    }
+  }
+}

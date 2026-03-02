@@ -1,0 +1,67 @@
+{
+  "name": "is_not_null",
+  "query": "a IS NOT NULL",
+  "result": {
+    "success": true,
+    "row_count": 8,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        3,
+        5,
+        7,
+        0,
+        -1,
+        10
+      ],
+      "b": [
+        10,
+        null,
+        30,
+        null,
+        70,
+        0,
+        -10,
+        100
+      ],
+      "c": [
+        "foo",
+        "bar",
+        null,
+        "qux",
+        "quux",
+        "foo%bar",
+        "f_o",
+        ""
+      ],
+      "d": [
+        1.5,
+        2.0,
+        3.0,
+        5.5,
+        7.7,
+        0.0,
+        -1.5,
+        10.0
+      ],
+      "e": [
+        true,
+        false,
+        null,
+        false,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  }
+}

@@ -17,7 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "deploy": "wrangler deploy",
-    "wasm": "cp ../lanceql/zig-out/bin/lanceql.wasm src/wasm/"
+    "wasm": "cd wasm && zig build wasm && cp zig-out/bin/lanceql.wasm ../src/wasm/"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250224.0",

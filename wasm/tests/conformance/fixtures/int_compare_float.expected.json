@@ -1,0 +1,9 @@
+{
+  "name": "int_compare_float",
+  "query": "a > 2.5",
+  "result": {
+    "success": false,
+    "error": "Invalid user input: Error resolving filter expression a > 2.5: Invalid user input: Received literal Float64(2.5) and could not convert to literal of type 'Int64', /Users/runner/work/lance/lance/rust/lance-datafusion/src/logical_expr.rs:27:17, /Users/runner/work/lance/lance/rust/lance-datafusion/src/planner.rs:848:17",
+    "error_type": "ValueError"
+  }
+}

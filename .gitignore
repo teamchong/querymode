@@ -5,3 +5,11 @@ dist/
 *.log
 .DS_Store
 .claude/
+src/wasm/lanceql.wasm
+wasm/.zig-cache/
+wasm/zig-out/
+wasm/.build/
+wasm/benchmarks/
+wasm/fixtures/
+wasm/deps/
+wasm/examples/

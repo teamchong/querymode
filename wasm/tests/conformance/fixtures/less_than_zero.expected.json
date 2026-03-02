@@ -1,0 +1,32 @@
+{
+  "name": "less_than_zero",
+  "query": "a < 0",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        -1
+      ],
+      "b": [
+        -10
+      ],
+      "c": [
+        "f_o"
+      ],
+      "d": [
+        -1.5
+      ],
+      "e": [
+        true
+      ]
+    }
+  }
+}

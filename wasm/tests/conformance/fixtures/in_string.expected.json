@@ -1,0 +1,37 @@
+{
+  "name": "in_string",
+  "query": "c IN ('foo', 'bar')",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2
+      ],
+      "b": [
+        10,
+        null
+      ],
+      "c": [
+        "foo",
+        "bar"
+      ],
+      "d": [
+        1.5,
+        2.0
+      ],
+      "e": [
+        true,
+        false
+      ]
+    }
+  }
+}

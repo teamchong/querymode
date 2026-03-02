@@ -1,0 +1,37 @@
+{
+  "name": "like_suffix",
+  "query": "c LIKE '%ux'",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        5,
+        7
+      ],
+      "b": [
+        null,
+        70
+      ],
+      "c": [
+        "qux",
+        "quux"
+      ],
+      "d": [
+        5.5,
+        7.7
+      ],
+      "e": [
+        false,
+        true
+      ]
+    }
+  }
+}

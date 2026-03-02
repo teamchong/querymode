@@ -1,0 +1,32 @@
+{
+  "name": "between_edge_equal",
+  "query": "a BETWEEN 5 AND 5",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        5
+      ],
+      "b": [
+        null
+      ],
+      "c": [
+        "qux"
+      ],
+      "d": [
+        5.5
+      ],
+      "e": [
+        false
+      ]
+    }
+  }
+}

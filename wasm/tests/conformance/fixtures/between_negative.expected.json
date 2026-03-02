@@ -1,0 +1,37 @@
+{
+  "name": "between_negative",
+  "query": "a BETWEEN -5 AND 0",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        0,
+        -1
+      ],
+      "b": [
+        0,
+        -10
+      ],
+      "c": [
+        "foo%bar",
+        "f_o"
+      ],
+      "d": [
+        0.0,
+        -1.5
+      ],
+      "e": [
+        false,
+        true
+      ]
+    }
+  }
+}

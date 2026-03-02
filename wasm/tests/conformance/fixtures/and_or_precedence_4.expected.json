@@ -1,0 +1,37 @@
+{
+  "name": "and_or_precedence_4",
+  "query": "(a = 1 OR b > 50) AND a < 10",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        7
+      ],
+      "b": [
+        10,
+        70
+      ],
+      "c": [
+        "foo",
+        "quux"
+      ],
+      "d": [
+        1.5,
+        7.7
+      ],
+      "e": [
+        true,
+        true
+      ]
+    }
+  }
+}

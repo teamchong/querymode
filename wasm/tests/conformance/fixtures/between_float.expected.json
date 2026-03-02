@@ -1,0 +1,42 @@
+{
+  "name": "between_float",
+  "query": "d BETWEEN 1.0 AND 5.0",
+  "result": {
+    "success": true,
+    "row_count": 3,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        3
+      ],
+      "b": [
+        10,
+        null,
+        30
+      ],
+      "c": [
+        "foo",
+        "bar",
+        null
+      ],
+      "d": [
+        1.5,
+        2.0,
+        3.0
+      ],
+      "e": [
+        true,
+        false,
+        null
+      ]
+    }
+  }
+}

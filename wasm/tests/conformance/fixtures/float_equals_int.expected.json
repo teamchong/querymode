@@ -1,0 +1,32 @@
+{
+  "name": "float_equals_int",
+  "query": "d = 2",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        2
+      ],
+      "b": [
+        null
+      ],
+      "c": [
+        "bar"
+      ],
+      "d": [
+        2.0
+      ],
+      "e": [
+        false
+      ]
+    }
+  }
+}

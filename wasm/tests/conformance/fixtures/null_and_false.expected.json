@@ -1,0 +1,22 @@
+{
+  "name": "null_and_false",
+  "query": "a IS NULL AND b < -100",
+  "result": {
+    "success": true,
+    "row_count": 0,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [],
+      "b": [],
+      "c": [],
+      "d": [],
+      "e": []
+    }
+  }
+}

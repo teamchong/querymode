@@ -1,0 +1,456 @@
+{
+  "total_fixtures": 72,
+  "categories": {
+    "and": 4,
+    "between": 8,
+    "combo": 3,
+    "compare": 1,
+    "equals": 3,
+    "float": 3,
+    "greater": 1,
+    "in": 8,
+    "int": 2,
+    "is": 3,
+    "less": 1,
+    "like": 13,
+    "multiple": 1,
+    "nested": 1,
+    "not": 7,
+    "null": 11,
+    "nulls": 2
+  },
+  "fixtures": [
+    {
+      "name": "and_or_precedence_1",
+      "query": "a > 2 AND b < 50 OR a = 1",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "and_or_precedence_2",
+      "query": "a > 2 AND (b < 50 OR a = 1)",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "and_or_precedence_3",
+      "query": "a = 1 OR b > 50 AND a < 10",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "and_or_precedence_4",
+      "query": "(a = 1 OR b > 50) AND a < 10",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "between_basic",
+      "query": "a BETWEEN 2 AND 5",
+      "success": true,
+      "row_count": 3
+    },
+    {
+      "name": "between_both_null",
+      "query": "a BETWEEN NULL AND NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "between_edge_equal",
+      "query": "a BETWEEN 5 AND 5",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "between_float",
+      "query": "d BETWEEN 1.0 AND 5.0",
+      "success": true,
+      "row_count": 3
+    },
+    {
+      "name": "between_negative",
+      "query": "a BETWEEN -5 AND 0",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "between_null_high",
+      "query": "a BETWEEN 2 AND NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "between_null_low",
+      "query": "a BETWEEN NULL AND 5",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "between_reversed",
+      "query": "a BETWEEN 5 AND 2",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "combo_between_and_like",
+      "query": "a BETWEEN 1 AND 5 AND c LIKE 'f%'",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "combo_in_and_compare",
+      "query": "a IN (1, 2, 3) AND b > 20",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "combo_null_and_in",
+      "query": "a IS NOT NULL AND a IN (1, 2, 3, 5, 7)",
+      "success": true,
+      "row_count": 5
+    },
+    {
+      "name": "compare_with_null_column",
+      "query": "a > b",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "equals_empty_string",
+      "query": "c = ''",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "equals_negative",
+      "query": "a = -1",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "equals_zero",
+      "query": "a = 0",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "float_compare_int",
+      "query": "d < 5",
+      "success": true,
+      "row_count": 5
+    },
+    {
+      "name": "float_equals_int",
+      "query": "d = 2",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "float_int_value",
+      "query": "d = 2.0",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "greater_than_zero",
+      "query": "a > 0",
+      "success": true,
+      "row_count": 6
+    },
+    {
+      "name": "in_basic",
+      "query": "a IN (1, 2, 3)",
+      "success": true,
+      "row_count": 3
+    },
+    {
+      "name": "in_float_for_int",
+      "query": "a IN (1.0, 2.0, 3.0)",
+      "success": false,
+      "row_count": "error"
+    },
+    {
+      "name": "in_many",
+      "query": "a IN (1, 2, 3, 5, 7)",
+      "success": true,
+      "row_count": 5
+    },
+    {
+      "name": "in_null_column",
+      "query": "a IN (1, 2, 3)",
+      "success": true,
+      "row_count": 3
+    },
+    {
+      "name": "in_single",
+      "query": "a IN (1)",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "in_string",
+      "query": "c IN ('foo', 'bar')",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "in_string_with_null",
+      "query": "c IN ('foo', NULL)",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "in_with_null_in_list",
+      "query": "a IN (1, NULL, 3)",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "int_compare_float",
+      "query": "a > 2.5",
+      "success": false,
+      "row_count": "error"
+    },
+    {
+      "name": "int_equals_float",
+      "query": "a = 3.0",
+      "success": false,
+      "row_count": "error"
+    },
+    {
+      "name": "is_not_null",
+      "query": "a IS NOT NULL",
+      "success": true,
+      "row_count": 8
+    },
+    {
+      "name": "is_null",
+      "query": "a IS NULL",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "is_null_string",
+      "query": "c IS NULL",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "less_than_zero",
+      "query": "a < 0",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "like_contains",
+      "query": "c LIKE '%a%'",
+      "success": true,
+      "row_count": 3
+    },
+    {
+      "name": "like_empty",
+      "query": "c LIKE ''",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "like_exact",
+      "query": "c LIKE 'foo'",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "like_literal_percent",
+      "query": "c LIKE '%\\%%'",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "like_literal_underscore",
+      "query": "c LIKE '%\\_%'",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "like_match_empty",
+      "query": "c LIKE '%'",
+      "success": true,
+      "row_count": 8
+    },
+    {
+      "name": "like_mixed",
+      "query": "c LIKE 'f%o'",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "like_multiple_single",
+      "query": "c LIKE 'b__'",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "like_null_pattern",
+      "query": "c LIKE NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "like_prefix",
+      "query": "c LIKE 'foo%'",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "like_single_char",
+      "query": "c LIKE 'f_o'",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "like_start_end",
+      "query": "c LIKE 'f%x'",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "like_suffix",
+      "query": "c LIKE '%ux'",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "multiple_not",
+      "query": "NOT (NOT (a > 5))",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "nested_and_or",
+      "query": "((a > 1 AND b < 50) OR (a < 0 AND b > 0)) AND c IS NOT NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "not_between",
+      "query": "a NOT BETWEEN 2 AND 5",
+      "success": true,
+      "row_count": 5
+    },
+    {
+      "name": "not_equals_empty_string",
+      "query": "c != ''",
+      "success": true,
+      "row_count": 7
+    },
+    {
+      "name": "not_in_basic",
+      "query": "a NOT IN (1, 2, 3)",
+      "success": true,
+      "row_count": 5
+    },
+    {
+      "name": "not_in_with_null_in_list",
+      "query": "a NOT IN (1, NULL, 3)",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "not_like",
+      "query": "c NOT LIKE 'foo%'",
+      "success": true,
+      "row_count": 6
+    },
+    {
+      "name": "not_precedence_1",
+      "query": "NOT a > 5 AND b < 50",
+      "success": true,
+      "row_count": 4
+    },
+    {
+      "name": "not_precedence_2",
+      "query": "NOT (a > 5 AND b < 50)",
+      "success": true,
+      "row_count": 9
+    },
+    {
+      "name": "null_and_false",
+      "query": "a IS NULL AND b < -100",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "null_and_true",
+      "query": "a IS NULL AND b > 0",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "null_column_between",
+      "query": "a BETWEEN 1 AND 10",
+      "success": true,
+      "row_count": 6
+    },
+    {
+      "name": "null_column_like",
+      "query": "c LIKE 'foo'",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "null_equals_null",
+      "query": "a = NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "null_greater_than",
+      "query": "a > NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "null_in_both_columns",
+      "query": "a = b",
+      "success": true,
+      "row_count": 1
+    },
+    {
+      "name": "null_less_than",
+      "query": "a < NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "null_not_equals_null",
+      "query": "a != NULL",
+      "success": true,
+      "row_count": 0
+    },
+    {
+      "name": "null_or_false",
+      "query": "a IS NULL OR b < -100",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "null_or_true",
+      "query": "a IS NULL OR b > 0",
+      "success": true,
+      "row_count": 6
+    },
+    {
+      "name": "nulls_filtered_in",
+      "query": "a IS NULL",
+      "success": true,
+      "row_count": 2
+    },
+    {
+      "name": "nulls_filtered_out",
+      "query": "a IS NOT NULL",
+      "success": true,
+      "row_count": 8
+    }
+  ]
+}

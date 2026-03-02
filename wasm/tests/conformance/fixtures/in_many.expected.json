@@ -1,0 +1,52 @@
+{
+  "name": "in_many",
+  "query": "a IN (1, 2, 3, 5, 7)",
+  "result": {
+    "success": true,
+    "row_count": 5,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        3,
+        5,
+        7
+      ],
+      "b": [
+        10,
+        null,
+        30,
+        null,
+        70
+      ],
+      "c": [
+        "foo",
+        "bar",
+        null,
+        "qux",
+        "quux"
+      ],
+      "d": [
+        1.5,
+        2.0,
+        3.0,
+        5.5,
+        7.7
+      ],
+      "e": [
+        true,
+        false,
+        null,
+        false,
+        true
+      ]
+    }
+  }
+}

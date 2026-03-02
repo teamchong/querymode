@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LanceQL</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        header h1 {
+            font-size: 1.5rem;
+            color: #e94560;
+        }
+        header .status {
+            margin-left: auto;
+            font-size: 0.875rem;
+            color: #4ecca3;
+        }
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            gap: 1rem;
+        }
+        .query-section {
+            display: flex;
+            gap: 1rem;
+        }
+        #sql {
+            flex: 1;
+            background: #0f3460;
+            border: 1px solid #16213e;
+            border-radius: 8px;
+            padding: 1rem;
+            color: #fff;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 14px;
+            resize: vertical;
+            min-height: 100px;
+        }
+        #sql:focus {
+            outline: 2px solid #e94560;
+        }
+        .buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        button {
+            background: #e94560;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #c73e54; }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        button.secondary {
+            background: #0f3460;
+        }
+        button.secondary:hover { background: #16213e; }
+        .results-section {
+            flex: 1;
+            overflow: auto;
+            background: #16213e;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid #0f3460;
+        }
+        th {
+            background: #0f3460;
+            position: sticky;
+            top: 0;
+            color: #e94560;
+            font-weight: 600;
+        }
+        tr:hover { background: rgba(233, 69, 96, 0.1); }
+        .error {
+            background: rgba(233, 69, 96, 0.2);
+            border: 1px solid #e94560;
+            border-radius: 8px;
+            padding: 1rem;
+            color: #e94560;
+        }
+        .stats {
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+            color: #888;
+            background: #0f3460;
+            border-radius: 0 0 8px 8px;
+        }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: #888;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid #0f3460;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+        }
+        .schema {
+            padding: 1rem;
+            font-size: 0.875rem;
+        }
+        .schema-item {
+            display: inline-block;
+            background: #0f3460;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            margin: 0.25rem;
+        }
+        .schema-item .name { color: #4ecca3; }
+        .schema-item .type { color: #888; margin-left: 0.25rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LanceQL</h1>
+        <div class="status" id="status">Connecting...</div>
+    </header>
+    <main>
+        <div id="schema" class="schema"></div>
+        <div class="query-section">
+            <textarea id="sql" placeholder="Enter SQL query...">SELECT * LIMIT 100</textarea>
+            <div class="buttons">
+                <button onclick="runQuery()" id="runBtn">Run Query</button>
+                <button onclick="loadSchema()" class="secondary">Refresh Schema</button>
+            </div>
+        </div>
+        <div class="results-section" id="results">
+            <div class="loading">Enter a query and click Run</div>
+        </div>
+    </main>
+
+    <script>
+        let schema = null;
+
+        async function loadSchema() {
+            try {
+                const res = await fetch('/api/schema');
+                schema = await res.json();
+
+                const container = document.getElementById('schema');
+                if (schema.columns.length === 0) {
+                    container.innerHTML = '<span style="color:#888">No file loaded</span>';
+                } else {
+                    container.innerHTML = schema.columns.map(col =>
+                        `<span class="schema-item"><span class="name">${col.name}</span><span class="type">${col.type}</span></span>`
+                    ).join('');
+                }
+
+                document.getElementById('status').textContent = `${schema.row_count.toLocaleString()} rows`;
+                document.getElementById('status').style.color = '#4ecca3';
+            } catch (err) {
+                document.getElementById('status').textContent = 'Error loading schema';
+                document.getElementById('status').style.color = '#e94560';
+            }
+        }
+
+        async function runQuery() {
+            const sql = document.getElementById('sql').value.trim();
+            if (!sql) return;
+
+            const btn = document.getElementById('runBtn');
+            const results = document.getElementById('results');
+
+            btn.disabled = true;
+            results.innerHTML = '<div class="loading"><div class="spinner"></div>Running query...</div>';
+
+            const startTime = performance.now();
+
+            try {
+                const res = await fetch('/api/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sql })
+                });
+
+                const data = await res.json();
+                const elapsed = performance.now() - startTime;
+
+                if (data.error) {
+                    results.innerHTML = `<div class="error">${data.error}</div>`;
+                } else {
+                    renderTable(data, elapsed);
+                }
+            } catch (err) {
+                results.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function renderTable(data, elapsed) {
+            const results = document.getElementById('results');
+
+            if (data.rows.length === 0) {
+                results.innerHTML = '<div class="loading">No results</div>';
+                return;
+            }
+
+            let html = '<table><thead><tr>';
+            for (const col of data.columns) {
+                html += `<th>${col}</th>`;
+            }
+            html += '</tr></thead><tbody>';
+
+            for (const row of data.rows) {
+                html += '<tr>';
+                for (const cell of row) {
+                    const value = cell === null ? '<em>null</em>' :
+                                 typeof cell === 'string' ? escapeHtml(cell) :
+                                 cell;
+                    html += `<td>${value}</td>`;
+                }
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            html += `<div class="stats">${data.row_count.toLocaleString()} rows in ${elapsed.toFixed(1)}ms</div>`;
+
+            results.innerHTML = html;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;');
+        }
+
+        // Handle Ctrl+Enter to run query
+        document.getElementById('sql').addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                runQuery();
+            }
+        });
+
+        // Load schema on page load
+        loadSchema();
+    </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "columns": [
+    "id",
+    "value"
+  ],
+  "row_count": 5,
+  "id": [
+    1,
+    null,
+    3,
+    null,
+    5
+  ],
+  "value": [
+    1.5,
+    2.5,
+    null,
+    4.5,
+    null
+  ],
+  "null_count_id": 2,
+  "null_count_value": 2
+}

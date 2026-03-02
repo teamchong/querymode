@@ -1,0 +1,22 @@
+{
+  "name": "nested_and_or",
+  "query": "((a > 1 AND b < 50) OR (a < 0 AND b > 0)) AND c IS NOT NULL",
+  "result": {
+    "success": true,
+    "row_count": 0,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [],
+      "b": [],
+      "c": [],
+      "d": [],
+      "e": []
+    }
+  }
+}

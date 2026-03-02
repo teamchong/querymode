@@ -1,0 +1,22 @@
+{
+  "name": "like_start_end",
+  "query": "c LIKE 'f%x'",
+  "result": {
+    "success": true,
+    "row_count": 0,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [],
+      "b": [],
+      "c": [],
+      "d": [],
+      "e": []
+    }
+  }
+}

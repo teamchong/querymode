@@ -1,0 +1,17 @@
+.{
+    .name = .lanceql,
+    .version = "0.1.0",
+    .dependencies = .{
+        .zstd = .{
+            .url = "git+https://github.com/allyourcodebase/zstd.git?ref=1.5.7#01327d49cbc56dc24c20a167bb0055d7fc23de84",
+            .hash = "zstd-1.5.7-KEItkJ8vAAC5_rRlKmLflYQ-eKXbAIQBWZNmmJtS18q0",
+        },
+        .wgpu_native_zig = .{
+            // Fork with Zig 0.15 compatibility (callconv(.C) -> callconv(.c))
+            .url = "git+https://github.com/apotema/wgpu_native_zig#fb54d9c8cbefa0b8d0e8224aa8323b7974ae454f",
+            .hash = "1220ec8a938a2b278c3e5f8dc624b98342f610dfd42099f0d8fe85f3aaf3fe8dd1a3",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0x217fd8de022d9f9b,
+}

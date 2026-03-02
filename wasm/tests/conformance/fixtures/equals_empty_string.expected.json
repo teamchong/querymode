@@ -1,0 +1,32 @@
+{
+  "name": "equals_empty_string",
+  "query": "c = ''",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        10
+      ],
+      "b": [
+        100
+      ],
+      "c": [
+        ""
+      ],
+      "d": [
+        10.0
+      ],
+      "e": [
+        false
+      ]
+    }
+  }
+}

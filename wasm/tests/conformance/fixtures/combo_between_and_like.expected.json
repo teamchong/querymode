@@ -1,0 +1,32 @@
+{
+  "name": "combo_between_and_like",
+  "query": "a BETWEEN 1 AND 5 AND c LIKE 'f%'",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1
+      ],
+      "b": [
+        10
+      ],
+      "c": [
+        "foo"
+      ],
+      "d": [
+        1.5
+      ],
+      "e": [
+        true
+      ]
+    }
+  }
+}

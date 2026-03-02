@@ -1,0 +1,9 @@
+{
+  "name": "in_float_for_int",
+  "query": "a IN (1.0, 2.0, 3.0)",
+  "result": {
+    "success": false,
+    "error": "Invalid user input: Error resolving filter expression a IN (1.0, 2.0, 3.0): Invalid user input: Received literal Float64(1) and could not convert to literal of type 'Int64', /Users/runner/work/lance/lance/rust/lance-datafusion/src/logical_expr.rs:27:17, /Users/runner/work/lance/lance/rust/lance-datafusion/src/planner.rs:848:17",
+    "error_type": "ValueError"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "name": "not_equals_empty_string",
+  "query": "c != ''",
+  "result": {
+    "success": true,
+    "row_count": 7,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        null,
+        5,
+        7,
+        0,
+        -1
+      ],
+      "b": [
+        10,
+        null,
+        40,
+        null,
+        70,
+        0,
+        -10
+      ],
+      "c": [
+        "foo",
+        "bar",
+        "baz",
+        "qux",
+        "quux",
+        "foo%bar",
+        "f_o"
+      ],
+      "d": [
+        1.5,
+        2.0,
+        null,
+        5.5,
+        7.7,
+        0.0,
+        -1.5
+      ],
+      "e": [
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true
+      ]
+    }
+  }
+}

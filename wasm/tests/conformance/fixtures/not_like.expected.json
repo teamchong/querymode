@@ -1,0 +1,57 @@
+{
+  "name": "not_like",
+  "query": "c NOT LIKE 'foo%'",
+  "result": {
+    "success": true,
+    "row_count": 6,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        2,
+        null,
+        5,
+        7,
+        -1,
+        10
+      ],
+      "b": [
+        null,
+        40,
+        null,
+        70,
+        -10,
+        100
+      ],
+      "c": [
+        "bar",
+        "baz",
+        "qux",
+        "quux",
+        "f_o",
+        ""
+      ],
+      "d": [
+        2.0,
+        null,
+        5.5,
+        7.7,
+        -1.5,
+        10.0
+      ],
+      "e": [
+        false,
+        true,
+        false,
+        true,
+        true,
+        false
+      ]
+    }
+  }
+}

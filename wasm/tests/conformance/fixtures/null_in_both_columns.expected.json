@@ -1,0 +1,32 @@
+{
+  "name": "null_in_both_columns",
+  "query": "a = b",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        0
+      ],
+      "b": [
+        0
+      ],
+      "c": [
+        "foo%bar"
+      ],
+      "d": [
+        0.0
+      ],
+      "e": [
+        false
+      ]
+    }
+  }
+}

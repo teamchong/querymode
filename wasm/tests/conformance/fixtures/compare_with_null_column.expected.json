@@ -1,0 +1,32 @@
+{
+  "name": "compare_with_null_column",
+  "query": "a > b",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        -1
+      ],
+      "b": [
+        -10
+      ],
+      "c": [
+        "f_o"
+      ],
+      "d": [
+        -1.5
+      ],
+      "e": [
+        true
+      ]
+    }
+  }
+}

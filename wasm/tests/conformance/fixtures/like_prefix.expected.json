@@ -1,0 +1,37 @@
+{
+  "name": "like_prefix",
+  "query": "c LIKE 'foo%'",
+  "result": {
+    "success": true,
+    "row_count": 2,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        0
+      ],
+      "b": [
+        10,
+        0
+      ],
+      "c": [
+        "foo",
+        "foo%bar"
+      ],
+      "d": [
+        1.5,
+        0.0
+      ],
+      "e": [
+        true,
+        false
+      ]
+    }
+  }
+}

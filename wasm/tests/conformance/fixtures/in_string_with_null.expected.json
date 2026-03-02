@@ -1,0 +1,32 @@
+{
+  "name": "in_string_with_null",
+  "query": "c IN ('foo', NULL)",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1
+      ],
+      "b": [
+        10
+      ],
+      "c": [
+        "foo"
+      ],
+      "d": [
+        1.5
+      ],
+      "e": [
+        true
+      ]
+    }
+  }
+}

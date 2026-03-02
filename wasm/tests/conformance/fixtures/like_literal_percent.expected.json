@@ -1,0 +1,32 @@
+{
+  "name": "like_literal_percent",
+  "query": "c LIKE '%\\%%'",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        0
+      ],
+      "b": [
+        0
+      ],
+      "c": [
+        "foo%bar"
+      ],
+      "d": [
+        0.0
+      ],
+      "e": [
+        false
+      ]
+    }
+  }
+}

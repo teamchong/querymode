@@ -1,0 +1,32 @@
+{
+  "name": "combo_in_and_compare",
+  "query": "a IN (1, 2, 3) AND b > 20",
+  "result": {
+    "success": true,
+    "row_count": 1,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        3
+      ],
+      "b": [
+        30
+      ],
+      "c": [
+        null
+      ],
+      "d": [
+        3.0
+      ],
+      "e": [
+        null
+      ]
+    }
+  }
+}

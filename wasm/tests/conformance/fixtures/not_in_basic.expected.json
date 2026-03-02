@@ -1,0 +1,52 @@
+{
+  "name": "not_in_basic",
+  "query": "a NOT IN (1, 2, 3)",
+  "result": {
+    "success": true,
+    "row_count": 5,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        5,
+        7,
+        0,
+        -1,
+        10
+      ],
+      "b": [
+        null,
+        70,
+        0,
+        -10,
+        100
+      ],
+      "c": [
+        "qux",
+        "quux",
+        "foo%bar",
+        "f_o",
+        ""
+      ],
+      "d": [
+        5.5,
+        7.7,
+        0.0,
+        -1.5,
+        10.0
+      ],
+      "e": [
+        false,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  }
+}

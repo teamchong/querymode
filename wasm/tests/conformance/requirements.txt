@@ -1,0 +1,4 @@
+# PyLance conformance test dependencies
+pylance>=0.20.0
+pyarrow>=17.0.0
+numpy>=1.24.0

@@ -1,0 +1,22 @@
+{
+  "name": "not_in_with_null_in_list",
+  "query": "a NOT IN (1, NULL, 3)",
+  "result": {
+    "success": true,
+    "row_count": 0,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [],
+      "b": [],
+      "c": [],
+      "d": [],
+      "e": []
+    }
+  }
+}

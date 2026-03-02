@@ -1,0 +1,52 @@
+{
+  "name": "not_between",
+  "query": "a NOT BETWEEN 2 AND 5",
+  "result": {
+    "success": true,
+    "row_count": 5,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        7,
+        0,
+        -1,
+        10
+      ],
+      "b": [
+        10,
+        70,
+        0,
+        -10,
+        100
+      ],
+      "c": [
+        "foo",
+        "quux",
+        "foo%bar",
+        "f_o",
+        ""
+      ],
+      "d": [
+        1.5,
+        7.7,
+        0.0,
+        -1.5,
+        10.0
+      ],
+      "e": [
+        true,
+        true,
+        false,
+        true,
+        false
+      ]
+    }
+  }
+}

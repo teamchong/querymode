@@ -1,0 +1,10 @@
+{
+  "columns": [
+    "id",
+    "value"
+  ],
+  "row_count": 10000,
+  "id_sum": 49995000,
+  "id_min": 0,
+  "id_max": 9999
+}

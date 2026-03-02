@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LanceQL Config Builder</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        header h1 { font-size: 1.5rem; color: #e94560; }
+        header .subtitle { color: #888; font-size: 0.875rem; }
+        main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            padding: 1rem;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        .panel {
+            background: #16213e;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-header {
+            padding: 1rem;
+            border-bottom: 1px solid #0f3460;
+            font-weight: 600;
+            color: #e94560;
+        }
+        .panel-content { padding: 1rem; flex: 1; overflow: auto; }
+        .tabs {
+            display: flex;
+            gap: 0;
+            background: #0f3460;
+            border-radius: 6px;
+            padding: 4px;
+            margin-bottom: 1rem;
+        }
+        .tab {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+        .tab:hover { color: #eee; }
+        .tab.active { background: #e94560; color: white; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #4ecca3;
+            font-size: 0.875rem;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 0.75rem;
+            background: #0f3460;
+            border: 1px solid #16213e;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.875rem;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: 2px solid #e94560;
+        }
+        .form-group input::placeholder { color: #555; }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            accent-color: #e94560;
+        }
+        .preview-section {
+            background: #0f3460;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .preview-section h4 {
+            color: #888;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+        .preview-section pre {
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #4ecca3;
+        }
+        .preview-section.cli pre { color: #e94560; }
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+            padding: 1rem;
+            border-top: 1px solid #0f3460;
+        }
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #e94560; color: white; }
+        .btn-primary:hover { background: #c73e54; }
+        .btn-secondary { background: #0f3460; color: #eee; }
+        .btn-secondary:hover { background: #16213e; }
+        .btn-icon {
+            background: transparent;
+            color: #888;
+            padding: 0.5rem;
+        }
+        .btn-icon:hover { color: #e94560; }
+        .hidden { display: none !important; }
+        .file-input-wrapper {
+            position: relative;
+        }
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        .file-input-display {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: #4ecca3;
+            color: #1a1a2e;
+            padding: 1rem 1.5rem;
+            border-radius: 6px;
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LanceQL</h1>
+        <span class="subtitle">Config Builder</span>
+    </header>
+    <main>
+        <div class="panel">
+            <div class="panel-header">Configuration</div>
+            <div class="panel-content">
+                <div class="tabs">
+                    <button class="tab active" data-cmd="ingest" onclick="switchTab('ingest')">Ingest</button>
+                    <button class="tab" data-cmd="transform" onclick="switchTab('transform')">Transform</button>
+                    <button class="tab" data-cmd="enrich" onclick="switchTab('enrich')">Enrich</button>
+                </div>
+
+                <!-- Ingest Form -->
+                <div id="form-ingest" class="form-content">
+                    <div class="form-group">
+                        <label>Input File *</label>
+                        <input type="text" id="ingest-input" placeholder="/path/to/data.csv" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Output File *</label>
+                        <input type="text" id="ingest-output" placeholder="/path/to/output.lance" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Format (auto-detect if empty)</label>
+                        <select id="ingest-format" onchange="updatePreview()">
+                            <option value="">Auto-detect</option>
+                            <option value="csv">CSV</option>
+                            <option value="json">JSON</option>
+                            <option value="jsonl">JSONL</option>
+                            <option value="parquet">Parquet</option>
+                            <option value="arrow">Arrow</option>
+                            <option value="avro">Avro</option>
+                            <option value="orc">ORC</option>
+                            <option value="xlsx">XLSX</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>CSV Delimiter</label>
+                            <input type="text" id="ingest-delimiter" placeholder="," maxlength="1" oninput="updatePreview()">
+                        </div>
+                        <div class="form-group checkbox-group" style="margin-top: 1.75rem;">
+                            <input type="checkbox" id="ingest-header" checked onchange="updatePreview()">
+                            <label for="ingest-header" style="margin: 0;">CSV has header</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Transform Form -->
+                <div id="form-transform" class="form-content hidden">
+                    <div class="form-group">
+                        <label>Input File *</label>
+                        <input type="text" id="transform-input" placeholder="/path/to/data.lance" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Output File *</label>
+                        <input type="text" id="transform-output" placeholder="/path/to/output.lance" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Select Columns (comma-separated)</label>
+                        <input type="text" id="transform-select" placeholder="col1, col2, col3" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Filter Expression</label>
+                        <input type="text" id="transform-filter" placeholder="age > 18 AND status = 'active'" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Limit Rows</label>
+                        <input type="number" id="transform-limit" placeholder="1000" oninput="updatePreview()">
+                    </div>
+                </div>
+
+                <!-- Enrich Form -->
+                <div id="form-enrich" class="form-content hidden">
+                    <div class="form-group">
+                        <label>Input File *</label>
+                        <input type="text" id="enrich-input" placeholder="/path/to/data.lance" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Column to Embed *</label>
+                        <input type="text" id="enrich-embed" placeholder="text_column" oninput="updatePreview()">
+                    </div>
+                    <div class="form-group">
+                        <label>Embedding Model</label>
+                        <select id="enrich-model" onchange="updatePreview()">
+                            <option value="minilm">MiniLM (384-dim, text)</option>
+                            <option value="clip">CLIP (512-dim, multimodal)</option>
+                        </select>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="enrich-index" onchange="updatePreview()">
+                        <label for="enrich-index" style="margin: 0;">Create vector index</label>
+                    </div>
+                    <div class="form-row" id="enrich-index-options">
+                        <div class="form-group">
+                            <label>Index Type</label>
+                            <select id="enrich-index-type" onchange="updatePreview()">
+                                <option value="ivf-pq">IVF-PQ (fast, approximate)</option>
+                                <option value="flat">Flat (exact, slower)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Partitions</label>
+                            <input type="number" id="enrich-partitions" value="256" oninput="updatePreview()">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">Preview</div>
+            <div class="panel-content">
+                <div class="preview-section">
+                    <h4>YAML Config</h4>
+                    <pre id="yaml-preview">command: ingest
+input: ""
+output: ""</pre>
+                </div>
+                <div class="preview-section cli">
+                    <h4>CLI Command</h4>
+                    <pre id="cli-preview">lanceql ingest</pre>
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn-primary" onclick="runCommand()">Run</button>
+                <button class="btn-secondary" onclick="copyYaml()">Copy YAML</button>
+                <button class="btn-secondary" onclick="copyCommand()">Copy Command</button>
+                <button class="btn-secondary" onclick="downloadConfig()">Save Config</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let currentCommand = 'ingest';
+
+        function switchTab(cmd) {
+            currentCommand = cmd;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`[data-cmd="${cmd}"]`).classList.add('active');
+            document.querySelectorAll('.form-content').forEach(f => f.classList.add('hidden'));
+            document.getElementById(`form-${cmd}`).classList.remove('hidden');
+            updatePreview();
+        }
+
+        function getFormData() {
+            const data = { command: currentCommand };
+
+            if (currentCommand === 'ingest') {
+                data.input = document.getElementById('ingest-input').value;
+                data.output = document.getElementById('ingest-output').value;
+                const format = document.getElementById('ingest-format').value;
+                const delimiter = document.getElementById('ingest-delimiter').value;
+                const header = document.getElementById('ingest-header').checked;
+                if (format) data.format = format;
+                if (delimiter && delimiter !== ',') data.delimiter = delimiter;
+                if (!header) data.header = false;
+            } else if (currentCommand === 'transform') {
+                data.input = document.getElementById('transform-input').value;
+                data.output = document.getElementById('transform-output').value;
+                const select = document.getElementById('transform-select').value;
+                const filter = document.getElementById('transform-filter').value;
+                const limit = document.getElementById('transform-limit').value;
+                if (select) data.select = select;
+                if (filter) data.filter = filter;
+                if (limit) data.limit = parseInt(limit);
+            } else if (currentCommand === 'enrich') {
+                data.input = document.getElementById('enrich-input').value;
+                data.embed = document.getElementById('enrich-embed').value;
+                data.model = document.getElementById('enrich-model').value;
+                if (document.getElementById('enrich-index').checked) {
+                    data.index = true;
+                    data.index_type = document.getElementById('enrich-index-type').value;
+                    data.partitions = parseInt(document.getElementById('enrich-partitions').value) || 256;
+                }
+            }
+
+            return data;
+        }
+
+        function toYaml(data) {
+            let yaml = `command: ${data.command}\n`;
+            if (data.input) yaml += `input: "${data.input}"\n`;
+            if (data.output) yaml += `output: "${data.output}"\n`;
+            if (data.embed) yaml += `embed: "${data.embed}"\n`;
+
+            const options = [];
+            if (data.format) options.push(`  format: ${data.format}`);
+            if (data.delimiter) options.push(`  delimiter: "${data.delimiter}"`);
+            if (data.header === false) options.push(`  header: false`);
+            if (data.select) options.push(`  select: "${data.select}"`);
+            if (data.filter) options.push(`  filter: "${data.filter}"`);
+            if (data.limit) options.push(`  limit: ${data.limit}`);
+            if (data.model) options.push(`  model: ${data.model}`);
+            if (data.index) {
+                options.push(`  index: true`);
+                options.push(`  index_type: ${data.index_type}`);
+                options.push(`  partitions: ${data.partitions}`);
+            }
+
+            if (options.length > 0) {
+                yaml += `options:\n${options.join('\n')}\n`;
+            }
+
+            return yaml;
+        }
+
+        function toCliCommand(data) {
+            let cmd = `lanceql ${data.command}`;
+            if (data.input) cmd += ` "${data.input}"`;
+            if (data.output) cmd += ` -o "${data.output}"`;
+            if (data.format) cmd += ` --format ${data.format}`;
+            if (data.delimiter) cmd += ` -d "${data.delimiter}"`;
+            if (data.header === false) cmd += ` --no-header`;
+            if (data.select) cmd += ` --select "${data.select}"`;
+            if (data.filter) cmd += ` --filter "${data.filter}"`;
+            if (data.limit) cmd += ` --limit ${data.limit}`;
+            if (data.embed) cmd += ` --embed "${data.embed}"`;
+            if (data.model) cmd += ` --model ${data.model}`;
+            if (data.index) {
+                cmd += ` --index`;
+                cmd += ` --index-type ${data.index_type}`;
+                cmd += ` --partitions ${data.partitions}`;
+            }
+            return cmd;
+        }
+
+        function updatePreview() {
+            const data = getFormData();
+            document.getElementById('yaml-preview').textContent = toYaml(data);
+            document.getElementById('cli-preview').textContent = toCliCommand(data);
+        }
+
+        async function runCommand() {
+            const data = getFormData();
+            try {
+                const res = await fetch('/api/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const result = await res.json();
+                if (result.error) {
+                    showToast('Error: ' + result.error, 'error');
+                } else {
+                    showToast('Command completed successfully!');
+                }
+            } catch (err) {
+                showToast('Failed to run command: ' + err.message, 'error');
+            }
+        }
+
+        function copyYaml() {
+            const yaml = document.getElementById('yaml-preview').textContent;
+            navigator.clipboard.writeText(yaml);
+            showToast('YAML copied to clipboard');
+        }
+
+        function copyCommand() {
+            const cmd = document.getElementById('cli-preview').textContent;
+            navigator.clipboard.writeText(cmd);
+            showToast('Command copied to clipboard');
+        }
+
+        function downloadConfig() {
+            const yaml = document.getElementById('yaml-preview').textContent;
+            const blob = new Blob([yaml], { type: 'text/yaml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'lanceql.yaml';
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('Config saved as lanceql.yaml');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = message;
+            if (type === 'error') {
+                toast.style.background = '#e94560';
+                toast.style.color = 'white';
+            }
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // Initial preview
+        updatePreview();
+    </script>
+</body>
+</html>

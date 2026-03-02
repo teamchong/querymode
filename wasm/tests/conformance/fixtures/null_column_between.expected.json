@@ -1,0 +1,57 @@
+{
+  "name": "null_column_between",
+  "query": "a BETWEEN 1 AND 10",
+  "result": {
+    "success": true,
+    "row_count": 6,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        3,
+        5,
+        7,
+        10
+      ],
+      "b": [
+        10,
+        null,
+        30,
+        null,
+        70,
+        100
+      ],
+      "c": [
+        "foo",
+        "bar",
+        null,
+        "qux",
+        "quux",
+        ""
+      ],
+      "d": [
+        1.5,
+        2.0,
+        3.0,
+        5.5,
+        7.7,
+        10.0
+      ],
+      "e": [
+        true,
+        false,
+        null,
+        false,
+        true,
+        false
+      ]
+    }
+  }
+}

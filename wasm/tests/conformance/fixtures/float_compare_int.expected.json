@@ -1,0 +1,52 @@
+{
+  "name": "float_compare_int",
+  "query": "d < 5",
+  "result": {
+    "success": true,
+    "row_count": 5,
+    "columns": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e"
+    ],
+    "data": {
+      "a": [
+        1,
+        2,
+        3,
+        0,
+        -1
+      ],
+      "b": [
+        10,
+        null,
+        30,
+        0,
+        -10
+      ],
+      "c": [
+        "foo",
+        "bar",
+        null,
+        "foo%bar",
+        "f_o"
+      ],
+      "d": [
+        1.5,
+        2.0,
+        3.0,
+        0.0,
+        -1.5
+      ],
+      "e": [
+        true,
+        false,
+        null,
+        false,
+        true
+      ]
+    }
+  }
+}

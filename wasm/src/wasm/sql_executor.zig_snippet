@@ -1,0 +1,9 @@
+export var sql_input: [8192]u8 = undefined;
+export var sql_input_len: usize = 0;
+
+// Global scratch buffers to avoid stack overflow
+const JoinPair = struct { left: u32, right: u32 };
+var global_indices_1: [MAX_ROWS]u32 = undefined;
+var global_indices_2: [MAX_ROWS]u32 = undefined;
+var global_indices_3: [MAX_ROWS]u32 = undefined;
+var global_join_pairs: [MAX_JOIN_ROWS]JoinPair = undefined;
