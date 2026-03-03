@@ -8,16 +8,32 @@ import type { TableMeta, ColumnMeta, QueryResult, Row } from "./types.js";
 import { bigIntReplacer } from "./decode.js";
 
 let hasWasm = false;
+let wasmModule: WebAssembly.Module;
 
 beforeAll(async () => {
   try {
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
     const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    await fs.stat(wasmPath);
+    const wasmBytes = await fs.readFile(wasmPath);
+    wasmModule = await WebAssembly.compile(wasmBytes);
     hasWasm = true;
   } catch {
     hasWasm = false;
+  }
+});
+
+// Mock WASM module import — return the real compiled module loaded from disk
+vi.mock("./wasm-module.js", async () => {
+  try {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
+    const wasmBytes = await fs.readFile(wasmPath);
+    const mod = await WebAssembly.compile(wasmBytes);
+    return { default: mod };
+  } catch {
+    return { default: {} };
   }
 });
 
@@ -112,13 +128,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       updatedAt: Date.now(),
     };
 
-    // Load real WASM module
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    const wasmBytes = await fs.readFile(wasmPath);
-    const wasmModule = await WebAssembly.compile(wasmBytes);
-
     const mockState = {
       id: { toString: () => "test-query-do" },
       storage: {
@@ -148,7 +157,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: mockMasterNs,
       QUERY_DO: { idFromString: (id: string) => id, get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "frag-id", get: () => ({}) },
-      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);
@@ -178,11 +186,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
 
   it("returns 404 for unknown path", async () => {
     const { QueryDO } = await import("./query-do.js");
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    const wasmBytes = await fs.readFile(wasmPath);
-    const wasmModule = await WebAssembly.compile(wasmBytes);
 
     const mockState = {
       id: { toString: () => "test-do" },
@@ -198,7 +201,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
       QUERY_DO: { idFromString: () => "id", get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
-      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);
@@ -208,11 +210,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
 
   it("handles /tables endpoint", async () => {
     const { QueryDO } = await import("./query-do.js");
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    const wasmBytes = await fs.readFile(wasmPath);
-    const wasmModule = await WebAssembly.compile(wasmBytes);
 
     const mockState = {
       id: { toString: () => "test-do" },
@@ -228,7 +225,6 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
       QUERY_DO: { idFromString: () => "id", get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
-      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);

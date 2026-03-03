@@ -3,6 +3,7 @@ import type { QueryDescriptor } from "./client.js";
 import { canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import wasmModule from "./wasm-module.js";
 
 const R2_TIMEOUT_MS = 10_000;
 
@@ -52,7 +53,7 @@ export class FragmentDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "frag:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("frag:", ""), meta);
 
-    this.wasmEngine = await instantiateWasm(this.env.QUERYMODE_WASM);
+    this.wasmEngine = await instantiateWasm(wasmModule);
   }
 
   private json(body: unknown, status = 200): Response {

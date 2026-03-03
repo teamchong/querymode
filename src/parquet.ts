@@ -319,11 +319,12 @@ function parseSchemaElement(reader: ThriftReader): ParquetSchemaElement {
     let f: { fieldId: number; typeId: number } | null;
     while ((f = r.nextField()) !== null) {
       switch (f.fieldId) {
-        case 1: elem.name = r.readString(); break;
-        case 2: elem.numChildren = r.readI32(); break;
-        case 3: elem.type = r.readI32(); break;
-        case 4: elem.convertedType = r.readI32(); break;
-        case 6: elem.typeLength = r.readI32(); break;
+        case 1: elem.type = r.readI32(); break;           // Type (enum)
+        case 2: elem.typeLength = r.readI32(); break;      // type_length
+        case 3: r.skip(f.typeId); break;                   // repetition_type (skip)
+        case 4: elem.name = r.readString(); break;         // name
+        case 5: elem.numChildren = r.readI32(); break;     // num_children
+        case 6: elem.convertedType = r.readI32(); break;   // converted_type
         default: r.skip(f.typeId); break;
       }
     }

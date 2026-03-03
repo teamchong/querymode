@@ -3,6 +3,9 @@ import { FragmentDO } from "./fragment-do.js";
 import { bigIntReplacer } from "./decode.js";
 import type { TableMeta, ColumnMeta } from "./types.js";
 
+// Mock WASM module import (not available in vitest)
+vi.mock("./wasm-module.js", () => ({ default: {} }));
+
 // Mock instantiateWasm to return a minimal mock engine
 vi.mock("./wasm-engine.js", () => ({
   instantiateWasm: async () => ({
@@ -35,7 +38,6 @@ const mockEnv = {
   DATA_BUCKET: { get: async () => null, head: async () => null },
   MASTER_DO: null,
   QUERY_DO: null,
-  QUERYMODE_WASM: {} as any, // non-null, mocked by vi.mock above
 } as any;
 
 function makeScanRequest(url: string, body: unknown): Request {

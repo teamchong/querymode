@@ -3,6 +3,7 @@ import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+import wasmModule from "./wasm-module.js";
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
 export class MasterDO implements DurableObject {
@@ -92,8 +93,13 @@ export class MasterDO implements DurableObject {
     // Read first fragment's footer to broadcast (Query DOs will discover the rest)
     if (manifest.fragments.length > 0) {
       const firstFrag = manifest.fragments[0];
-      const fragKey = `${r2Prefix}${firstFrag.filePath}`;
-      const result = await this.readFooterAndColumns(fragKey);
+      // Try filePath as-is, then with data/ prefix (Lance stores relative paths)
+      let fragKey = `${r2Prefix}${firstFrag.filePath}`;
+      let result = await this.readFooterAndColumns(fragKey);
+      if (!result) {
+        fragKey = `${r2Prefix}data/${firstFrag.filePath}`;
+        result = await this.readFooterAndColumns(fragKey);
+      }
       if (result) {
         await this.broadcast(tableName, fragKey, result);
       }
@@ -108,7 +114,7 @@ export class MasterDO implements DurableObject {
 
   private async getWasm(): Promise<WasmEngine> {
     if (this.wasmEngine) return this.wasmEngine;
-    this.wasmEngine = await instantiateWasm(this.env.QUERYMODE_WASM);
+    this.wasmEngine = await instantiateWasm(wasmModule);
     return this.wasmEngine;
   }
 

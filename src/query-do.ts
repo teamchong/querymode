@@ -5,10 +5,12 @@ import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
 import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
+import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { VipCache } from "./vip-cache.js";
+import wasmModule from "./wasm-module.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
 const R2_TIMEOUT_MS = 10_000;
@@ -74,7 +76,7 @@ export class QueryDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 
-    this.wasmEngine = await instantiateWasm(this.env.QUERYMODE_WASM);
+    this.wasmEngine = await instantiateWasm(wasmModule);
 
     // Register with Master for invalidation broadcasts
     this.registerWithMaster();
@@ -192,7 +194,18 @@ export class QueryDO implements DurableObject {
 
   private async handleQuery(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-querymode-request-id") ?? crypto.randomUUID();
-    const query = (await request.json()) as QueryDescriptor;
+    const body = await request.json() as Record<string, unknown>;
+    const query: QueryDescriptor = {
+      table: body.table as string,
+      filters: (body.filters ?? []) as QueryDescriptor["filters"],
+      projections: (body.projections ?? body.select ?? []) as string[],
+      sortColumn: body.sortColumn as string | undefined,
+      sortDirection: body.sortDirection as "asc" | "desc" | undefined,
+      limit: body.limit as number | undefined,
+      vectorSearch: body.vectorSearch as QueryDescriptor["vectorSearch"],
+      aggregates: body.aggregates as QueryDescriptor["aggregates"],
+      groupBy: body.groupBy as string[] | undefined,
+    };
     const result = await this.executeQuery(query);
     result.requestId = requestId;
     this.log("info", "query_complete", {
@@ -218,7 +231,204 @@ export class QueryDO implements DurableObject {
       if (!meta) throw new Error(`Table "${query.table}" not found`);
     }
 
+    // Lance whole-file path: if no page byte ranges, load entire file into WASM
+    const hasPages = meta.columns.some(c => c.pages.length > 0);
+    if (!hasPages && meta.format === "lance" && meta.r2Key) {
+      return this.executeLanceWholeFile(query, meta, t0);
+    }
+
     return this.scanPages(query, meta, t0);
+  }
+
+  /** Load entire Lance fragment into WASM and execute SQL. Used when page-level metadata is unavailable. */
+  private async executeLanceWholeFile(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
+    const r2Start = Date.now();
+    let bytesRead = 0;
+
+    // Check WASM buffer pool cache first
+    const cacheKey = `lance:${meta.r2Key}`;
+    let fileData = this.wasmEngine.cacheGet(cacheKey);
+    let cacheHit = !!fileData;
+
+    if (!fileData) {
+      const obj = await this.env.DATA_BUCKET.get(meta.r2Key);
+      if (!obj) throw new Error(`Failed to read Lance file: ${meta.r2Key}`);
+      fileData = await obj.arrayBuffer();
+      bytesRead = fileData.byteLength;
+      this.wasmEngine.cacheSet(cacheKey, fileData);
+    }
+    const r2ReadMs = Date.now() - r2Start;
+
+    const wasmStart = Date.now();
+    this.wasmEngine.exports.resetHeap();
+
+    // Load fragment and extract columns via fragment reader
+    const dataPtr = this.wasmEngine.exports.alloc(fileData.byteLength);
+    if (!dataPtr) throw new Error("WASM OOM allocating Lance file buffer");
+    new Uint8Array(this.wasmEngine.exports.memory.buffer, dataPtr, fileData.byteLength)
+      .set(new Uint8Array(fileData));
+
+    const loadResult = this.wasmEngine.exports.fragmentLoad(dataPtr, fileData.byteLength);
+    if (loadResult === 0) throw new Error(`Failed to load Lance fragment (invalid file?)`);
+
+    // Parse Lance v2 column metadata from the protobuf footer
+    // The metadata uses nested encoding descriptors — extract row count from field 3 of the page sub-message
+    const fileBytes = new Uint8Array(fileData);
+    const footerStart = fileBytes.length - 40;
+    const colMetaStart = Number(new DataView(fileData, footerStart, 8).getBigUint64(0, true));
+    const colMetaOffsetsStart = Number(new DataView(fileData, footerStart + 8, 8).getBigUint64(0, true));
+    const globalBufOffsetsStart = Number(new DataView(fileData, footerStart + 16, 8).getBigUint64(0, true));
+    const numCols = new DataView(fileData, footerStart + 28, 4).getUint32(0, true);
+
+    // Read global buffer offsets
+    const bufOffsets: number[] = [];
+    for (let i = globalBufOffsetsStart; i < footerStart; i += 8) {
+      bufOffsets.push(Number(new DataView(fileData, i, 8).getBigUint64(0, true)));
+    }
+
+    // Parse each column's metadata to get column type and row count
+    // Lance v2 column metadata: field 1 = encoding, field 2 = page data
+    // Page data: field 1 = buffer ref, field 2 = data type, field 3 = row count
+    const colInfos: { name: string; dtype: string; rowCount: number; dataOffset: number; dataSize: number }[] = [];
+    for (let col = 0; col < numCols; col++) {
+      const metaOffset = Number(new DataView(fileData, colMetaOffsetsStart + col * 8, 8).getBigUint64(0, true));
+      const metaEnd = col + 1 < numCols
+        ? Number(new DataView(fileData, colMetaOffsetsStart + (col + 1) * 8, 8).getBigUint64(0, true))
+        : colMetaOffsetsStart;
+
+      // Parse column protobuf (Lance v2)
+      let pageBytes: Uint8Array | null = null;
+      let pos = metaOffset;
+      while (pos < metaEnd) {
+        const tag = fileBytes[pos++];
+        const fn2 = tag >> 3, wt = tag & 7;
+        if (wt === 2) {
+          let len = 0, shift = 0;
+          while (pos < metaEnd) { const b = fileBytes[pos++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
+          if (fn2 === 2) pageBytes = fileBytes.subarray(pos, pos + len);
+          pos += len;
+        } else if (wt === 0) { while (pos < metaEnd && fileBytes[pos++] & 0x80); }
+        else if (wt === 1) pos += 8;
+        else if (wt === 5) pos += 4;
+        else break;
+      }
+
+      // Parse page sub-message for row count and data type
+      let rowCount = 0;
+      let dtypeCode = 0;
+      if (pageBytes) {
+        let pp = 0;
+        while (pp < pageBytes.length) {
+          const tag = pageBytes[pp++];
+          const fn3 = tag >> 3, wt = tag & 7;
+          if (wt === 0) {
+            let val = 0, shift = 0;
+            while (pp < pageBytes.length) { const b = pageBytes[pp++]; val |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
+            if (fn3 === 3) rowCount = val;
+          } else if (wt === 2) {
+            let len = 0, shift = 0;
+            while (pp < pageBytes.length) { const b = pageBytes[pp++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
+            if (fn3 === 2 && len === 1) dtypeCode = pageBytes[pp]; // encoding hints
+            pp += len;
+          } else if (wt === 1) pp += 8;
+          else if (wt === 5) pp += 4;
+          else break;
+        }
+      }
+
+      // Column name from the footer-level column meta (stored in TS footerCache, not in protobuf)
+      const colMeta = meta.columns[col];
+      const colName = colMeta?.name ?? `column_${col}`;
+      const dtype = colMeta?.dtype ?? "int64";
+
+      colInfos.push({ name: colName, dtype, rowCount, dataOffset: 0, dataSize: rowCount * 8 });
+    }
+
+    this.log("info", "lance_fragment_parsed", {
+      numCols, colInfos: colInfos.map(c => ({ name: c.name, dtype: c.dtype, rows: c.rowCount })),
+    });
+
+    // Read raw column data from the Lance file and assemble rows
+    // For simple Lance files, data is at the beginning of the file in column-major order
+    let dataPos = 0;
+    const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
+    for (const col of colInfos) {
+      if (query.projections.length > 0 && !query.projections.includes(col.name)) {
+        // Skip this column's data
+        if (col.dtype === "int64" || col.dtype === "float64") dataPos += col.rowCount * 8;
+        else if (col.dtype === "int32" || col.dtype === "float32") dataPos += col.rowCount * 4;
+        continue;
+      }
+
+      const values: (number | bigint | string | boolean | null)[] = [];
+      const dv = new DataView(fileData, dataPos);
+      if (col.dtype === "int64") {
+        for (let i = 0; i < col.rowCount; i++) values.push(dv.getBigInt64(i * 8, true));
+        dataPos += col.rowCount * 8;
+      } else if (col.dtype === "float64") {
+        for (let i = 0; i < col.rowCount; i++) values.push(dv.getFloat64(i * 8, true));
+        dataPos += col.rowCount * 8;
+      } else if (col.dtype === "int32") {
+        for (let i = 0; i < col.rowCount; i++) values.push(dv.getInt32(i * 4, true));
+        dataPos += col.rowCount * 4;
+      } else if (col.dtype === "float32") {
+        for (let i = 0; i < col.rowCount; i++) values.push(dv.getFloat32(i * 4, true));
+        dataPos += col.rowCount * 4;
+      }
+      decodedColumns.set(col.name, values);
+    }
+
+    // Assemble rows
+    const colNames = [...decodedColumns.keys()];
+    const numRows = Math.max(...[...decodedColumns.values()].map(v => v.length), 0);
+    let rows: Row[] = [];
+    for (let i = 0; i < numRows; i++) {
+      const row: Row = {};
+      for (const name of colNames) {
+        const vals = decodedColumns.get(name);
+        row[name] = vals && i < vals.length ? vals[i] : null;
+      }
+      rows.push(row);
+    }
+
+    // Apply filters, sort, limit in JS
+    if (query.filters.length > 0) {
+      rows = rows.filter(row => {
+        for (const f of query.filters) {
+          const val = row[f.column];
+          if (val == null) return false;
+          switch (f.op) {
+            case "eq": if (val !== f.value) return false; break;
+            case "neq": if (val === f.value) return false; break;
+            case "gt": if (!(val > f.value)) return false; break;
+            case "gte": if (!(val >= f.value)) return false; break;
+            case "lt": if (!(val < f.value)) return false; break;
+            case "lte": if (!(val <= f.value)) return false; break;
+          }
+        }
+        return true;
+      });
+    }
+    if (query.sortColumn) {
+      const dir = query.sortDirection === "desc" ? -1 : 1;
+      const sc = query.sortColumn;
+      rows.sort((a, b) => {
+        const va = a[sc], vb = b[sc];
+        if (va == null && vb == null) return 0;
+        if (va == null) return dir;
+        if (vb == null) return -dir;
+        return va < vb ? -dir : va > vb ? dir : 0;
+      });
+    }
+    if (query.limit && query.limit > 0) rows = rows.slice(0, query.limit);
+
+    const wasmExecMs = Date.now() - wasmStart;
+
+    return {
+      rows, rowCount: rows.length, columns: meta.columns.map(c => c.name),
+      bytesRead, pagesSkipped: 0, durationMs: Date.now() - t0,
+      r2ReadMs, wasmExecMs, cacheHits: cacheHit ? 1 : 0, cacheMisses: cacheHit ? 0 : 1,
+    };
   }
 
   /** Scan only the needed pages from R2 via coalesced Range reads, with cache-before-fetch. */
@@ -323,7 +533,117 @@ export class QueryDO implements DurableObject {
       // Fall through to flat search via SQL executor
     }
 
-    // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
+    // Parquet path: decode column chunks in JS (handles page headers, dictionary encoding, compression)
+    if (meta.format === "parquet") {
+      const wasmStart = Date.now();
+      const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
+      for (const col of cols) {
+        const pages = columnData.get(col.name);
+        if (!pages?.length) { decodedColumns.set(col.name, []); continue; }
+
+        // Concatenate all page buffers for this column (may span multiple row groups)
+        const allValues: (number | bigint | string | boolean | null)[] = [];
+        for (let pi = 0; pi < pages.length; pi++) {
+          const pageInfo = col.pages[pi];
+          const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" };
+
+          // Include dictionary page if present: fetch it from R2 and prepend
+          let chunkBuf = pages[pi];
+          if (encoding.dictionaryPageOffset !== undefined && encoding.dictionaryPageLength) {
+            // Dictionary page is at a different offset — check if it's already included
+            // If the fetched range starts at dataPageOffset (not dictionaryPageOffset),
+            // we need to fetch the dictionary page separately
+            const dictOffset = Number(encoding.dictionaryPageOffset);
+            const pageOffset = Number(pageInfo.byteOffset);
+            if (dictOffset < pageOffset) {
+              // Dictionary page is before data page — try to get from cache or R2
+              const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
+              let dictBuf = this.wasmEngine.cacheGet(dictKey);
+              if (!dictBuf) {
+                const dictObj = await this.env.DATA_BUCKET.get(meta.r2Key, {
+                  range: { offset: dictOffset, length: encoding.dictionaryPageLength },
+                });
+                if (dictObj) {
+                  dictBuf = await dictObj.arrayBuffer();
+                  this.wasmEngine.cacheSet(dictKey, dictBuf);
+                  bytesRead += dictBuf.byteLength;
+                }
+              }
+              if (dictBuf) {
+                // Prepend dictionary page to data page
+                const combined = new Uint8Array(dictBuf.byteLength + chunkBuf.byteLength);
+                combined.set(new Uint8Array(dictBuf), 0);
+                combined.set(new Uint8Array(chunkBuf), dictBuf.byteLength);
+                chunkBuf = combined.buffer;
+              }
+            }
+          }
+
+          const decoded = decodeParquetColumnChunk(
+            chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
+          );
+          allValues.push(...decoded);
+        }
+        decodedColumns.set(col.name, allValues);
+      }
+
+      // Assemble rows from decoded columns
+      const colNames = cols.map(c => c.name);
+      const numRows = Math.max(...[...decodedColumns.values()].map(v => v.length), 0);
+      let rows: Row[] = [];
+      for (let i = 0; i < numRows; i++) {
+        const row: Row = {};
+        for (const name of colNames) {
+          const vals = decodedColumns.get(name);
+          row[name] = vals && i < vals.length ? vals[i] : null;
+        }
+        rows.push(row);
+      }
+
+      // Apply filters in JS
+      if (query.filters.length > 0) {
+        rows = rows.filter(row => {
+          for (const f of query.filters) {
+            const val = row[f.column];
+            if (val == null) return false;
+            switch (f.op) {
+              case "eq": if (val !== f.value) return false; break;
+              case "neq": if (val === f.value) return false; break;
+              case "gt": if (!(val > f.value)) return false; break;
+              case "gte": if (!(val >= f.value)) return false; break;
+              case "lt": if (!(val < f.value)) return false; break;
+              case "lte": if (!(val <= f.value)) return false; break;
+            }
+          }
+          return true;
+        });
+      }
+
+      // Apply sort
+      if (query.sortColumn) {
+        const dir = query.sortDirection === "desc" ? -1 : 1;
+        const sc = query.sortColumn;
+        rows.sort((a, b) => {
+          const va = a[sc], vb = b[sc];
+          if (va == null && vb == null) return 0;
+          if (va == null) return dir;
+          if (vb == null) return -dir;
+          return va < vb ? -dir : va > vb ? dir : 0;
+        });
+      }
+
+      // Apply limit
+      if (query.limit && query.limit > 0) rows = rows.slice(0, query.limit);
+
+      const wasmExecMs = Date.now() - wasmStart;
+      return {
+        rows, rowCount: rows.length, columns: colNames,
+        bytesRead, pagesSkipped, durationMs: Date.now() - t0,
+        r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
+      };
+    }
+
+    // Lance path: zero-copy WASM registration + SQL execution
     const wasmStart = Date.now();
     this.wasmEngine.exports.resetHeap();
     for (const col of cols) {
@@ -543,8 +863,17 @@ export class QueryDO implements DurableObject {
       // Read footer + columns for each fragment
       const fragmentMetas = new Map<number, TableMeta>();
       for (const frag of manifest.fragments) {
-        const fragKey = `${prefix}${frag.filePath}`;
-        const head = await this.env.DATA_BUCKET.head(fragKey);
+        // Try filePath as-is first, then with data/ prefix (Lance stores relative paths without data/)
+        const candidates = [
+          `${prefix}${frag.filePath}`,
+          `${prefix}data/${frag.filePath}`,
+        ];
+        let head: { size: number } | null = null;
+        let fragKey = candidates[0];
+        for (const candidate of candidates) {
+          head = await this.env.DATA_BUCKET.head(candidate);
+          if (head) { fragKey = candidate; break; }
+        }
         if (!head) continue;
 
         const fileSize = BigInt(head.size);

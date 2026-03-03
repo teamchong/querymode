@@ -193,5 +193,4 @@ export interface Env {
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
   FRAGMENT_DO: DurableObjectNamespace;
-  QUERYMODE_WASM: WebAssembly.Module;
 }

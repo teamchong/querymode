@@ -16,7 +16,7 @@ const enum WasmColumnType {
 
 export interface WasmExports {
   memory: WebAssembly.Memory;
-  wasmAlloc(size: number): number;
+  alloc(size: number): number;
   resetHeap(): void;
   openFile(dataPtr: number, len: number): number;
   closeFile(): void;
@@ -128,13 +128,22 @@ export interface WasmExports {
 }
 
 export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<WasmEngine> {
+  let mem: { buffer: ArrayBuffer } | undefined;
   const instance = await WebAssembly.instantiate(wasmModule, {
     env: {
       opfs_open: () => 0, opfs_close: () => {}, opfs_read: () => 0,
       opfs_write: () => 0, opfs_size: () => 0, opfs_flush: () => {}, opfs_truncate: () => {},
-      js_log: () => {},
+      js_log: (ptr: number, len: number) => {
+        try {
+          if (mem) {
+            const msg = new TextDecoder().decode(new Uint8Array(mem.buffer, ptr, len));
+            console.log(`[WASM] ${msg}`);
+          }
+        } catch { /* ignore */ }
+      },
     },
   });
+  mem = (instance.exports as unknown as WasmExports).memory;
   const engine = new WasmEngine(instance.exports as unknown as WasmExports);
   engine.exports.bufferPoolInit(64 * 1024 * 1024);
   return engine;
@@ -148,13 +157,13 @@ export class WasmEngine {
 
   /** Decompress ZSTD data using the Zig std.compress.zstd implementation. */
   decompressZstd(compressed: Uint8Array): Uint8Array {
-    const inPtr = this.exports.wasmAlloc(compressed.length);
+    const inPtr = this.exports.alloc(compressed.length);
     if (!inPtr) throw new Error("WASM OOM allocating zstd input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
     const decompressedSize = this.exports.zstd_get_decompressed_size(inPtr, compressed.length);
     const capacity = decompressedSize || compressed.length * 4; // estimate if unknown
-    const outPtr = this.exports.wasmAlloc(capacity);
+    const outPtr = this.exports.alloc(capacity);
     if (!outPtr) throw new Error("WASM OOM allocating zstd output");
 
     const written = this.exports.zstd_decompress(inPtr, compressed.length, outPtr, capacity);
@@ -164,12 +173,12 @@ export class WasmEngine {
 
   /** Decompress GZIP data using the Zig std.compress.gzip implementation. */
   decompressGzip(compressed: Uint8Array): Uint8Array {
-    const inPtr = this.exports.wasmAlloc(compressed.length);
+    const inPtr = this.exports.alloc(compressed.length);
     if (!inPtr) throw new Error("WASM OOM allocating gzip input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
     const capacity = compressed.length * 4;
-    const outPtr = this.exports.wasmAlloc(capacity);
+    const outPtr = this.exports.alloc(capacity);
     if (!outPtr) throw new Error("WASM OOM allocating gzip output");
 
     const written = this.exports.gzip_decompress(inPtr, compressed.length, outPtr, capacity);
@@ -179,11 +188,11 @@ export class WasmEngine {
 
   /** Decompress LZ4 block data (Parquet hadoop codec). */
   decompressLz4(compressed: Uint8Array, uncompressedSize: number): Uint8Array {
-    const inPtr = this.exports.wasmAlloc(compressed.length);
+    const inPtr = this.exports.alloc(compressed.length);
     if (!inPtr) throw new Error("WASM OOM allocating lz4 input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
-    const outPtr = this.exports.wasmAlloc(uncompressedSize);
+    const outPtr = this.exports.alloc(uncompressedSize);
     if (!outPtr) throw new Error("WASM OOM allocating lz4 output");
 
     const written = this.exports.lz4_block_decompress(inPtr, compressed.length, outPtr, uncompressedSize);
@@ -193,9 +202,16 @@ export class WasmEngine {
 
   private writeString(str: string): { ptr: number; len: number } {
     const bytes = textEncoder.encode(str);
-    const ptr = this.exports.wasmAlloc(bytes.length);
+    const ptr = this.exports.alloc(bytes.length);
     if (ptr) new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
     return { ptr, len: bytes.length };
+  }
+
+  /** Write two strings and return [tPtr, tLen, cPtr, cLen] for register* calls. */
+  writeStringPair(table: string, col: string): [number, number, number, number] {
+    const { ptr: tPtr, len: tLen } = this.writeString(table);
+    const { ptr: cPtr, len: cLen } = this.writeString(col);
+    return [tPtr, tLen, cPtr, cLen];
   }
 
   getLastError(): string | null {
@@ -216,7 +232,7 @@ export class WasmEngine {
     if (this.hasTable(name)) return true;
     const { ptr: namePtr, len: nameLen } = this.writeString(name);
     if (!namePtr) return false;
-    const dataPtr = this.exports.wasmAlloc(fileBytes.byteLength);
+    const dataPtr = this.exports.alloc(fileBytes.byteLength);
     if (!dataPtr) return false;
     new Uint8Array(this.exports.memory.buffer, dataPtr, fileBytes.byteLength).set(new Uint8Array(fileBytes));
     return this.exports.registerTableFragment(namePtr, nameLen, dataPtr, fileBytes.byteLength) === 0;
@@ -268,7 +284,7 @@ export class WasmEngine {
     // Dispatch by dtype
     switch (dtype) {
       case "int64": {
-        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        const dataPtr = this.exports.alloc(flat.byteLength);
         if (!dataPtr) return false;
         new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
@@ -276,7 +292,7 @@ export class WasmEngine {
       }
 
       case "float64": {
-        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        const dataPtr = this.exports.alloc(flat.byteLength);
         if (!dataPtr) return false;
         new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
         this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
@@ -287,7 +303,7 @@ export class WasmEngine {
         // Promote float32 → float64 (fixed_size_list vectors use dtype "fixed_size_list")
         const src = new Float32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
         const f64Bytes = totalRows * 8;
-        const dataPtr = this.exports.wasmAlloc(f64Bytes);
+        const dataPtr = this.exports.alloc(f64Bytes);
         if (!dataPtr) return false;
         const dst = new Float64Array(this.exports.memory.buffer, dataPtr, totalRows);
         for (let i = 0; i < totalRows; i++) dst[i] = src[i];
@@ -301,7 +317,7 @@ export class WasmEngine {
           ? new Int32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2)
           : new Uint32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
         const i64Bytes = totalRows * 8;
-        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        const dataPtr = this.exports.alloc(i64Bytes);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
         for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
@@ -319,7 +335,7 @@ export class WasmEngine {
           case "uint16": src = new Uint16Array(flat.buffer, flat.byteOffset, flat.byteLength >> 1); break;
         }
         const i64Bytes = totalRows * 8;
-        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        const dataPtr = this.exports.alloc(i64Bytes);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
         for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
@@ -329,7 +345,7 @@ export class WasmEngine {
 
       case "uint64": {
         // Cast to signed i64
-        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        const dataPtr = this.exports.alloc(flat.byteLength);
         if (!dataPtr) return false;
         new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
@@ -339,7 +355,7 @@ export class WasmEngine {
       case "bool": {
         // Unpack bitmap to i64 (0/1)
         const i64Bytes = totalRows * 8;
-        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        const dataPtr = this.exports.alloc(i64Bytes);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
         let idx = 0;
@@ -355,7 +371,7 @@ export class WasmEngine {
       case "fixed_size_list": {
         const dim = listDim ?? 0;
         if (dim === 0) return true;
-        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        const dataPtr = this.exports.alloc(flat.byteLength);
         if (!dataPtr) return false;
         new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
         this.exports.registerTableFloat32Vector(tPtr, tLen, cPtr, cLen, dataPtr, totalRows, dim);
@@ -393,15 +409,15 @@ export class WasmEngine {
           pos += strLen;
         }
 
-        const offsetsPtr = this.exports.wasmAlloc(offsets.byteLength);
+        const offsetsPtr = this.exports.alloc(offsets.byteLength);
         if (!offsetsPtr) return false;
         new Uint32Array(this.exports.memory.buffer, offsetsPtr, ri).set(offsets.subarray(0, ri));
 
-        const lengthsPtr = this.exports.wasmAlloc(lengths.byteLength);
+        const lengthsPtr = this.exports.alloc(lengths.byteLength);
         if (!lengthsPtr) return false;
         new Uint32Array(this.exports.memory.buffer, lengthsPtr, ri).set(lengths.subarray(0, ri));
 
-        const dataPtr = this.exports.wasmAlloc(dataLen || 1);
+        const dataPtr = this.exports.alloc(dataLen || 1);
         if (!dataPtr) return false;
         if (dataLen > 0) {
           new Uint8Array(this.exports.memory.buffer, dataPtr, dataLen).set(strData);
@@ -427,7 +443,7 @@ export class WasmEngine {
   cacheSet(key: string, data: ArrayBuffer): boolean {
     const { ptr: keyPtr, len: keyLen } = this.writeString(key);
     if (!keyPtr) return false;
-    const dataPtr = this.exports.wasmAlloc(data.byteLength);
+    const dataPtr = this.exports.alloc(data.byteLength);
     if (!dataPtr) return false;
     new Uint8Array(this.exports.memory.buffer, dataPtr, data.byteLength).set(new Uint8Array(data));
     return this.exports.bufferPoolSet(keyPtr, keyLen, dataPtr, data.byteLength) !== 0;
@@ -439,7 +455,7 @@ export class WasmEngine {
     const { ptr: keyPtr, len: keyLen } = this.writeString(key);
     if (!keyPtr) return null;
     // Allocate two 4-byte out-params: [dataPtr: u32, size: u32]
-    const outPtr = this.exports.wasmAlloc(8);
+    const outPtr = this.exports.alloc(8);
     if (!outPtr) return null;
     const found = this.exports.bufferPoolGet(keyPtr, keyLen, outPtr, outPtr + 4);
     if (!found) return null;
@@ -457,7 +473,7 @@ export class WasmEngine {
 
   /** Get buffer pool statistics. */
   cacheStats(): { count: number; bytes: number; maxBytes: number } {
-    const outPtr = this.exports.wasmAlloc(12);
+    const outPtr = this.exports.alloc(12);
     if (!outPtr) return { count: 0, bytes: 0, maxBytes: 0 };
     this.exports.bufferPoolGetStats(outPtr, outPtr + 4, outPtr + 8);
     const view = new DataView(this.exports.memory.buffer);
@@ -488,7 +504,7 @@ export class WasmEngine {
   sumFloat64(buf: ArrayBuffer): number {
     if (buf.byteLength === 0) return 0;
     const numElements = buf.byteLength >> 3;
-    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    const ptr = this.exports.alloc(buf.byteLength);
     if (!ptr) return 0;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
     return this.exports.sumFloat64Buffer(ptr >> 3, numElements);
@@ -498,7 +514,7 @@ export class WasmEngine {
   minFloat64(buf: ArrayBuffer): number {
     if (buf.byteLength === 0) return Infinity;
     const numElements = buf.byteLength >> 3;
-    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    const ptr = this.exports.alloc(buf.byteLength);
     if (!ptr) return Infinity;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
     return this.exports.minFloat64Buffer(ptr >> 3, numElements);
@@ -508,7 +524,7 @@ export class WasmEngine {
   maxFloat64(buf: ArrayBuffer): number {
     if (buf.byteLength === 0) return -Infinity;
     const numElements = buf.byteLength >> 3;
-    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    const ptr = this.exports.alloc(buf.byteLength);
     if (!ptr) return -Infinity;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
     return this.exports.maxFloat64Buffer(ptr >> 3, numElements);
@@ -518,7 +534,7 @@ export class WasmEngine {
   avgFloat64(buf: ArrayBuffer): number {
     if (buf.byteLength === 0) return 0;
     const numElements = buf.byteLength >> 3;
-    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    const ptr = this.exports.alloc(buf.byteLength);
     if (!ptr) return 0;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
     return this.exports.avgFloat64Buffer(ptr >> 3, numElements);
@@ -526,7 +542,7 @@ export class WasmEngine {
 
   /** Load a fragment file into the WASM fragment reader. */
   loadFragment(data: ArrayBuffer): boolean {
-    const ptr = this.exports.wasmAlloc(data.byteLength);
+    const ptr = this.exports.alloc(data.byteLength);
     if (!ptr) return false;
     new Uint8Array(this.exports.memory.buffer, ptr, data.byteLength).set(new Uint8Array(data));
     return this.exports.fragmentLoad(ptr, data.byteLength) === 0;
@@ -539,25 +555,25 @@ export class WasmEngine {
 
     switch (dtype) {
       case "float64": {
-        const outPtr = this.exports.wasmAlloc(rowCount * 8);
+        const outPtr = this.exports.alloc(rowCount * 8);
         if (!outPtr) return null;
         const read = this.exports.fragmentReadFloat64(colIdx, outPtr, rowCount);
         return new Float64Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 8));
       }
       case "float32": {
-        const outPtr = this.exports.wasmAlloc(rowCount * 4);
+        const outPtr = this.exports.alloc(rowCount * 4);
         if (!outPtr) return null;
         const read = this.exports.fragmentReadFloat32(colIdx, outPtr, rowCount);
         return new Float32Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 4));
       }
       case "int32": {
-        const outPtr = this.exports.wasmAlloc(rowCount * 4);
+        const outPtr = this.exports.alloc(rowCount * 4);
         if (!outPtr) return null;
         const read = this.exports.fragmentReadInt32(colIdx, outPtr, rowCount);
         return new Int32Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 4));
       }
       case "int64": {
-        const outPtr = this.exports.wasmAlloc(rowCount * 8);
+        const outPtr = this.exports.alloc(rowCount * 8);
         if (!outPtr) return null;
         const read = this.exports.fragmentReadInt64(colIdx, outPtr, rowCount);
         return new BigInt64Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 8));
@@ -588,7 +604,7 @@ export class WasmEngine {
       switch (col.dtype) {
         case "int64": {
           const i64 = new BigInt64Array(col.values);
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          const dataPtr = this.exports.alloc(col.values.byteLength);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
@@ -597,7 +613,7 @@ export class WasmEngine {
         }
         case "int32": {
           const i32 = new Int32Array(col.values);
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          const dataPtr = this.exports.alloc(col.values.byteLength);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
@@ -606,7 +622,7 @@ export class WasmEngine {
         }
         case "float64": {
           const f64 = new Float64Array(col.values);
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          const dataPtr = this.exports.alloc(col.values.byteLength);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
@@ -615,7 +631,7 @@ export class WasmEngine {
         }
         case "float32": {
           const f32 = new Float32Array(col.values);
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          const dataPtr = this.exports.alloc(col.values.byteLength);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
@@ -649,11 +665,11 @@ export class WasmEngine {
           }
           offsets[count] = strOff;
           // Copy raw string data to WASM
-          const dataPtr = this.exports.wasmAlloc(totalStrBytes);
+          const dataPtr = this.exports.alloc(totalStrBytes);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, totalStrBytes).set(rawStrData);
           // Copy offsets to WASM
-          const offsetsPtr = this.exports.wasmAlloc(offsets.byteLength);
+          const offsetsPtr = this.exports.alloc(offsets.byteLength);
           if (!offsetsPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, offsetsPtr, offsets.byteLength)
             .set(new Uint8Array(offsets.buffer));
@@ -663,7 +679,7 @@ export class WasmEngine {
           break;
         }
         case "bool": {
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          const dataPtr = this.exports.alloc(col.values.byteLength);
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
@@ -693,7 +709,7 @@ export class WasmEngine {
 
   /** Load a serialized IVF-PQ index into WASM. Returns a handle (>0) or throws on failure. */
   loadIvfPqIndex(indexData: ArrayBuffer): number {
-    const ptr = this.exports.wasmAlloc(indexData.byteLength);
+    const ptr = this.exports.alloc(indexData.byteLength);
     if (!ptr) throw new Error("WASM OOM allocating IVF-PQ index data");
     new Uint8Array(this.exports.memory.buffer, ptr, indexData.byteLength).set(new Uint8Array(indexData));
     const handle = this.exports.ivfPqLoadIndex(ptr, indexData.byteLength);
@@ -707,7 +723,7 @@ export class WasmEngine {
   ): { indices: Uint32Array; scores: Float32Array } {
     const dim = query.length;
     const totalBytes = query.byteLength + topK * 4 + topK * 4;
-    const basePtr = this.exports.wasmAlloc(totalBytes);
+    const basePtr = this.exports.alloc(totalBytes);
     if (!basePtr) return { indices: new Uint32Array(0), scores: new Float32Array(0) };
 
     const qPtr = basePtr;
@@ -737,7 +753,7 @@ export class WasmEngine {
     queryVector: Float32Array, topK: number, normalized = false,
   ): { indices: Uint32Array; scores: Float32Array } {
     const totalBytes = vectors.byteLength + queryVector.byteLength + topK * 8;
-    const basePtr = this.exports.wasmAlloc(totalBytes);
+    const basePtr = this.exports.alloc(totalBytes);
     if (!basePtr) return { indices: new Uint32Array(0), scores: new Float32Array(0) };
 
     const vPtr = basePtr;

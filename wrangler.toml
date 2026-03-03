@@ -22,5 +22,7 @@ new_classes = ["MasterDO", "QueryDO"]
 tag = "v2"
 new_classes = ["FragmentDO"]
 
-[wasm_modules]
-QUERYMODE_WASM = "src/wasm/querymode.wasm"
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
