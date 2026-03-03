@@ -61,12 +61,13 @@ export class EdgeQ {
    */
   static remote(
     queryDoNamespace: DurableObjectNamespace,
-    options?: { region?: string; locationHint?: string },
+    options?: { region?: string; locationHint?: string; masterDoNamespace?: DurableObjectNamespace },
   ): EdgeQ {
     const executor = new RemoteExecutor(
       queryDoNamespace,
       options?.region ?? "default",
       options?.locationHint,
+      options?.masterDoNamespace,
     );
     return new EdgeQ(executor);
   }
@@ -97,13 +98,15 @@ export class EdgeQ {
  */
 class RemoteExecutor implements QueryExecutor {
   private namespace: DurableObjectNamespace;
+  private masterNamespace?: DurableObjectNamespace;
   private region: string;
   private locationHint?: string;
 
-  constructor(namespace: DurableObjectNamespace, region: string, locationHint?: string) {
+  constructor(namespace: DurableObjectNamespace, region: string, locationHint?: string, masterNamespace?: DurableObjectNamespace) {
     this.namespace = namespace;
     this.region = region;
     this.locationHint = locationHint;
+    this.masterNamespace = masterNamespace;
   }
 
   private getQueryDo() {
@@ -132,9 +135,12 @@ class RemoteExecutor implements QueryExecutor {
   }
 
   async append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+    if (!this.masterNamespace) {
+      throw new Error("append() requires masterDoNamespace — pass it via EdgeQ.remote(queryDO, { masterDO })");
+    }
     // Append goes to Master DO (single writer)
-    const id = this.namespace.idFromName("master");
-    const masterDo = this.namespace.get(id);
+    const id = this.masterNamespace.idFromName("master");
+    const masterDo = this.masterNamespace.get(id);
 
     const response = await masterDo.fetch(new Request("http://internal/append", {
       method: "POST",

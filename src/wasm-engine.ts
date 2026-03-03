@@ -106,9 +106,9 @@ export interface WasmExports {
   fragmentAddInt32Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
   fragmentAddFloat64Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
   fragmentAddFloat32Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
-  fragmentAddStringColumn(namePtr: number, nameLen: number, dataPtr: number, dataLen: number, count: number, nullable: number): number;
+  fragmentAddStringColumn(namePtr: number, nameLen: number, dataPtr: number, dataLen: number, offsetsPtr: number, count: number, nullable: number): number;
   fragmentAddVectorColumn(namePtr: number, nameLen: number, values: number, count: number, dim: number, nullable: number): number;
-  fragmentAddBoolColumn(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentAddBoolColumn(namePtr: number, nameLen: number, packedBits: number, byteCount: number, rowCount: number, nullable: number): number;
   fragmentEnd(): number;
 
   // Dataset writer (dataset_writer.zig)
@@ -639,20 +639,43 @@ export class WasmEngine {
           break;
         }
         case "utf8": case "string": {
-          // Values should be pre-encoded as length-prefixed strings
-          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
-          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
-            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          // Count strings by scanning length prefixes
-          const view = new DataView(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0));
-          let count = 0, pos = 0;
-          while (pos + 4 <= col.values.byteLength) {
+          // Values are length-prefixed strings. Scan to extract raw string data + build offsets array.
+          const srcBuf = col.values instanceof ArrayBuffer ? col.values : col.values.slice(0);
+          const view = new DataView(srcBuf);
+          // First pass: count strings and compute total raw string bytes
+          let count = 0, pos = 0, totalStrBytes = 0;
+          while (pos + 4 <= srcBuf.byteLength) {
             const strLen = view.getUint32(pos, true);
             pos += 4 + strLen;
+            totalStrBytes += strLen;
             count++;
           }
-          result = this.exports.fragmentAddStringColumn(namePtr, nameLen, dataPtr, col.values.byteLength, count, 0);
+          // Build raw string data (without length prefixes) and offsets array
+          const rawStrData = new Uint8Array(totalStrBytes);
+          const offsets = new Uint32Array(count + 1); // Arrow-style: count+1 offsets
+          pos = 0;
+          let strOff = 0;
+          for (let si = 0; si < count; si++) {
+            const strLen = view.getUint32(pos, true);
+            pos += 4;
+            offsets[si] = strOff;
+            rawStrData.set(new Uint8Array(srcBuf, pos, strLen), strOff);
+            strOff += strLen;
+            pos += strLen;
+          }
+          offsets[count] = strOff;
+          // Copy raw string data to WASM
+          const dataPtr = this.exports.wasmAlloc(totalStrBytes);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, totalStrBytes).set(rawStrData);
+          // Copy offsets to WASM
+          const offsetsPtr = this.exports.wasmAlloc(offsets.byteLength);
+          if (!offsetsPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, offsetsPtr, offsets.byteLength)
+            .set(new Uint8Array(offsets.buffer));
+          result = this.exports.fragmentAddStringColumn(
+            namePtr, nameLen, dataPtr, totalStrBytes, offsetsPtr / 4, count, 0,
+          );
           break;
         }
         case "bool": {
@@ -660,9 +683,10 @@ export class WasmEngine {
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          // Bit-packed bools: count = byteLength * 8 (caller should provide exact count)
-          const count = col.values.byteLength * 8;
-          result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, count, 0);
+          const byteCount = col.values.byteLength;
+          // rowCount must be provided externally for exact count; default to byteLength * 8
+          const rowCount = (col as { rowCount?: number }).rowCount ?? byteCount * 8;
+          result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, byteCount, rowCount, 0);
           break;
         }
         default:
@@ -769,7 +793,7 @@ function queryToSql(query: QueryDescriptor): string {
     }
     parts.push(`SELECT ${exprs.join(", ")}`);
   } else if (query.projections.length > 0) {
-    parts.push(`SELECT ${query.projections.join(", ")}`);
+    parts.push(`SELECT ${query.projections.map(quote).join(", ")}`);
   } else {
     parts.push("SELECT *");
   }
@@ -779,10 +803,10 @@ function queryToSql(query: QueryDescriptor): string {
   if (query.filters.length > 0) {
     const conditions = query.filters.map(f => {
       if (f.op === "in" && Array.isArray(f.value)) {
-        return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${v}'` : String(v)).join(", ")})`;
+        return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
       }
       const opMap: Record<string, string> = { eq: "=", neq: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=" };
-      const val = typeof f.value === "string" ? `'${f.value}'` : String(f.value);
+      const val = typeof f.value === "string" ? `'${escapeSql(f.value)}'` : String(f.value);
       return `${quote(f.column)} ${opMap[f.op]} ${val}`;
     });
     parts.push(`WHERE ${conditions.join(" AND ")}`);
@@ -802,7 +826,11 @@ function queryToSql(query: QueryDescriptor): string {
 }
 
 function quote(name: string): string {
-  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ? name : `"${name}"`;
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+
+function escapeSql(value: string): string {
+  return value.replace(/'/g, "''");
 }
 
 // --- WASM result parser ---
