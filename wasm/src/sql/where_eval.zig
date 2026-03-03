@@ -14,7 +14,7 @@ const result_types = @import("result_types.zig");
 const Result = result_types.Result;
 const CachedColumn = result_types.CachedColumn;
 pub const scalar_functions = @import("scalar_functions.zig");
-const columnar_ops = @import("edgeq.columnar_ops");
+const columnar_ops = @import("querymode.columnar_ops");
 
 /// Function pointer type for evaluating expressions that need executor context
 pub const EvalExprFn = *const fn (ctx: *anyopaque, expr: *const Expr, row_idx: u32) anyerror!Value;

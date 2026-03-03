@@ -1,5 +1,5 @@
 /**
- * EdgeQ WASM engine — wraps Zig SIMD compute layer.
+ * QueryMode WASM engine — wraps Zig SIMD compute layer.
  * TS handles orchestration (R2 reads, cache); WASM handles all compute.
  */
 

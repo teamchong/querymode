@@ -5,7 +5,7 @@
 //!
 //! ## JavaScript Usage (Cloudflare Worker)
 //! ```javascript
-//! import { DatasetWriter } from './edgeq.wasm';
+//! import { DatasetWriter } from './querymode.wasm';
 //!
 //! export default {
 //!   async fetch(request) {

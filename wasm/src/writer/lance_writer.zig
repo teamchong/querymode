@@ -22,7 +22,7 @@
 //! ```
 
 const std = @import("std");
-const proto_mod = @import("edgeq.proto");
+const proto_mod = @import("querymode.proto");
 
 const ProtoEncoder = proto_mod.ProtoEncoder;
 

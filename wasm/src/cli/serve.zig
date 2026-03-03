@@ -1,10 +1,10 @@
-//! EdgeQ Serve Command
+//! QueryMode Serve Command
 //!
 //! HTTP server for SQL queries and vector search.
 //!
 //! Usage:
-//!   edgeq serve data.lance --port 3000
-//!   edgeq serve data.parquet --host 0.0.0.0 --no-open
+//!   querymode serve data.lance --port 3000
+//!   querymode serve data.parquet --host 0.0.0.0 --no-open
 
 const std = @import("std");
 const args = @import("args.zig");
@@ -14,15 +14,15 @@ const transform = @import("transform.zig");
 const enrich = @import("enrich.zig");
 
 // SQL execution
-const edgeq = @import("edgeq");
-const Table = edgeq.Table;
-const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
-const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
+const querymode = @import("querymode");
+const Table = querymode.Table;
+const ParquetTable = @import("querymode.parquet_table").ParquetTable;
+const ArrowTable = @import("querymode.arrow_table").ArrowTable;
 
-const lexer = @import("edgeq.sql.lexer");
-const parser = @import("edgeq.sql.parser");
-const executor = @import("edgeq.sql.executor");
-const ast = @import("edgeq.sql.ast");
+const lexer = @import("querymode.sql.lexer");
+const parser = @import("querymode.sql.parser");
+const executor = @import("querymode.sql.executor");
+const ast = @import("querymode.sql.ast");
 
 pub const ServeError = error{
     BindFailed,
@@ -128,7 +128,7 @@ pub const Server = struct {
 
     /// Run the server loop
     pub fn run(self: *Self) !void {
-        std.debug.print("\nEdgeQ Server running at http://{s}:{}\n", .{ self.host, self.port });
+        std.debug.print("\nQueryMode Server running at http://{s}:{}\n", .{ self.host, self.port });
         switch (self.mode) {
             .folder => {
                 std.debug.print("Mode: folder browser\n", .{});
@@ -746,7 +746,7 @@ pub fn runConfigMode(allocator: std.mem.Allocator, command: []const u8) !void {
     const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{}", .{port});
     defer allocator.free(url);
 
-    std.debug.print("\nEdgeQ Config Builder\n", .{});
+    std.debug.print("\nQueryMode Config Builder\n", .{});
     std.debug.print("Command: {s}\n", .{command});
     std.debug.print("Opening: {s}\n", .{url});
     std.debug.print("Press Ctrl+C to cancel\n\n", .{});

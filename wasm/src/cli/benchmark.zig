@@ -3,11 +3,11 @@
 //! Benchmark execution and statistics for query performance testing.
 
 const std = @import("std");
-const AnyTable = @import("edgeq.any_table").AnyTable;
-const lexer = @import("edgeq.sql.lexer");
-const parser = @import("edgeq.sql.parser");
-const executor = @import("edgeq.sql.executor");
-const ast = @import("edgeq.sql.ast");
+const AnyTable = @import("querymode.any_table").AnyTable;
+const lexer = @import("querymode.sql.lexer");
+const parser = @import("querymode.sql.parser");
+const executor = @import("querymode.sql.executor");
+const ast = @import("querymode.sql.ast");
 const file_utils = @import("file_utils.zig");
 const file_detect = @import("file_detect.zig");
 
@@ -86,7 +86,7 @@ pub fn run(allocator: std.mem.Allocator, query: []const u8, opts: BenchmarkOptio
     // Get column count
     const num_cols = table.getColumnNames().len;
 
-    std.debug.print("EdgeQ Benchmark\n", .{});
+    std.debug.print("QueryMode Benchmark\n", .{});
     std.debug.print("=================\n", .{});
     std.debug.print("Query: {s}\n", .{query});
     std.debug.print("Table: {s} ({d} columns)\n", .{ table_path, num_cols });

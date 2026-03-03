@@ -5,11 +5,11 @@
 //! 2. Exposing unified column read interface
 
 const std = @import("std");
-const ArrowIpcReader = @import("edgeq.encoding").ArrowIpcReader;
-const ArrowType = @import("edgeq.encoding").ArrowType;
-const format = @import("edgeq.format");
+const ArrowIpcReader = @import("querymode.encoding").ArrowIpcReader;
+const ArrowType = @import("querymode.encoding").ArrowType;
+const format = @import("querymode.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("edgeq.table_utils");
+const table_utils = @import("querymode.table_utils");
 
 pub const ArrowTableError = error{
     InvalidArrowFile,

@@ -10,13 +10,13 @@
 //! 7. Limit - truncate results
 
 const std = @import("std");
-const Value = @import("edgeq.value").Value;
+const Value = @import("querymode.value").Value;
 const ast = @import("ast.zig");
 const SelectStmt = ast.SelectStmt;
 const SelectItem = ast.SelectItem;
 const OrderBy = ast.OrderBy;
 const AggregateType = ast.AggregateType;
-const expr_mod = @import("edgeq.query.expr");
+const expr_mod = @import("querymode.query.expr");
 const Expr = expr_mod.Expr;
 const agg_mod = @import("aggregates.zig");
 const Aggregate = agg_mod.Aggregate;

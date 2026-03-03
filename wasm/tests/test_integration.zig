@@ -4,12 +4,12 @@
 //! read files created by the official Lance library.
 
 const std = @import("std");
-const edgeq = @import("edgeq");
-const format = @import("edgeq.format");
-const io = @import("edgeq.io");
-const proto = @import("edgeq.proto");
-const encoding = @import("edgeq.encoding");
-const table_mod = @import("edgeq.table");
+const querymode = @import("querymode");
+const format = @import("querymode.format");
+const io = @import("querymode.io");
+const proto = @import("querymode.proto");
+const encoding = @import("querymode.encoding");
+const table_mod = @import("querymode.table");
 
 const Footer = format.Footer;
 const Version = format.Version;
@@ -48,16 +48,16 @@ fn readFooterFromFile(allocator: std.mem.Allocator, path: []const u8) !Footer {
     defer file.close();
 
     const stat = try file.stat();
-    if (stat.size < edgeq.FOOTER_SIZE) {
+    if (stat.size < querymode.FOOTER_SIZE) {
         return error.FileTooSmall;
     }
 
     // Seek to footer position
-    try file.seekTo(stat.size - edgeq.FOOTER_SIZE);
+    try file.seekTo(stat.size - querymode.FOOTER_SIZE);
 
-    var footer_buf: [edgeq.FOOTER_SIZE]u8 = undefined;
+    var footer_buf: [querymode.FOOTER_SIZE]u8 = undefined;
     const bytes_read = try file.readAll(&footer_buf);
-    if (bytes_read < edgeq.FOOTER_SIZE) {
+    if (bytes_read < querymode.FOOTER_SIZE) {
         return error.ReadError;
     }
 
@@ -175,11 +175,11 @@ test "read footer using MemoryReader" {
     var reader = mem_reader.reader();
 
     const file_size = try reader.size();
-    try std.testing.expect(file_size >= edgeq.FOOTER_SIZE);
+    try std.testing.expect(file_size >= querymode.FOOTER_SIZE);
 
     // Read footer using Reader interface
-    var footer_buf: [edgeq.FOOTER_SIZE]u8 = undefined;
-    try reader.readExact(file_size - edgeq.FOOTER_SIZE, &footer_buf);
+    var footer_buf: [querymode.FOOTER_SIZE]u8 = undefined;
+    try reader.readExact(file_size - querymode.FOOTER_SIZE, &footer_buf);
 
     const footer = try Footer.parse(&footer_buf);
     try std.testing.expect(footer.isSupported());

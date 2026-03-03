@@ -1,10 +1,10 @@
-//! EdgeQ Enrich Command
+//! QueryMode Enrich Command
 //!
 //! Adds embeddings and vector indexes to Lance files.
 //!
 //! Usage:
-//!   edgeq enrich input.lance --embed text_column --model minilm -o output.lance
-//!   edgeq enrich input.parquet --embed description --model clip -o output.lance
+//!   querymode enrich input.lance --embed text_column --model minilm -o output.lance
+//!   querymode enrich input.parquet --embed description --model clip -o output.lance
 
 const std = @import("std");
 const args = @import("args.zig");
@@ -18,9 +18,9 @@ const index_builder = @import("enrich/index_builder.zig");
 const embedding = @import("../embedding/embedding.zig");
 
 // Table and format modules
-const edgeq = @import("edgeq");
-const writer = edgeq.encoding.writer;
-const Result = @import("edgeq.sql.executor").Result;
+const querymode = @import("querymode");
+const writer = querymode.encoding.writer;
+const Result = @import("querymode.sql.executor").Result;
 
 pub const EnrichError = error{
     NoInputFile,

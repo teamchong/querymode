@@ -23,8 +23,8 @@
 //!   df1.union_(df2).intersect(df3)
 
 const std = @import("std");
-const Value = @import("edgeq.value").Value;
-const query = @import("edgeq.query");
+const Value = @import("querymode.value").Value;
+const query = @import("querymode.query");
 const Expr = query.Expr;
 const SelectStmt = query.SelectStmt;
 const SelectItem = query.SelectItem;
@@ -32,7 +32,7 @@ const OrderBy = query.OrderBy;
 const Executor = query.Executor;
 const ResultSet = query.ResultSet;
 const Aggregate = query.Aggregate;
-const table_mod = @import("edgeq.table");
+const table_mod = @import("querymode.table");
 const Table = table_mod.Table;
 
 // Reuse SQL layer types for consistency

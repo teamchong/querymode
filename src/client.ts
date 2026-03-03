@@ -11,7 +11,7 @@ import type {
  * Code-first query builder. No SQL — just TypeScript.
  *
  * Usage:
- *   const results = await edgeq
+ *   const results = await querymode
  *     .table("users")
  *     .filter(r => r.age > 25)
  *     .select("name", "email")

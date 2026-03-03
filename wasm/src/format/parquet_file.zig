@@ -4,7 +4,7 @@
 //! See: https://parquet.apache.org/docs/file-format/
 
 const std = @import("std");
-const proto = @import("edgeq.proto");
+const proto = @import("querymode.proto");
 const ThriftDecoder = proto.ThriftDecoder;
 const meta = @import("parquet_metadata.zig");
 

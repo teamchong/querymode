@@ -1,14 +1,14 @@
-//! EdgeQ - A Zig implementation of the Lance columnar file format reader.
+//! QueryMode - A Zig implementation of the Lance columnar file format reader.
 //!
 //! This library provides read-only access to Lance files, supporting both
 //! native execution and WebAssembly (browser) targets.
 //!
 //! ## Example
 //! ```zig
-//! const edgeq = @import("edgeq");
+//! const querymode = @import("querymode");
 //!
 //! pub fn main() !void {
-//!     var file = try edgeq.LanceFile.open("data.lance");
+//!     var file = try querymode.LanceFile.open("data.lance");
 //!     defer file.close();
 //!
 //!     const footer = file.footer();
@@ -18,15 +18,15 @@
 
 const std = @import("std");
 
-pub const format = @import("edgeq.format");
-pub const io = @import("edgeq.io");
-pub const proto = @import("edgeq.proto");
-pub const encoding = @import("edgeq.encoding");
-pub const writer = @import("edgeq.writer");
-pub const table = @import("edgeq.table");
-pub const dataframe = @import("edgeq.dataframe");
-pub const dataset = @import("edgeq.dataset");
-pub const dataset_writer = @import("edgeq.dataset_writer");
+pub const format = @import("querymode.format");
+pub const io = @import("querymode.io");
+pub const proto = @import("querymode.proto");
+pub const encoding = @import("querymode.encoding");
+pub const writer = @import("querymode.writer");
+pub const table = @import("querymode.table");
+pub const dataframe = @import("querymode.dataframe");
+pub const dataset = @import("querymode.dataset");
+pub const dataset_writer = @import("querymode.dataset_writer");
 
 // Re-export commonly used types
 pub const Footer = format.Footer;

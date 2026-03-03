@@ -29,10 +29,10 @@
 //! ```
 
 const std = @import("std");
-const io_mod = @import("edgeq.io");
-const format_mod = @import("edgeq.format");
-const writer_mod = @import("edgeq.writer");
-const proto_mod = @import("edgeq.proto");
+const io_mod = @import("querymode.io");
+const format_mod = @import("querymode.format");
+const writer_mod = @import("querymode.writer");
+const proto_mod = @import("querymode.proto");
 
 const S3Client = io_mod.S3Client;
 const PutResult = io_mod.PutResult;

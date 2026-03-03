@@ -1,12 +1,12 @@
-//! EdgeQ CLI - High-performance data pipeline for Lance files
+//! QueryMode CLI - High-performance data pipeline for Lance files
 //!
 //! Usage:
-//!   edgeq query "SELECT * FROM 'data.lance' LIMIT 10"
-//!   edgeq ingest data.csv -o out.lance
-//!   edgeq transform data.lance --select "a,b"
-//!   edgeq enrich data.lance --embed text
-//!   edgeq serve data.lance
-//!   edgeq (no args) - auto-detect config or serve
+//!   querymode query "SELECT * FROM 'data.lance' LIMIT 10"
+//!   querymode ingest data.csv -o out.lance
+//!   querymode transform data.lance --select "a,b"
+//!   querymode enrich data.lance --embed text
+//!   querymode serve data.lance
+//!   querymode (no args) - auto-detect config or serve
 //!
 //! Designed for apple-to-apple comparison with:
 //!   duckdb -c "SELECT * FROM 'data.parquet' LIMIT 10"
@@ -23,21 +23,21 @@ const benchmark = @import("cli/benchmark.zig");
 const file_utils = @import("cli/file_utils.zig");
 const yaml = @import("cli/yaml.zig");
 const file_detect = @import("cli/file_detect.zig");
-const edgeq = @import("edgeq");
-const metal = @import("edgeq.gpu");
-const Table = @import("edgeq.table").Table;
-const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
-const DeltaTable = @import("edgeq.delta_table").DeltaTable;
-const IcebergTable = @import("edgeq.iceberg_table").IcebergTable;
-const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
-const AvroTable = @import("edgeq.avro_table").AvroTable;
-const OrcTable = @import("edgeq.orc_table").OrcTable;
-const XlsxTable = @import("edgeq.xlsx_table").XlsxTable;
-const AnyTable = @import("edgeq.any_table").AnyTable;
-const executor = @import("edgeq.sql.executor");
-const lexer = @import("edgeq.sql.lexer");
-const parser = @import("edgeq.sql.parser");
-const ast = @import("edgeq.sql.ast");
+const querymode = @import("querymode");
+const metal = @import("querymode.gpu");
+const Table = @import("querymode.table").Table;
+const ParquetTable = @import("querymode.parquet_table").ParquetTable;
+const DeltaTable = @import("querymode.delta_table").DeltaTable;
+const IcebergTable = @import("querymode.iceberg_table").IcebergTable;
+const ArrowTable = @import("querymode.arrow_table").ArrowTable;
+const AvroTable = @import("querymode.avro_table").AvroTable;
+const OrcTable = @import("querymode.orc_table").OrcTable;
+const XlsxTable = @import("querymode.xlsx_table").XlsxTable;
+const AnyTable = @import("querymode.any_table").AnyTable;
+const executor = @import("querymode.sql.executor");
+const lexer = @import("querymode.sql.lexer");
+const parser = @import("querymode.sql.parser");
+const ast = @import("querymode.sql.ast");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -49,7 +49,7 @@ pub fn main() !void {
     // Handle global commands
     switch (parsed.command) {
         .version => {
-            std.debug.print("edgeq {s}\n", .{args.version});
+            std.debug.print("querymode {s}\n", .{args.version});
             return;
         },
         .help => {
@@ -502,9 +502,9 @@ fn parseFormat(fmt: []const u8) args.IngestOptions.Format {
 /// Find config file in current directory
 fn findConfigFile() ?[]const u8 {
     const config_names = [_][]const u8{
-        "edgeq.yaml",
-        "edgeq.yml",
-        ".edgeqrc.yaml",
+        "querymode.yaml",
+        "querymode.yml",
+        ".querymoderc.yaml",
     };
 
     for (config_names) |name| {

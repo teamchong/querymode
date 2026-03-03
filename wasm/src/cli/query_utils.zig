@@ -3,17 +3,17 @@
 //! Provides common SQL query execution logic used across transform, enrich, and other CLI commands.
 
 const std = @import("std");
-const edgeq = @import("edgeq");
-const Table = edgeq.Table;
-const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
-const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
-const AvroTable = @import("edgeq.avro_table").AvroTable;
-const OrcTable = @import("edgeq.orc_table").OrcTable;
-const XlsxTable = @import("edgeq.xlsx_table").XlsxTable;
-const lexer = @import("edgeq.sql.lexer");
-const parser = @import("edgeq.sql.parser");
-const executor = @import("edgeq.sql.executor");
-const ast = @import("edgeq.sql.ast");
+const querymode = @import("querymode");
+const Table = querymode.Table;
+const ParquetTable = @import("querymode.parquet_table").ParquetTable;
+const ArrowTable = @import("querymode.arrow_table").ArrowTable;
+const AvroTable = @import("querymode.avro_table").AvroTable;
+const OrcTable = @import("querymode.orc_table").OrcTable;
+const XlsxTable = @import("querymode.xlsx_table").XlsxTable;
+const lexer = @import("querymode.sql.lexer");
+const parser = @import("querymode.sql.parser");
+const executor = @import("querymode.sql.executor");
+const ast = @import("querymode.sql.ast");
 const file_detect = @import("file_detect.zig");
 
 pub const Result = executor.Result;

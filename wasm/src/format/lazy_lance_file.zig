@@ -26,9 +26,9 @@
 const std = @import("std");
 const footer_mod = @import("footer.zig");
 const page_row_index_mod = @import("page_row_index.zig");
-const proto = @import("edgeq.proto");
-const encoding = @import("edgeq.encoding");
-const io = @import("edgeq.io");
+const proto = @import("querymode.proto");
+const encoding = @import("querymode.encoding");
+const io = @import("querymode.io");
 
 const Footer = footer_mod.Footer;
 const FOOTER_SIZE = footer_mod.FOOTER_SIZE;

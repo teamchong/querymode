@@ -1,4 +1,4 @@
-//! EdgeQ CLI Help Messages
+//! QueryMode CLI Help Messages
 //!
 //! All command help output functions.
 
@@ -7,9 +7,9 @@ const std = @import("std");
 /// Print main help
 pub fn printHelp() void {
     std.debug.print(
-        \\EdgeQ - High-performance data pipeline for Lance files
+        \\QueryMode - High-performance data pipeline for Lance files
         \\
-        \\Usage: edgeq [command] [options]
+        \\Usage: querymode [command] [options]
         \\
         \\Commands:
         \\  query, q      Execute SQL query on Lance/Parquet files
@@ -29,13 +29,13 @@ pub fn printHelp() void {
         \\  -V, --version        Show version
         \\
         \\Examples:
-        \\  edgeq query "SELECT * FROM 'data.lance' LIMIT 10"
-        \\  edgeq ingest data.csv -o dataset.lance
-        \\  edgeq enrich dataset.lance --embed text --model minilm
-        \\  edgeq serve dataset.lance
-        \\  edgeq                    # Auto-detect: config or serve
+        \\  querymode query "SELECT * FROM 'data.lance' LIMIT 10"
+        \\  querymode ingest data.csv -o dataset.lance
+        \\  querymode enrich dataset.lance --embed text --model minilm
+        \\  querymode serve dataset.lance
+        \\  querymode                    # Auto-detect: config or serve
         \\
-        \\Run 'edgeq <command> --help' for command-specific help.
+        \\Run 'querymode <command> --help' for command-specific help.
         \\
     , .{});
 }
@@ -43,7 +43,7 @@ pub fn printHelp() void {
 /// Print query command help
 pub fn printQueryHelp() void {
     std.debug.print(
-        \\Usage: edgeq query [options] "SQL QUERY"
+        \\Usage: querymode query [options] "SQL QUERY"
         \\
         \\Execute SQL queries on Lance and Parquet files.
         \\
@@ -58,9 +58,9 @@ pub fn printQueryHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  edgeq query "SELECT * FROM 'users.lance' WHERE age > 25"
-        \\  edgeq query -b "SELECT COUNT(*) FROM 'data.parquet'"
-        \\  edgeq query -f query.sql --json
+        \\  querymode query "SELECT * FROM 'users.lance' WHERE age > 25"
+        \\  querymode query -b "SELECT COUNT(*) FROM 'data.parquet'"
+        \\  querymode query -f query.sql --json
         \\
     , .{});
 }
@@ -68,7 +68,7 @@ pub fn printQueryHelp() void {
 /// Print ingest command help
 pub fn printIngestHelp() void {
     std.debug.print(
-        \\Usage: edgeq ingest <input> -o <output.lance> [options]
+        \\Usage: querymode ingest <input> -o <output.lance> [options]
         \\
         \\Convert data files to Lance format.
         \\
@@ -93,11 +93,11 @@ pub fn printIngestHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  edgeq ingest data.csv -o dataset.lance
-        \\  edgeq ingest data.json --format jsonl -o dataset.lance
-        \\  edgeq ingest data.parquet -o dataset.lance
-        \\  edgeq ingest data.arrow -o dataset.lance
-        \\  edgeq ingest ./my_delta_table/ --format delta -o dataset.lance
+        \\  querymode ingest data.csv -o dataset.lance
+        \\  querymode ingest data.json --format jsonl -o dataset.lance
+        \\  querymode ingest data.parquet -o dataset.lance
+        \\  querymode ingest data.arrow -o dataset.lance
+        \\  querymode ingest ./my_delta_table/ --format delta -o dataset.lance
         \\
     , .{});
 }
@@ -105,7 +105,7 @@ pub fn printIngestHelp() void {
 /// Print serve command help
 pub fn printServeHelp() void {
     std.debug.print(
-        \\Usage: edgeq serve [input] [options]
+        \\Usage: querymode serve [input] [options]
         \\
         \\Start interactive web server with WebGPU-powered UI.
         \\
@@ -123,19 +123,19 @@ pub fn printServeHelp() void {
         \\  - Timeline/version navigation
         \\
         \\Examples:
-        \\  edgeq serve dataset.lance
-        \\  edgeq serve ./datasets/ --port 8080
-        \\  edgeq serve                          # Serve current directory
+        \\  querymode serve dataset.lance
+        \\  querymode serve ./datasets/ --port 8080
+        \\  querymode serve                          # Serve current directory
         \\
     , .{});
 }
 
 pub fn printTransformHelp() void {
     std.debug.print(
-        \\Usage: edgeq transform <input> -o <output> [options]
+        \\Usage: querymode transform <input> -o <output> [options]
         \\
         \\Apply transformations to Lance data.
-        \\Use 'edgeq query' with SQL for transformations.
+        \\Use 'querymode query' with SQL for transformations.
         \\
         \\Options:
         \\  -o, --output <PATH>    Output file (required)
@@ -148,7 +148,7 @@ pub fn printTransformHelp() void {
 
 pub fn printEnrichHelp() void {
     std.debug.print(
-        \\Usage: edgeq enrich <input> -o <output> [options]
+        \\Usage: querymode enrich <input> -o <output> [options]
         \\
         \\Add embeddings and vector indexes to Lance data.
         \\
@@ -161,8 +161,8 @@ pub fn printEnrichHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  edgeq enrich data.lance --embed text -o enriched.lance
-        \\  edgeq enrich data.parquet --embed desc --model clip -o out.lance
+        \\  querymode enrich data.lance --embed text -o enriched.lance
+        \\  querymode enrich data.parquet --embed desc --model clip -o out.lance
         \\
     , .{});
 }
@@ -170,7 +170,7 @@ pub fn printEnrichHelp() void {
 /// Print history command help
 pub fn printHistoryHelp() void {
     std.debug.print(
-        \\Usage: edgeq history <table.lance> [options]
+        \\Usage: querymode history <table.lance> [options]
         \\
         \\Show version history for a Lance table.
         \\
@@ -187,9 +187,9 @@ pub fn printHistoryHelp() void {
         \\  delta      Change in row count (+N or -N)
         \\
         \\Examples:
-        \\  edgeq history users.lance
-        \\  edgeq history users.lance --limit 5
-        \\  edgeq history users.lance --json
+        \\  querymode history users.lance
+        \\  querymode history users.lance --limit 5
+        \\  querymode history users.lance --json
         \\
     , .{});
 }
@@ -197,7 +197,7 @@ pub fn printHistoryHelp() void {
 /// Print diff command help
 pub fn printDiffHelp() void {
     std.debug.print(
-        \\Usage: edgeq diff <table.lance> --from <N> [--to <M>] [options]
+        \\Usage: querymode diff <table.lance> --from <N> [--to <M>] [options]
         \\
         \\Show differences between two versions of a Lance table.
         \\
@@ -217,10 +217,10 @@ pub fn printDiffHelp() void {
         \\  ...        All columns from the table
         \\
         \\Examples:
-        \\  edgeq diff users.lance --from 2 --to 3
-        \\  edgeq diff users.lance --from -1          # What changed last?
-        \\  edgeq diff users.lance -f 1               # Changes since version 1
-        \\  edgeq diff users.lance -f 2 --limit 1000
+        \\  querymode diff users.lance --from 2 --to 3
+        \\  querymode diff users.lance --from -1          # What changed last?
+        \\  querymode diff users.lance -f 1               # Changes since version 1
+        \\  querymode diff users.lance -f 2 --limit 1000
         \\
     , .{});
 }

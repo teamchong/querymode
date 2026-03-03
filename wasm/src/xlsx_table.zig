@@ -6,12 +6,12 @@
 //! 3. Exposing unified column read interface
 
 const std = @import("std");
-const XlsxReader = @import("edgeq.encoding").XlsxReader;
-const CellValue = @import("edgeq.encoding").CellValue;
-const CellType = @import("edgeq.encoding").CellType;
-const format = @import("edgeq.format");
+const XlsxReader = @import("querymode.encoding").XlsxReader;
+const CellValue = @import("querymode.encoding").CellValue;
+const CellType = @import("querymode.encoding").CellType;
+const format = @import("querymode.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("edgeq.table_utils");
+const table_utils = @import("querymode.table_utils");
 
 pub const XlsxTableError = error{
     InvalidXlsxFile,

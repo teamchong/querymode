@@ -1,4 +1,4 @@
-//! WASM entry point for EdgeQ.
+//! WASM entry point for QueryMode.
 //!
 //! This module provides exported functions that can be called from JavaScript
 //! in the browser. Uses direct byte manipulation for WASM compatibility.

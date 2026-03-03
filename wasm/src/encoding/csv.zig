@@ -1,4 +1,4 @@
-//! CSV Parser for EdgeQ
+//! CSV Parser for QueryMode
 //!
 //! Streaming CSV/TSV parser with:
 //! - Auto-detect delimiter (comma, tab, pipe, semicolon)

@@ -35,7 +35,7 @@ const mockEnv = {
   DATA_BUCKET: { get: async () => null, head: async () => null },
   MASTER_DO: null,
   QUERY_DO: null,
-  EDGEQ_WASM: {} as any, // non-null, mocked by vi.mock above
+  QUERYMODE_WASM: {} as any, // non-null, mocked by vi.mock above
 } as any;
 
 function makeScanRequest(url: string, body: unknown): Request {

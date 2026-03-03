@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const gpu_mod = b.addModule("edgeq.gpu", .{
+    const gpu_mod = b.addModule("querymode.gpu", .{
         .root_source_file = b.path("src/gpu/gpu.zig"),
         .imports = &.{
             .{ .name = "wgpu", .module = wgpu_dep.module("wgpu") },
@@ -34,86 +34,86 @@ pub fn build(b: *std.Build) void {
     const enable_ai = b.option(bool, "enable_ai", "Enable AI/ML features in WASM (MiniLM + TinyBERT for Workers)") orelse false;
 
     // === Core Modules ===
-    const proto_mod = b.addModule("edgeq.proto", .{
+    const proto_mod = b.addModule("querymode.proto", .{
         .root_source_file = b.path("src/proto/proto.zig"),
     });
 
-    const io_mod = b.addModule("edgeq.io", .{
+    const io_mod = b.addModule("querymode.io", .{
         .root_source_file = b.path("src/io/io.zig"),
     });
 
-    const snappy_mod = b.addModule("edgeq.encoding.snappy", .{
+    const snappy_mod = b.addModule("querymode.encoding.snappy", .{
         .root_source_file = b.path("src/encoding/snappy.zig"),
     });
 
-    const table_utils_mod = b.addModule("edgeq.table_utils", .{
+    const table_utils_mod = b.addModule("querymode.table_utils", .{
         .root_source_file = b.path("src/table_utils.zig"),
     });
 
-    const encoding_mod = b.addModule("edgeq.encoding", .{
+    const encoding_mod = b.addModule("querymode.encoding", .{
         .root_source_file = b.path("src/encoding/encoding.zig"),
         .imports = &.{
-            .{ .name = "edgeq.encoding.snappy", .module = snappy_mod },
+            .{ .name = "querymode.encoding.snappy", .module = snappy_mod },
         },
     });
 
-    const writer_mod = b.addModule("edgeq.writer", .{
+    const writer_mod = b.addModule("querymode.writer", .{
         .root_source_file = b.path("src/writer/writer.zig"),
         .imports = &.{
-            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
         },
     });
 
-    const value_mod = b.addModule("edgeq.value", .{
+    const value_mod = b.addModule("querymode.value", .{
         .root_source_file = b.path("src/value.zig"),
     });
 
     // Query expression module - for predicate fusion in codegen
     // Defined here before query_mod to avoid circular dependency
-    const query_expr_mod = b.addModule("edgeq.query.expr", .{
+    const query_expr_mod = b.addModule("querymode.query.expr", .{
         .root_source_file = b.path("src/query/expr.zig"),
         .imports = &.{
-            .{ .name = "edgeq.value", .module = value_mod },
+            .{ .name = "querymode.value", .module = value_mod },
         },
     });
 
-    const query_mod = b.addModule("edgeq.query", .{
+    const query_mod = b.addModule("querymode.query", .{
         .root_source_file = b.path("src/query/query.zig"),
         .imports = &.{
-            .{ .name = "edgeq.value", .module = value_mod },
-            .{ .name = "edgeq.gpu", .module = gpu_mod },
-            .{ .name = "edgeq.query.expr", .module = query_expr_mod },
+            .{ .name = "querymode.value", .module = value_mod },
+            .{ .name = "querymode.gpu", .module = gpu_mod },
+            .{ .name = "querymode.query.expr", .module = query_expr_mod },
         },
     });
 
-    const format_mod = b.addModule("edgeq.format", .{
+    const format_mod = b.addModule("querymode.format", .{
         .root_source_file = b.path("src/format/format.zig"),
         .imports = &.{
-            .{ .name = "edgeq.proto", .module = proto_mod },
-            .{ .name = "edgeq.io", .module = io_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
+            .{ .name = "querymode.io", .module = io_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
         },
     });
 
-    const parquet_encoding_mod = b.addModule("edgeq.encoding.parquet", .{
+    const parquet_encoding_mod = b.addModule("querymode.encoding.parquet", .{
         .root_source_file = b.path("src/encoding/parquet/parquet_encoding.zig"),
         .imports = &.{
-            .{ .name = "edgeq.proto", .module = proto_mod },
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding.snappy", .module = snappy_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding.snappy", .module = snappy_mod },
         },
     });
 
     // SQL modules
-    const sql_ast_mod = b.addModule("edgeq.sql.ast", .{
+    const sql_ast_mod = b.addModule("querymode.sql.ast", .{
         .root_source_file = b.path("src/sql/ast.zig"),
     });
 
-    const sql_lexer_mod = b.addModule("edgeq.sql.lexer", .{
+    const sql_lexer_mod = b.addModule("querymode.sql.lexer", .{
         .root_source_file = b.path("src/sql/lexer.zig"),
     });
 
-    const sql_parser_mod = b.addModule("edgeq.sql.parser", .{
+    const sql_parser_mod = b.addModule("querymode.sql.parser", .{
         .root_source_file = b.path("src/sql/parser.zig"),
         .imports = &.{
             .{ .name = "ast", .module = sql_ast_mod },
@@ -122,191 +122,191 @@ pub fn build(b: *std.Build) void {
     });
 
     // SIMD and parallel compute primitives
-    const simd_mod = b.addModule("edgeq.simd", .{
+    const simd_mod = b.addModule("querymode.simd", .{
         .root_source_file = b.path("src/simd.zig"),
     });
 
     // Hash functions for GROUP BY and JOIN
-    const hash_mod = b.addModule("edgeq.hash", .{
+    const hash_mod = b.addModule("querymode.hash", .{
         .root_source_file = b.path("src/hash.zig"),
     });
 
     // SIMD columnar operations for SQL executor
-    const columnar_ops_mod = b.addModule("edgeq.columnar_ops", .{
+    const columnar_ops_mod = b.addModule("querymode.columnar_ops", .{
         .root_source_file = b.path("src/columnar_ops.zig"),
     });
 
     // DuckDB-style vectorized query engine primitives
     // Shared between native and WASM executors for consistent performance
-    const vector_engine_mod = b.addModule("edgeq.query.vector_engine", .{
+    const vector_engine_mod = b.addModule("querymode.query.vector_engine", .{
         .root_source_file = b.path("src/query/vector_engine.zig"),
     });
 
-    const table_mod = b.addModule("edgeq.table", .{
+    const table_mod = b.addModule("querymode.table", .{
         .root_source_file = b.path("src/table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.proto", .module = proto_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.io", .module = io_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.io", .module = io_mod },
             .{ .name = "simd", .module = simd_mod },
         },
     });
 
-    const parquet_table_mod = b.addModule("edgeq.parquet_table", .{
+    const parquet_table_mod = b.addModule("querymode.parquet_table", .{
         .root_source_file = b.path("src/parquet_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding.parquet", .module = parquet_encoding_mod },
         },
     });
 
-    const delta_table_mod = b.addModule("edgeq.delta_table", .{
+    const delta_table_mod = b.addModule("querymode.delta_table", .{
         .root_source_file = b.path("src/delta_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.parquet_table", .module = parquet_table_mod },
         },
     });
 
-    const iceberg_table_mod = b.addModule("edgeq.iceberg_table", .{
+    const iceberg_table_mod = b.addModule("querymode.iceberg_table", .{
         .root_source_file = b.path("src/iceberg_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.parquet_table", .module = parquet_table_mod },
         },
     });
 
-    const arrow_table_mod = b.addModule("edgeq.arrow_table", .{
+    const arrow_table_mod = b.addModule("querymode.arrow_table", .{
         .root_source_file = b.path("src/arrow_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.table_utils", .module = table_utils_mod },
         },
     });
 
-    const avro_table_mod = b.addModule("edgeq.avro_table", .{
+    const avro_table_mod = b.addModule("querymode.avro_table", .{
         .root_source_file = b.path("src/avro_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.table_utils", .module = table_utils_mod },
         },
     });
 
-    const orc_table_mod = b.addModule("edgeq.orc_table", .{
+    const orc_table_mod = b.addModule("querymode.orc_table", .{
         .root_source_file = b.path("src/orc_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.table_utils", .module = table_utils_mod },
         },
     });
 
-    const xlsx_table_mod = b.addModule("edgeq.xlsx_table", .{
+    const xlsx_table_mod = b.addModule("querymode.xlsx_table", .{
         .root_source_file = b.path("src/xlsx_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.table_utils", .module = table_utils_mod },
         },
     });
 
-    const any_table_mod = b.addModule("edgeq.any_table", .{
+    const any_table_mod = b.addModule("querymode.any_table", .{
         .root_source_file = b.path("src/any_table.zig"),
         .imports = &.{
-            .{ .name = "edgeq.table", .module = table_mod },
-            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
-            .{ .name = "edgeq.delta_table", .module = delta_table_mod },
-            .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
-            .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
-            .{ .name = "edgeq.avro_table", .module = avro_table_mod },
-            .{ .name = "edgeq.orc_table", .module = orc_table_mod },
-            .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
+            .{ .name = "querymode.table", .module = table_mod },
+            .{ .name = "querymode.parquet_table", .module = parquet_table_mod },
+            .{ .name = "querymode.delta_table", .module = delta_table_mod },
+            .{ .name = "querymode.iceberg_table", .module = iceberg_table_mod },
+            .{ .name = "querymode.arrow_table", .module = arrow_table_mod },
+            .{ .name = "querymode.avro_table", .module = avro_table_mod },
+            .{ .name = "querymode.orc_table", .module = orc_table_mod },
+            .{ .name = "querymode.xlsx_table", .module = xlsx_table_mod },
         },
     });
 
-    const sql_executor_mod = b.addModule("edgeq.sql.executor", .{
+    const sql_executor_mod = b.addModule("querymode.sql.executor", .{
         .root_source_file = b.path("src/sql/executor.zig"),
         .imports = &.{
             .{ .name = "ast", .module = sql_ast_mod },
             .{ .name = "parser", .module = sql_parser_mod },
-            .{ .name = "edgeq.table", .module = table_mod },
-            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
-            .{ .name = "edgeq.delta_table", .module = delta_table_mod },
-            .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
-            .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
-            .{ .name = "edgeq.avro_table", .module = avro_table_mod },
-            .{ .name = "edgeq.orc_table", .module = orc_table_mod },
-            .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
-            .{ .name = "edgeq.any_table", .module = any_table_mod },
-            .{ .name = "edgeq.hash", .module = hash_mod },
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.vector_engine", .module = vector_engine_mod },
-            .{ .name = "edgeq.columnar_ops", .module = columnar_ops_mod },
-            .{ .name = "edgeq.query", .module = query_mod },
+            .{ .name = "querymode.table", .module = table_mod },
+            .{ .name = "querymode.parquet_table", .module = parquet_table_mod },
+            .{ .name = "querymode.delta_table", .module = delta_table_mod },
+            .{ .name = "querymode.iceberg_table", .module = iceberg_table_mod },
+            .{ .name = "querymode.arrow_table", .module = arrow_table_mod },
+            .{ .name = "querymode.avro_table", .module = avro_table_mod },
+            .{ .name = "querymode.orc_table", .module = orc_table_mod },
+            .{ .name = "querymode.xlsx_table", .module = xlsx_table_mod },
+            .{ .name = "querymode.any_table", .module = any_table_mod },
+            .{ .name = "querymode.hash", .module = hash_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.vector_engine", .module = vector_engine_mod },
+            .{ .name = "querymode.columnar_ops", .module = columnar_ops_mod },
+            .{ .name = "querymode.query", .module = query_mod },
         },
     });
 
-    const dataframe_mod = b.addModule("edgeq.dataframe", .{
+    const dataframe_mod = b.addModule("querymode.dataframe", .{
         .root_source_file = b.path("src/dataframe.zig"),
         .imports = &.{
-            .{ .name = "edgeq.value", .module = value_mod },
-            .{ .name = "edgeq.query", .module = query_mod },
-            .{ .name = "edgeq.table", .module = table_mod },
+            .{ .name = "querymode.value", .module = value_mod },
+            .{ .name = "querymode.query", .module = query_mod },
+            .{ .name = "querymode.table", .module = table_mod },
         },
     });
 
     // Dataset module - high-level API mirroring browser vault.js
-    const dataset_mod = b.addModule("edgeq.dataset", .{
+    const dataset_mod = b.addModule("querymode.dataset", .{
         .root_source_file = b.path("src/dataset.zig"),
         .imports = &.{
-            .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+            .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
             .{ .name = "lexer", .module = sql_lexer_mod },
             .{ .name = "parser", .module = sql_parser_mod },
             .{ .name = "ast", .module = sql_ast_mod },
-            .{ .name = "edgeq.table", .module = table_mod },
-            .{ .name = "edgeq.dataframe", .module = dataframe_mod },
-            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "querymode.table", .module = table_mod },
+            .{ .name = "querymode.dataframe", .module = dataframe_mod },
+            .{ .name = "querymode.format", .module = format_mod },
         },
     });
 
     // Dataset writer module - distributed writes with ETag-based CAS
-    const dataset_writer_mod = b.addModule("edgeq.dataset_writer", .{
+    const dataset_writer_mod = b.addModule("querymode.dataset_writer", .{
         .root_source_file = b.path("src/dataset_writer.zig"),
         .imports = &.{
-            .{ .name = "edgeq.io", .module = io_mod },
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.writer", .module = writer_mod },
-            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "querymode.io", .module = io_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.writer", .module = writer_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
         },
     });
 
     // AI module - native GGUF model inference (TinyBERT, MiniLM)
     // Only built when enable_ai=true
-    const ai_mod = b.addModule("edgeq.ai", .{
+    const ai_mod = b.addModule("querymode.ai", .{
         .root_source_file = b.path("src/ai/ai.zig"),
     });
 
     // Root module exports all
-    const edgeq_mod = b.addModule("edgeq", .{
-        .root_source_file = b.path("src/edgeq.zig"),
+    const querymode_mod = b.addModule("querymode", .{
+        .root_source_file = b.path("src/querymode.zig"),
         .imports = &.{
-            .{ .name = "edgeq.format", .module = format_mod },
-            .{ .name = "edgeq.io", .module = io_mod },
-            .{ .name = "edgeq.proto", .module = proto_mod },
-            .{ .name = "edgeq.encoding", .module = encoding_mod },
-            .{ .name = "edgeq.writer", .module = writer_mod },
-            .{ .name = "edgeq.table", .module = table_mod },
-            .{ .name = "edgeq.query", .module = query_mod },
-            .{ .name = "edgeq.value", .module = value_mod },
-            .{ .name = "edgeq.dataframe", .module = dataframe_mod },
-            .{ .name = "edgeq.dataset", .module = dataset_mod },
-            .{ .name = "edgeq.dataset_writer", .module = dataset_writer_mod },
-            .{ .name = "edgeq.gpu", .module = gpu_mod },
+            .{ .name = "querymode.format", .module = format_mod },
+            .{ .name = "querymode.io", .module = io_mod },
+            .{ .name = "querymode.proto", .module = proto_mod },
+            .{ .name = "querymode.encoding", .module = encoding_mod },
+            .{ .name = "querymode.writer", .module = writer_mod },
+            .{ .name = "querymode.table", .module = table_mod },
+            .{ .name = "querymode.query", .module = query_mod },
+            .{ .name = "querymode.value", .module = value_mod },
+            .{ .name = "querymode.dataframe", .module = dataframe_mod },
+            .{ .name = "querymode.dataset", .module = dataset_mod },
+            .{ .name = "querymode.dataset_writer", .module = dataset_writer_mod },
+            .{ .name = "querymode.gpu", .module = gpu_mod },
         },
     });
 
@@ -317,7 +317,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "use_onnx", onnx_path != null);
     build_options.addOption(bool, "enable_ai", enable_ai); // Native GGUF inference (TinyBERT, MiniLM)
     gpu_mod.addOptions("build_options", build_options);
-    edgeq_mod.addOptions("build_options", build_options);
+    querymode_mod.addOptions("build_options", build_options);
 
     // === Tests ===
     const test_footer = b.addTest(.{
@@ -326,8 +326,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.format", .module = format_mod },
             },
         }),
     });
@@ -338,8 +338,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.proto", .module = proto_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.proto", .module = proto_mod },
             },
         }),
     });
@@ -350,12 +350,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
-                .{ .name = "edgeq.proto", .module = proto_mod },
-                .{ .name = "edgeq.encoding", .module = encoding_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
+                .{ .name = "querymode.proto", .module = proto_mod },
+                .{ .name = "querymode.encoding", .module = encoding_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -386,8 +386,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
@@ -405,9 +405,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq.value", .module = value_mod },
-                .{ .name = "edgeq.gpu", .module = gpu_mod },
-                .{ .name = "edgeq.query.expr", .module = query_expr_mod },
+                .{ .name = "querymode.value", .module = value_mod },
+                .{ .name = "querymode.gpu", .module = gpu_mod },
+                .{ .name = "querymode.query.expr", .module = query_expr_mod },
             },
         }),
     });
@@ -463,9 +463,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq.value", .module = value_mod },
-                .{ .name = "edgeq.query", .module = query_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.value", .module = value_mod },
+                .{ .name = "querymode.query", .module = query_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -483,10 +483,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.encoding", .module = encoding_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.encoding", .module = encoding_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
@@ -520,8 +520,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
             },
         }),
     });
@@ -537,13 +537,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
-                .{ .name = "edgeq.simd", .module = simd_mod },
-                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
-                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
-                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "querymode.table", .module = table_mod },
+                .{ .name = "querymode.simd", .module = simd_mod },
+                .{ .name = "querymode.sql.ast", .module = sql_ast_mod },
+                .{ .name = "querymode.sql.parser", .module = sql_parser_mod },
+                .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
             },
         }),
     });
@@ -559,10 +559,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
-                .{ .name = "edgeq.simd", .module = simd_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
+                .{ .name = "querymode.simd", .module = simd_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -578,7 +578,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -594,7 +594,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -610,7 +610,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -618,7 +618,7 @@ pub fn build(b: *std.Build) void {
     const bench_tiered_step = b.step("bench-tiered", "FAIR end-to-end: SIMD dot product");
     bench_tiered_step.dependOn(&run_bench_tiered.step);
 
-    // Parquet benchmark - EdgeQ vs DuckDB vs Polars
+    // Parquet benchmark - QueryMode vs DuckDB vs Polars
     const bench_parquet = b.addExecutable(.{
         .name = "bench_parquet",
         .root_module = b.createModule(.{
@@ -626,16 +626,16 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
     b.installArtifact(bench_parquet);
-    const bench_parquet_step = b.step("bench-parquet", "Benchmark Parquet reading: EdgeQ vs DuckDB vs Polars");
+    const bench_parquet_step = b.step("bench-parquet", "Benchmark Parquet reading: QueryMode vs DuckDB vs Polars");
     bench_parquet_step.dependOn(&b.addInstallArtifact(bench_parquet, .{}).step);
 
-    // In-process benchmark: EdgeQ vs DuckDB C API (FAIR comparison)
+    // In-process benchmark: QueryMode vs DuckDB C API (FAIR comparison)
     const bench_inprocess = b.addExecutable(.{
         .name = "bench_inprocess",
         .root_module = b.createModule(.{
@@ -643,12 +643,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
     const run_bench_inprocess = b.addRunArtifact(bench_inprocess);
-    const bench_inprocess_step = b.step("bench-inprocess", "FAIR end-to-end: EdgeQ vs DuckDB vs Polars");
+    const bench_inprocess_step = b.step("bench-inprocess", "FAIR end-to-end: QueryMode vs DuckDB vs Polars");
     bench_inprocess_step.dependOn(&run_bench_inprocess.step);
 
     // RAG Pipeline benchmark - end-to-end document retrieval
@@ -659,7 +659,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -675,8 +675,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.gpu", .module = gpu_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.gpu", .module = gpu_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -695,7 +695,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -711,8 +711,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
             },
         }),
     });
@@ -728,7 +728,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -736,31 +736,31 @@ pub fn build(b: *std.Build) void {
     const bench_embed_step = b.step("bench-embed", "Embedding pipeline: chunking, tokenization, embedding");
     bench_embed_step.dependOn(&run_bench_embed.step);
 
-    // EdgeQ CLI
+    // QueryMode CLI
     const cli = b.addExecutable(.{
-        .name = "edgeq",
+        .name = "querymode",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.gpu", .module = gpu_mod },
-                .{ .name = "edgeq.query", .module = query_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
-                .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
-                .{ .name = "edgeq.delta_table", .module = delta_table_mod },
-                .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
-                .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
-                .{ .name = "edgeq.avro_table", .module = avro_table_mod },
-                .{ .name = "edgeq.orc_table", .module = orc_table_mod },
-                .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
-                .{ .name = "edgeq.any_table", .module = any_table_mod },
-                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
-                .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
-                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
-                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
-                .{ .name = "edgeq.ai", .module = ai_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.gpu", .module = gpu_mod },
+                .{ .name = "querymode.query", .module = query_mod },
+                .{ .name = "querymode.table", .module = table_mod },
+                .{ .name = "querymode.parquet_table", .module = parquet_table_mod },
+                .{ .name = "querymode.delta_table", .module = delta_table_mod },
+                .{ .name = "querymode.iceberg_table", .module = iceberg_table_mod },
+                .{ .name = "querymode.arrow_table", .module = arrow_table_mod },
+                .{ .name = "querymode.avro_table", .module = avro_table_mod },
+                .{ .name = "querymode.orc_table", .module = orc_table_mod },
+                .{ .name = "querymode.xlsx_table", .module = xlsx_table_mod },
+                .{ .name = "querymode.any_table", .module = any_table_mod },
+                .{ .name = "querymode.sql.ast", .module = sql_ast_mod },
+                .{ .name = "querymode.sql.lexer", .module = sql_lexer_mod },
+                .{ .name = "querymode.sql.parser", .module = sql_parser_mod },
+                .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
+                .{ .name = "querymode.ai", .module = ai_mod },
             },
         }),
     });
@@ -807,7 +807,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cli.addArgs(args);
     }
-    const cli_step = b.step("cli", "Build and run EdgeQ CLI");
+    const cli_step = b.step("cli", "Build and run QueryMode CLI");
     cli_step.dependOn(&run_cli.step);
 
     // SQL executor tests
@@ -817,10 +817,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq.table", .module = table_mod },
-                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
-                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
-                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+                .{ .name = "querymode.table", .module = table_mod },
+                .{ .name = "querymode.sql.ast", .module = sql_ast_mod },
+                .{ .name = "querymode.sql.parser", .module = sql_parser_mod },
+                .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
             },
         }),
     });
@@ -838,7 +838,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq.ai", .module = ai_mod },
+                .{ .name = "querymode.ai", .module = ai_mod },
             },
         }),
     });
@@ -854,10 +854,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast, // Use ReleaseFast for performance tests
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
+                .{ .name = "querymode.table", .module = table_mod },
             },
         }),
     });
@@ -900,7 +900,7 @@ pub fn build(b: *std.Build) void {
     wasm_options.addOption(bool, "enable_ai", enable_ai);
 
     const wasm = b.addExecutable(.{
-        .name = "edgeq",
+        .name = "querymode",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
@@ -939,21 +939,21 @@ pub fn build(b: *std.Build) void {
 
     // === Native Shared Library for Python ===
     const lib = b.addLibrary(.{
-        .name = "edgeq",
+        .name = "querymode",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/python.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq", .module = edgeq_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.proto", .module = proto_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
-                .{ .name = "edgeq.encoding", .module = encoding_mod },
-                .{ .name = "edgeq.value", .module = value_mod },
-                .{ .name = "edgeq.gpu", .module = gpu_mod },
+                .{ .name = "querymode", .module = querymode_mod },
+                .{ .name = "querymode.table", .module = table_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.proto", .module = proto_mod },
+                .{ .name = "querymode.io", .module = io_mod },
+                .{ .name = "querymode.encoding", .module = encoding_mod },
+                .{ .name = "querymode.value", .module = value_mod },
+                .{ .name = "querymode.gpu", .module = gpu_mod },
                 .{ .name = "arrow_c", .module = arrow_c_mod },
             },
         }),
@@ -970,23 +970,23 @@ pub fn build(b: *std.Build) void {
 
     // === Node.js Shared Library ===
     const nodejs_lib = b.addLibrary(.{
-        .name = "edgeq",
+        .name = "querymode",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/nodejs.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "edgeq.format", .module = format_mod },
-                .{ .name = "edgeq.io", .module = io_mod },
-                .{ .name = "edgeq.proto", .module = proto_mod },
-                .{ .name = "edgeq.encoding", .module = encoding_mod },
-                .{ .name = "edgeq.table", .module = table_mod },
-                .{ .name = "edgeq.value", .module = value_mod },
-                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
-                .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
-                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
-                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+                .{ .name = "querymode.format", .module = format_mod },
+                .{ .name = "querymode.io", .module = io_mod },
+                .{ .name = "querymode.proto", .module = proto_mod },
+                .{ .name = "querymode.encoding", .module = encoding_mod },
+                .{ .name = "querymode.table", .module = table_mod },
+                .{ .name = "querymode.value", .module = value_mod },
+                .{ .name = "querymode.sql.ast", .module = sql_ast_mod },
+                .{ .name = "querymode.sql.lexer", .module = sql_lexer_mod },
+                .{ .name = "querymode.sql.parser", .module = sql_parser_mod },
+                .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
             },
         }),
     });
@@ -1021,23 +1021,23 @@ pub fn build(b: *std.Build) void {
         const resolved_target = b.resolveTargetQuery(cross_target.query);
 
         const cross_lib = b.addLibrary(.{
-            .name = "edgeq",
+            .name = "querymode",
             .linkage = .dynamic,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/nodejs.zig"),
                 .target = resolved_target,
                 .optimize = .ReleaseFast,
                 .imports = &.{
-                    .{ .name = "edgeq.format", .module = format_mod },
-                    .{ .name = "edgeq.io", .module = io_mod },
-                    .{ .name = "edgeq.proto", .module = proto_mod },
-                    .{ .name = "edgeq.encoding", .module = encoding_mod },
-                    .{ .name = "edgeq.table", .module = table_mod },
-                    .{ .name = "edgeq.value", .module = value_mod },
-                    .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
-                    .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
-                    .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
-                    .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+                    .{ .name = "querymode.format", .module = format_mod },
+                    .{ .name = "querymode.io", .module = io_mod },
+                    .{ .name = "querymode.proto", .module = proto_mod },
+                    .{ .name = "querymode.encoding", .module = encoding_mod },
+                    .{ .name = "querymode.table", .module = table_mod },
+                    .{ .name = "querymode.value", .module = value_mod },
+                    .{ .name = "querymode.sql.ast", .module = sql_ast_mod },
+                    .{ .name = "querymode.sql.lexer", .module = sql_lexer_mod },
+                    .{ .name = "querymode.sql.parser", .module = sql_parser_mod },
+                    .{ .name = "querymode.sql.executor", .module = sql_executor_mod },
                 },
             }),
         });

@@ -45,7 +45,7 @@ export class QueryDO implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const region = request.headers.get("x-edgeq-region");
+    const region = request.headers.get("x-querymode-region");
     if (region) {
       const stored = await this.state.storage.get<string>("region");
       if (!stored) await this.state.storage.put("region", region);
@@ -71,7 +71,7 @@ export class QueryDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 
-    this.wasmEngine = await instantiateWasm(this.env.EDGEQ_WASM);
+    this.wasmEngine = await instantiateWasm(this.env.QUERYMODE_WASM);
 
     // Register with Master for invalidation broadcasts
     this.registerWithMaster();
@@ -188,7 +188,7 @@ export class QueryDO implements DurableObject {
   }
 
   private async handleQuery(request: Request): Promise<Response> {
-    const requestId = request.headers.get("x-edgeq-request-id") ?? crypto.randomUUID();
+    const requestId = request.headers.get("x-querymode-request-id") ?? crypto.randomUUID();
     const query = (await request.json()) as QueryDescriptor;
     const result = await this.executeQuery(query);
     result.requestId = requestId;

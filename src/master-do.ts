@@ -108,7 +108,7 @@ export class MasterDO implements DurableObject {
 
   private async getWasm(): Promise<WasmEngine> {
     if (this.wasmEngine) return this.wasmEngine;
-    this.wasmEngine = await instantiateWasm(this.env.EDGEQ_WASM);
+    this.wasmEngine = await instantiateWasm(this.env.QUERYMODE_WASM);
     return this.wasmEngine;
   }
 

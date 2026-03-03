@@ -1,4 +1,4 @@
-# EdgeQ
+# QueryMode
 
 > **Experimental** — early prototype, not production-ready. Architecture and API will change.
 
@@ -7,7 +7,7 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance an
 ## What exists
 
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
-- **Zig WASM engine** (`wasm/`) — column decoding, SIMD ops, SQL execution, vector search, fragment writing, compiles to `edgeq.wasm`
+- **Zig WASM engine** (`wasm/`) — column decoding, SIMD ops, SQL execution, vector search, fragment writing, compiles to `querymode.wasm`
 - **Code-first query API** — `.table().filter().select().sort().limit().exec()`, no SQL
 - **Write path** — `TableQuery.append(rows)` with CAS-based manifest coordination via Master DO
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
@@ -26,7 +26,7 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance an
 - No npm package published
 
 ## Architecture
-![edgeq-architecture](.docs/architecture/edgeq-architecture.svg)
+![querymode-architecture](.docs/architecture/querymode-architecture.svg)
 
 ## Build
 
@@ -43,10 +43,10 @@ pnpm wasm             # cd wasm && zig build wasm && cp to src/wasm/
 ## Query API
 
 ```typescript
-import { EdgeQ } from "edgeq"
+import { QueryMode } from "querymode"
 
 // Edge mode (Durable Objects + R2)
-const eq = EdgeQ.remote(env.QUERY_DO, { region: "SJC" })
+const eq = QueryMode.remote(env.QUERY_DO, { region: "SJC" })
 const results = await eq
   .table("users")
   .filter("age", "gt", 25)
@@ -56,7 +56,7 @@ const results = await eq
   .exec()
 
 // Local mode (Node/Bun + filesystem)
-const local = EdgeQ.local()
+const local = QueryMode.local()
 const results = await local
   .table("./data/users.lance")
   .select("name")

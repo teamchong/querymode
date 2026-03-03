@@ -1,12 +1,12 @@
-//! EdgeQ CLI Argument Parser
+//! QueryMode CLI Argument Parser
 //!
 //! Supports subcommand-based architecture:
-//!   edgeq query "SELECT ..."
-//!   edgeq ingest data.csv -o out.lance
-//!   edgeq transform data.lance --select "a,b"
-//!   edgeq enrich data.lance --embed text
-//!   edgeq serve data.lance
-//!   edgeq (no args) - auto-detect config or serve
+//!   querymode query "SELECT ..."
+//!   querymode ingest data.csv -o out.lance
+//!   querymode transform data.lance --select "a,b"
+//!   querymode enrich data.lance --embed text
+//!   querymode serve data.lance
+//!   querymode (no args) - auto-detect config or serve
 
 const std = @import("std");
 const help = @import("help.zig");

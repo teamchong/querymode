@@ -1,14 +1,14 @@
-//! Query module for EdgeQ.
+//! Query module for QueryMode.
 //!
 //! Provides SQL parsing, expression evaluation, and query execution
 //! for Lance files.
 
 const std = @import("std");
 
-pub const value = @import("edgeq.value");
+pub const value = @import("querymode.value");
 pub const Value = value.Value;
 
-pub const expr = @import("edgeq.query.expr");
+pub const expr = @import("querymode.query.expr");
 pub const lexer = @import("lexer.zig");
 pub const parser = @import("parser.zig");
 pub const ast = @import("ast.zig");

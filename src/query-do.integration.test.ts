@@ -13,7 +13,7 @@ beforeAll(async () => {
   try {
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
     await fs.stat(wasmPath);
     hasWasm = true;
   } catch {
@@ -115,7 +115,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
     // Load real WASM module
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
     const wasmBytes = await fs.readFile(wasmPath);
     const wasmModule = await WebAssembly.compile(wasmBytes);
 
@@ -148,7 +148,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: mockMasterNs,
       QUERY_DO: { idFromString: (id: string) => id, get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "frag-id", get: () => ({}) },
-      EDGEQ_WASM: wasmModule,
+      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);
@@ -180,7 +180,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
     const { QueryDO } = await import("./query-do.js");
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
     const wasmBytes = await fs.readFile(wasmPath);
     const wasmModule = await WebAssembly.compile(wasmBytes);
 
@@ -198,7 +198,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
       QUERY_DO: { idFromString: () => "id", get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
-      EDGEQ_WASM: wasmModule,
+      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);
@@ -210,7 +210,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
     const { QueryDO } = await import("./query-do.js");
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
     const wasmBytes = await fs.readFile(wasmPath);
     const wasmModule = await WebAssembly.compile(wasmBytes);
 
@@ -228,7 +228,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
       QUERY_DO: { idFromString: () => "id", get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
-      EDGEQ_WASM: wasmModule,
+      QUERYMODE_WASM: wasmModule,
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);

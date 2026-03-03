@@ -4,7 +4,7 @@
 //! See: https://parquet.apache.org/docs/file-format/data-pages/encodings/
 
 const std = @import("std");
-const meta = @import("edgeq.format").parquet_metadata;
+const meta = @import("querymode.format").parquet_metadata;
 const Type = meta.Type;
 
 pub const PlainError = error{

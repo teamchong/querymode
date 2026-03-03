@@ -4,8 +4,8 @@
 //! Provides batch reads from Lance tables for VECTOR_SIZE (2048) processing.
 
 const std = @import("std");
-const Table = @import("edgeq.table").Table;
-const ve = @import("edgeq.vector_engine");
+const Table = @import("querymode.table").Table;
+const ve = @import("querymode.vector_engine");
 
 /// TableColumnReader - Implements ve.ColumnReader for streaming SQL execution
 ///

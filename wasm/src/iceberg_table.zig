@@ -8,9 +8,9 @@
 //! Note: Requires Iceberg table with snapshots containing data files.
 
 const std = @import("std");
-const IcebergReader = @import("edgeq.encoding").IcebergReader;
-const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
-const format = @import("edgeq.format");
+const IcebergReader = @import("querymode.encoding").IcebergReader;
+const ParquetTable = @import("querymode.parquet_table").ParquetTable;
+const format = @import("querymode.format");
 const Type = format.parquet_metadata.Type;
 
 pub const IcebergTableError = error{

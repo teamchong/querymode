@@ -1,4 +1,4 @@
-//! I/O abstraction layer for EdgeQ.
+//! I/O abstraction layer for QueryMode.
 //!
 //! This module provides a VFS (Virtual File System) abstraction that allows
 //! the same Lance parsing code to work with:

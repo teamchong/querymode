@@ -3,7 +3,7 @@
 //! Provides result formatting for table, CSV, and JSON output.
 
 const std = @import("std");
-const executor = @import("edgeq.sql.executor");
+const executor = @import("querymode.sql.executor");
 
 /// Output query results in the specified format
 pub fn outputResults(result: *executor.Result, json: bool, csv: bool) void {

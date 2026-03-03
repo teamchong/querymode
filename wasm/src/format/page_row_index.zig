@@ -9,7 +9,7 @@
 //! This enables batched HTTP range requests for cloud-hosted Lance files.
 
 const std = @import("std");
-const proto = @import("edgeq.proto");
+const proto = @import("querymode.proto");
 
 const Page = proto.Page;
 const ColumnMetadata = proto.ColumnMetadata;

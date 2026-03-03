@@ -6,7 +6,7 @@ const icebergTypeMap: Record<string, DataType> = {
   time: "int64", timestamp: "int64", timestamptz: "int64", uuid: "utf8", fixed: "binary",
 };
 
-/** Map Iceberg type strings to EdgeQ DataType. */
+/** Map Iceberg type strings to QueryMode DataType. */
 export function icebergTypeToDataType(iceType: string): DataType {
   return icebergTypeMap[iceType] ?? "binary";
 }

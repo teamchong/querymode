@@ -4,10 +4,10 @@
 //! Verifies that all ingest pipelines produce valid Lance files.
 
 const std = @import("std");
-const edgeq = @import("edgeq");
-const encoding = @import("edgeq.encoding");
-const format = @import("edgeq.format");
-const parquet_enc = @import("edgeq.encoding.parquet");
+const querymode = @import("querymode");
+const encoding = @import("querymode.encoding");
+const format = @import("querymode.format");
+const parquet_enc = @import("querymode.encoding.parquet");
 
 const csv = encoding.csv;
 const json = encoding.json;

@@ -1,13 +1,13 @@
-//! Node.js C API for EdgeQ
+//! Node.js C API for QueryMode
 //!
 //! This module provides C-compatible exports for Node.js N-API bindings.
 //! It follows the same patterns as python.zig but adds SQL execution capabilities.
 
 const std = @import("std");
-const Table = @import("edgeq.table").Table;
-const ast = @import("edgeq.sql.ast");
-const parser = @import("edgeq.sql.parser");
-const executor = @import("edgeq.sql.executor");
+const Table = @import("querymode.table").Table;
+const ast = @import("querymode.sql.ast");
+const parser = @import("querymode.sql.parser");
+const executor = @import("querymode.sql.executor");
 
 // ============================================================================
 // Opaque Handle Types
@@ -655,7 +655,7 @@ export fn lance_result_close(result: *ResultHandle) void {
 
 /// Get version string
 export fn lance_version(buf: [*]u8, buf_len: usize) usize {
-    const version = "0.1.0-edgeq";
+    const version = "0.1.0-querymode";
     const len = @min(version.len, buf_len);
     const out_buf = buf[0..buf_len];
     @memcpy(out_buf[0..len], version[0..len]);

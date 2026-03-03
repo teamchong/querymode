@@ -1,19 +1,19 @@
-//! EdgeQ Ingest Command
+//! QueryMode Ingest Command
 //!
 //! Converts data files to Lance format.
 //! Supports: CSV, TSV, JSON, JSONL, Parquet, Arrow, Avro, ORC, XLSX, Delta, Iceberg
 //!
 //! Usage:
-//!   edgeq ingest data.csv -o output.lance
-//!   edgeq ingest data.json --format jsonl -o output.lance
-//!   edgeq ingest data.arrow -o output.lance
-//!   edgeq ingest ./delta_table/ --format delta -o output.lance
+//!   querymode ingest data.csv -o output.lance
+//!   querymode ingest data.json --format jsonl -o output.lance
+//!   querymode ingest data.arrow -o output.lance
+//!   querymode ingest ./delta_table/ --format delta -o output.lance
 
 const std = @import("std");
-const edgeq = @import("edgeq");
-const csv = edgeq.encoding.csv;
-const delta = edgeq.encoding.delta;
-const iceberg = edgeq.encoding.iceberg;
+const querymode = @import("querymode");
+const csv = querymode.encoding.csv;
+const delta = querymode.encoding.delta;
+const iceberg = querymode.encoding.iceberg;
 const args = @import("args.zig");
 
 // Ingest modules

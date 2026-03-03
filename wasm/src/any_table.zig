@@ -4,14 +4,14 @@
 //! Arrow, Avro, ORC, and XLSX tables through a tagged union.
 
 const std = @import("std");
-const Table = @import("edgeq.table").Table;
-const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
-const DeltaTable = @import("edgeq.delta_table").DeltaTable;
-const IcebergTable = @import("edgeq.iceberg_table").IcebergTable;
-const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
-const AvroTable = @import("edgeq.avro_table").AvroTable;
-const OrcTable = @import("edgeq.orc_table").OrcTable;
-const XlsxTable = @import("edgeq.xlsx_table").XlsxTable;
+const Table = @import("querymode.table").Table;
+const ParquetTable = @import("querymode.parquet_table").ParquetTable;
+const DeltaTable = @import("querymode.delta_table").DeltaTable;
+const IcebergTable = @import("querymode.iceberg_table").IcebergTable;
+const ArrowTable = @import("querymode.arrow_table").ArrowTable;
+const AvroTable = @import("querymode.avro_table").AvroTable;
+const OrcTable = @import("querymode.orc_table").OrcTable;
+const XlsxTable = @import("querymode.xlsx_table").XlsxTable;
 
 pub const AnyTable = union(enum) {
     lance: Table,

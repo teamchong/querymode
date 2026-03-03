@@ -1,6 +1,6 @@
 /**
  * WASM integration tests — real WASM execution, no mocks.
- * Requires edgeq.wasm binary at src/wasm/edgeq.wasm.
+ * Requires querymode.wasm binary at src/wasm/querymode.wasm.
  * Skips gracefully if binary not found.
  */
 import { describe, it, expect, beforeAll } from "vitest";
@@ -15,7 +15,7 @@ let hasWasm = false;
 
 beforeAll(async () => {
   try {
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
     const wasmBytes = await fs.readFile(wasmPath);
     const mod = await WebAssembly.compile(wasmBytes);
     wasm = await instantiateWasm(mod);

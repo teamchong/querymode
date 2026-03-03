@@ -5,11 +5,11 @@
 //! 2. Exposing unified column read interface
 
 const std = @import("std");
-const AvroReader = @import("edgeq.encoding").AvroReader;
-const AvroType = @import("edgeq.encoding").AvroType;
-const format = @import("edgeq.format");
+const AvroReader = @import("querymode.encoding").AvroReader;
+const AvroType = @import("querymode.encoding").AvroType;
+const format = @import("querymode.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("edgeq.table_utils");
+const table_utils = @import("querymode.table_utils");
 
 pub const AvroTableError = error{
     InvalidAvroFile,

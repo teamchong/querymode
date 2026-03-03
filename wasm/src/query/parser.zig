@@ -28,11 +28,11 @@ const ast = @import("ast.zig");
 const SelectStmt = ast.SelectStmt;
 const SelectItem = ast.SelectItem;
 const OrderBy = ast.OrderBy;
-const expr_mod = @import("edgeq.query.expr");
+const expr_mod = @import("querymode.query.expr");
 const Expr = expr_mod.Expr;
 const BinaryOp = expr_mod.BinaryOp;
 const UnaryOp = expr_mod.UnaryOp;
-const Value = @import("edgeq.value").Value;
+const Value = @import("querymode.value").Value;
 
 pub const ParseError = error{
     UnexpectedToken,

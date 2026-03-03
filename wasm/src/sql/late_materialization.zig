@@ -59,7 +59,7 @@
 //! ```
 
 const std = @import("std");
-const table_mod = @import("edgeq.table");
+const table_mod = @import("querymode.table");
 const result_types = @import("result_types.zig");
 
 const LazyTable = table_mod.LazyTable;

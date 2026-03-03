@@ -3,7 +3,7 @@
 //! Tests for the hand-rolled protobuf wire format decoder.
 
 const std = @import("std");
-const proto = @import("edgeq.proto");
+const proto = @import("querymode.proto");
 
 const ProtoDecoder = proto.ProtoDecoder;
 const WireType = proto.WireType;

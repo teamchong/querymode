@@ -17,13 +17,13 @@
 //!   const result = try df.select(&.{"id", "name"}).limit(10).collect();
 
 const std = @import("std");
-const executor = @import("edgeq.sql.executor");
+const executor = @import("querymode.sql.executor");
 const lexer = @import("lexer");
 const parser = @import("parser");
 const ast = @import("ast");
-const Table = @import("edgeq.table").Table;
-const DataFrame = @import("edgeq.dataframe").DataFrame;
-const format = @import("edgeq.format");
+const Table = @import("querymode.table").Table;
+const DataFrame = @import("querymode.dataframe").DataFrame;
+const format = @import("querymode.format");
 
 /// Version information returned by timeline().
 /// Matches browser vault.js structure and executor.VersionInfo.

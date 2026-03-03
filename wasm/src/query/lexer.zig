@@ -1,6 +1,6 @@
 //! SQL Lexer - tokenizes SQL strings into tokens.
 //!
-//! Supports the SQL subset needed for EdgeQ:
+//! Supports the SQL subset needed for QueryMode:
 //! SELECT, FROM, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, ASC, DESC,
 //! AND, OR, NOT, aggregate functions, comparison operators.
 

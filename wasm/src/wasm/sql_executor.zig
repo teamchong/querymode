@@ -14308,7 +14308,7 @@ fn evaluateComparisonVector(
                   // Yes, `evaluateComparison` at 2811 (previous view) had `else => { // Strings? }` or similar?
                   // Actually I don't see string support in `evaluateComparison` in my previous `view_file`.
                   // If `evaluateComparison` doesn't support strings, then it returns false?
-                  // But the benchmark SAYS EdgeQ returned valid results (passed verification).
+                  // But the benchmark SAYS QueryMode returned valid results (passed verification).
                   // This means `evaluateComparison` MUST handle strings or I missed it.
                   
                   // Let's assume I need to implement it here anyway.

@@ -1,11 +1,11 @@
 //! Tests for Parquet file parsing.
 
 const std = @import("std");
-const format = @import("edgeq.format");
+const format = @import("querymode.format");
 const ParquetFile = format.ParquetFile;
 const ParquetError = format.ParquetError;
 const CompressionCodec = format.parquet_metadata.CompressionCodec;
-const parquet_enc = @import("edgeq.encoding.parquet");
+const parquet_enc = @import("querymode.encoding.parquet");
 const PageReader = parquet_enc.PageReader;
 
 test "parse simple parquet file" {

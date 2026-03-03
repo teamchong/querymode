@@ -28,7 +28,7 @@
 //! | next_row_id | 14 | uint64 |
 
 const std = @import("std");
-const proto_mod = @import("edgeq.proto");
+const proto_mod = @import("querymode.proto");
 
 const ProtoEncoder = proto_mod.ProtoEncoder;
 
@@ -36,7 +36,7 @@ const ProtoEncoder = proto_mod.ProtoEncoder;
 pub const MANIFEST_MAGIC = "LANC";
 
 /// Writer version string
-pub const WRITER_VERSION = "edgeq-0.1";
+pub const WRITER_VERSION = "querymode-0.1";
 
 /// Errors that can occur during manifest writing
 pub const ManifestWriteError = error{

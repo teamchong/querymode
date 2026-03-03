@@ -8,7 +8,7 @@
 //!
 //! Usage:
 //! ```zig
-//! const ai = @import("edgeq.ai");
+//! const ai = @import("querymode.ai");
 //! var tinybert = try ai.TinyBERT.init(allocator);
 //! defer tinybert.deinit();
 //! try tinybert.loadFromFile("models/ms-marco-tinybert-l2.gguf");

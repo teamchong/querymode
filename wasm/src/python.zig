@@ -1,4 +1,4 @@
-/// Python C API bindings for EdgeQ
+/// Python C API bindings for QueryMode
 ///
 /// This module exports C-compatible functions for use with Python ctypes.
 /// All exported functions follow C calling conventions and use C-compatible types.
@@ -8,7 +8,7 @@
 /// - Python can import via pyarrow.Array._import_from_c()
 
 const std = @import("std");
-const Table = @import("edgeq.table").Table;
+const Table = @import("querymode.table").Table;
 const arrow_c = @import("arrow_c");
 
 /// Global allocator for Python bindings

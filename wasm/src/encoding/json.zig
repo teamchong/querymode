@@ -1,4 +1,4 @@
-//! JSON/JSONL Parser for EdgeQ
+//! JSON/JSONL Parser for QueryMode
 //!
 //! Parses JSON arrays and JSONL (newline-delimited JSON) into columnar data.
 //!

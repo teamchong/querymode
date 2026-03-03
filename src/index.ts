@@ -35,18 +35,18 @@ export type {
 } from "./types.js";
 
 /**
- * EdgeQ — serverless columnar query engine.
+ * QueryMode — serverless columnar query engine.
  *
  * Usage:
  *   // Edge mode (Durable Objects + R2)
- *   const eq = EdgeQ.remote(env.QUERY_DO, { region: "SJC" })
+ *   const eq = QueryMode.remote(env.QUERY_DO, { region: "SJC" })
  *   const results = await eq.table("users").filter("age", "gt", 25).exec()
  *
  *   // Local mode (Node/Bun + filesystem)
- *   const eq = EdgeQ.local()
+ *   const eq = QueryMode.local()
  *   const results = await eq.table("./data/users.lance").select("name").exec()
  */
-export class EdgeQ {
+export class QueryMode {
   private executor: QueryExecutor;
 
   private constructor(executor: QueryExecutor) {
@@ -54,7 +54,7 @@ export class EdgeQ {
   }
 
   /**
-   * Create an EdgeQ client backed by a regional Query DO.
+   * Create an QueryMode client backed by a regional Query DO.
    * @param region - Datacenter code (e.g., "SJC", "NRT"). Must match worker.ts naming.
    *                 Defaults to "default" for direct SDK use.
    * @param locationHint - Cloudflare locationHint for DO placement.
@@ -62,20 +62,20 @@ export class EdgeQ {
   static remote(
     queryDoNamespace: DurableObjectNamespace,
     options?: { region?: string; locationHint?: string; masterDoNamespace?: DurableObjectNamespace },
-  ): EdgeQ {
+  ): QueryMode {
     const executor = new RemoteExecutor(
       queryDoNamespace,
       options?.region ?? "default",
       options?.locationHint,
       options?.masterDoNamespace,
     );
-    return new EdgeQ(executor);
+    return new QueryMode(executor);
   }
 
-  /** Create an EdgeQ client for local use (Node/Bun, reads files from disk or URLs). */
-  static local(wasmModule?: WebAssembly.Module): EdgeQ {
+  /** Create an QueryMode client for local use (Node/Bun, reads files from disk or URLs). */
+  static local(wasmModule?: WebAssembly.Module): QueryMode {
     const executor = new LocalExecutor(wasmModule);
-    return new EdgeQ(executor);
+    return new QueryMode(executor);
   }
 
   /** Start building a query against a table. */
@@ -128,7 +128,7 @@ class RemoteExecutor implements QueryExecutor {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`EdgeQ query failed: ${error}`);
+      throw new Error(`QueryMode query failed: ${error}`);
     }
 
     return response.json() as Promise<QueryResult>;
@@ -136,7 +136,7 @@ class RemoteExecutor implements QueryExecutor {
 
   async append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
     if (!this.masterNamespace) {
-      throw new Error("append() requires masterDoNamespace — pass it via EdgeQ.remote(queryDO, { masterDO })");
+      throw new Error("append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
     // Append goes to Master DO (single writer)
     const id = this.masterNamespace.idFromName("master");
@@ -150,7 +150,7 @@ class RemoteExecutor implements QueryExecutor {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`EdgeQ append failed: ${error}`);
+      throw new Error(`QueryMode append failed: ${error}`);
     }
 
     return response.json() as Promise<AppendResult>;
@@ -167,7 +167,7 @@ class RemoteExecutor implements QueryExecutor {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`EdgeQ stream failed: ${error}`);
+      throw new Error(`QueryMode stream failed: ${error}`);
     }
 
     if (!response.body) throw new Error("No response body for stream");
@@ -220,7 +220,7 @@ class LocalExecutor implements QueryExecutor {
       // Load WASM from file system (Node/Bun)
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
-      const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+      const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
       const wasmBytes = await fs.readFile(wasmPath);
       // WebAssembly.compile not in Cloudflare types but available in Node/Bun
       this.wasmModule = await (WebAssembly as unknown as { compile(b: BufferSource): Promise<WebAssembly.Module> }).compile(wasmBytes);

@@ -4,9 +4,9 @@
 //! See: https://parquet.apache.org/docs/file-format/data-pages/
 
 const std = @import("std");
-const proto = @import("edgeq.proto");
+const proto = @import("querymode.proto");
 const ThriftDecoder = proto.ThriftDecoder;
-const format = @import("edgeq.format");
+const format = @import("querymode.format");
 const meta = format.parquet_metadata;
 const PageHeader = meta.PageHeader;
 const PageType = meta.PageType;
@@ -18,7 +18,7 @@ const PlainDecoder = plain.PlainDecoder;
 const dictionary = @import("dictionary.zig");
 const rle = @import("rle.zig");
 const RleDecoder = rle.RleDecoder;
-const snappy = @import("edgeq.encoding.snappy");
+const snappy = @import("querymode.encoding.snappy");
 
 /// Comptime-specialized bit unpacking for a single group of 8 values
 /// All bit offsets and masks computed at compile time

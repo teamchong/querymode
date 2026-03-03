@@ -28,7 +28,7 @@ pub const Session = struct {
 
         // Create environment
         var env: ?*onnx.OrtEnv = null;
-        try onnx.checkStatus(api, api.CreateEnv(.warning, "edgeq", &env));
+        try onnx.checkStatus(api, api.CreateEnv(.warning, "querymode", &env));
         errdefer if (env) |e| api.ReleaseEnv(e);
 
         // Create session options

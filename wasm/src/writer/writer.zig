@@ -5,7 +5,7 @@
 //!
 //! ## Example
 //! ```zig
-//! const writer = @import("edgeq").writer;
+//! const writer = @import("querymode").writer;
 //!
 //! var lance_writer = writer.LanceWriter.init(allocator);
 //! defer lance_writer.deinit();

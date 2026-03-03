@@ -4,11 +4,11 @@
 //! query execution across both Lance and Parquet formats.
 
 const std = @import("std");
-const format = @import("edgeq.format");
+const format = @import("querymode.format");
 const ParquetFile = format.ParquetFile;
 const meta = format.parquet_metadata;
 const Type = meta.Type;
-const page_mod = @import("edgeq.encoding.parquet");
+const page_mod = @import("querymode.encoding.parquet");
 const PageReader = page_mod.PageReader;
 
 pub const ParquetTableError = error{

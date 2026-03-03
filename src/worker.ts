@@ -26,7 +26,7 @@ export default {
     if (url.pathname === "/health") {
       const base = {
         status: "ok",
-        service: "edgeq",
+        service: "querymode",
         region: request.headers.get("cf-ray")?.split("-").pop() ?? "unknown",
         timestamp: new Date().toISOString(),
       };
@@ -42,17 +42,17 @@ export default {
           const diagResp = await queryDo.fetch(new Request("http://internal/diagnostics"));
           const diagnostics = await diagResp.json();
           return new Response(JSON.stringify({ ...base, diagnostics }), {
-            headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
+            headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
           });
         } catch (err) {
           return new Response(JSON.stringify({ ...base, diagnostics: { error: String(err) } }), {
-            headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
+            headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
           });
         }
       }
 
       return new Response(JSON.stringify(base), {
-        headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
+        headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
       });
     }
 
@@ -81,12 +81,12 @@ export default {
 
       // Pass region name + request ID via headers
       const reqWithRegion = new Request(request.url, request);
-      reqWithRegion.headers.set("x-edgeq-region", regionName);
-      reqWithRegion.headers.set("x-edgeq-request-id", requestId);
+      reqWithRegion.headers.set("x-querymode-region", regionName);
+      reqWithRegion.headers.set("x-querymode-request-id", requestId);
 
       const resp = await queryDo.fetch(reqWithRegion);
       const respWithId = new Response(resp.body, resp);
-      respWithId.headers.set("x-edgeq-request-id", requestId);
+      respWithId.headers.set("x-querymode-request-id", requestId);
       return respWithId;
     }
 
