@@ -5,6 +5,7 @@ import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { createPageProcessor, type PageProcessor } from "./page-processor.js";
 import { computePartialAgg, type PartialAgg } from "./partial-agg.js";
+import { coalesceRanges } from "./coalesce.js";
 
 interface ScanRequest {
   fragments: { r2Key: string; meta: TableMeta }[];
@@ -100,19 +101,25 @@ export class FragmentDO implements DurableObject {
         }
       }
 
-      // Parallel Range reads — one per page
+      // Coalesce nearby ranges into fewer R2 reads (max 64KB gap to merge)
+      const coalesced = coalesceRanges(ranges, 64 * 1024);
       const columnData = new Map<string, ArrayBuffer[]>();
-      await Promise.all(ranges.map(async (range) => {
+      const fetched = await Promise.all(coalesced.map(async c => {
         const obj = await this.env.DATA_BUCKET.get(r2Key, {
-          range: { offset: range.offset, length: range.length },
+          range: { offset: c.offset, length: c.length },
         });
-        if (!obj) return;
-        const data = await obj.arrayBuffer();
-        totalBytesRead += data.byteLength;
-        const arr = columnData.get(range.column) ?? [];
-        arr.push(data);
-        columnData.set(range.column, arr);
+        return obj ? { ...c, data: await obj.arrayBuffer() } : null;
       }));
+      for (const f of fetched) {
+        if (!f) continue;
+        totalBytesRead += f.data.byteLength;
+        for (const sub of f.ranges) {
+          const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
+          const arr = columnData.get(sub.column) ?? [];
+          arr.push(slice);
+          columnData.set(sub.column, arr);
+        }
+      }
 
       const rows = assembleRows(columnData, cols, query, this.wasmEngine);
       allRows.push(...rows);

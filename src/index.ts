@@ -345,6 +345,7 @@ class LocalExecutor implements QueryExecutor {
     }
 
     // Execute query across all fragments
+    const fsMod = await import("node:fs/promises");
     let allRows: import("./types.js").Row[] = [];
     let totalBytesRead = 0;
     let totalPagesSkipped = 0;
@@ -366,7 +367,6 @@ class LocalExecutor implements QueryExecutor {
       }
 
       const columnData = new Map<string, ArrayBuffer[]>();
-      const fsMod = await import("node:fs/promises");
       const handle = await fsMod.open(meta.r2Key, "r");
       try {
         for (const range of pageRanges) {

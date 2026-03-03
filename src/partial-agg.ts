@@ -76,7 +76,7 @@ export function computePartialAgg(
   const groupCols = query.groupBy;
 
   for (const row of rows) {
-    const key = groupCols.map((c) => String(row[c] ?? "")).join("|");
+    const key = groupCols.map((c) => String(row[c] ?? "")).join("\x00");
     let states = groups.get(key);
     if (!states) {
       states = aggregates.map((agg) =>
@@ -156,7 +156,7 @@ export function finalizePartialAgg(
 
   for (const [key, states] of agg.groups) {
     const row: Row = {};
-    const keyParts = key.split("|");
+    const keyParts = key.split("\x00");
     for (let i = 0; i < groupCols.length; i++) {
       row[groupCols[i]] = keyParts[i];
     }

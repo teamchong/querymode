@@ -7,6 +7,7 @@ import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { createPageProcessor } from "./page-processor.js";
 import { mergeQueryResults } from "./merge.js";
 import { computePartialAgg, mergePartialAggs, finalizePartialAgg } from "./partial-agg.js";
+import { coalesceRanges } from "./coalesce.js";
 
 const MAX_WASM_FILE = 64 * 1024 * 1024; // 64MB — stay within 128MB DO limit
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
@@ -533,27 +534,3 @@ export class QueryDO implements DurableObject {
   }
 }
 
-type Range = { column: string; offset: number; length: number };
-type CoalescedRange = { offset: number; length: number; ranges: Range[] };
-
-/** Merge nearby byte ranges into fewer R2 reads. Sorts by offset, merges if gap <= maxGap. */
-function coalesceRanges(ranges: Range[], maxGap: number): CoalescedRange[] {
-  if (ranges.length === 0) return [];
-  const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
-  const result: CoalescedRange[] = [];
-  let cur: CoalescedRange = { offset: sorted[0].offset, length: sorted[0].length, ranges: [sorted[0]] };
-
-  for (let i = 1; i < sorted.length; i++) {
-    const r = sorted[i];
-    const curEnd = cur.offset + cur.length;
-    if (r.offset <= curEnd + maxGap) {
-      cur.length = Math.max(curEnd, r.offset + r.length) - cur.offset;
-      cur.ranges.push(r);
-    } else {
-      result.push(cur);
-      cur = { offset: r.offset, length: r.length, ranges: [r] };
-    }
-  }
-  result.push(cur);
-  return result;
-}

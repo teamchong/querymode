@@ -41,37 +41,34 @@ function createWasmProcessor(wasm: WasmEngine): PageProcessor {
     sumFloat64(buf: ArrayBuffer): number {
       const f64 = new Float64Array(buf);
       if (f64.length === 0) return 0;
-      const byteSize = f64.byteLength;
-      const ptr = wasm.exports.wasmAlloc(byteSize);
+      const ptr = wasm.exports.wasmAlloc(f64.byteLength);
       if (!ptr) return tsFallbackSum(f64);
-      new Uint8Array(wasm.exports.memory.buffer, ptr, byteSize).set(
-        new Uint8Array(buf, 0, byteSize),
+      new Uint8Array(wasm.exports.memory.buffer, ptr, f64.byteLength).set(
+        new Uint8Array(buf, 0, f64.byteLength),
       );
-      return (wasm.exports as any).sumFloat64Buffer(ptr / 8, f64.length);
+      return wasm.exports.sumFloat64Buffer(ptr >> 3, f64.length);
     },
 
     minFloat64(buf: ArrayBuffer): number {
       const f64 = new Float64Array(buf);
       if (f64.length === 0) return Infinity;
-      const byteSize = f64.byteLength;
-      const ptr = wasm.exports.wasmAlloc(byteSize);
+      const ptr = wasm.exports.wasmAlloc(f64.byteLength);
       if (!ptr) return tsFallbackMin(f64);
-      new Uint8Array(wasm.exports.memory.buffer, ptr, byteSize).set(
-        new Uint8Array(buf, 0, byteSize),
+      new Uint8Array(wasm.exports.memory.buffer, ptr, f64.byteLength).set(
+        new Uint8Array(buf, 0, f64.byteLength),
       );
-      return (wasm.exports as any).minFloat64Buffer(ptr / 8, f64.length);
+      return wasm.exports.minFloat64Buffer(ptr >> 3, f64.length);
     },
 
     maxFloat64(buf: ArrayBuffer): number {
       const f64 = new Float64Array(buf);
       if (f64.length === 0) return -Infinity;
-      const byteSize = f64.byteLength;
-      const ptr = wasm.exports.wasmAlloc(byteSize);
+      const ptr = wasm.exports.wasmAlloc(f64.byteLength);
       if (!ptr) return tsFallbackMax(f64);
-      new Uint8Array(wasm.exports.memory.buffer, ptr, byteSize).set(
-        new Uint8Array(buf, 0, byteSize),
+      new Uint8Array(wasm.exports.memory.buffer, ptr, f64.byteLength).set(
+        new Uint8Array(buf, 0, f64.byteLength),
       );
-      return (wasm.exports as any).maxFloat64Buffer(ptr / 8, f64.length);
+      return wasm.exports.maxFloat64Buffer(ptr >> 3, f64.length);
     },
 
     vectorSearchPage(
