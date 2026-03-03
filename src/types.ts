@@ -130,11 +130,21 @@ export interface QueryResult {
   cacheMisses?: number;
 }
 
+/** Schema field extracted from Lance manifest */
+export interface SchemaField {
+  name: string;
+  logicalType: string;
+  id: number;
+  parentId: number;
+  nullable: boolean;
+}
+
 /** Parsed Lance manifest — describes all fragments in a dataset version */
 export interface ManifestInfo {
   version: number;
   fragments: FragmentInfo[];
   totalRows: number;
+  schema: SchemaField[];
 }
 
 /** A single fragment (data file) within a Lance dataset */

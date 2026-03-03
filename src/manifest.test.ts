@@ -1,3 +1,4 @@
+import { readFileSync, existsSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { parseManifest } from "./manifest.js";
 import { LANCE_MAGIC } from "./footer.js";
@@ -100,5 +101,48 @@ describe("parseManifest", () => {
     expect(manifest!.version).toBe(3);
     expect(manifest!.fragments).toHaveLength(0);
     expect(manifest!.totalRows).toBe(0);
+  });
+
+  it("parses schema from existing manifests", () => {
+    const buf = buildManifestBuf([], 3);
+    const manifest = parseManifest(buf);
+    expect(manifest!.schema).toEqual([]);
+  });
+});
+
+describe.skipIf(!existsSync("wasm/tests/fixtures/simple_int64.lance/_versions/1.manifest"))("parseManifest fixtures", () => {
+  it("parses simple_int64 manifest with schema", () => {
+    const buf = readFileSync("wasm/tests/fixtures/simple_int64.lance/_versions/1.manifest");
+    const manifest = parseManifest(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    expect(manifest).not.toBeNull();
+    expect(manifest!.version).toBe(1);
+    expect(manifest!.fragments).toHaveLength(1);
+    expect(manifest!.schema).toHaveLength(1);
+    expect(manifest!.schema[0].name).toBe("id");
+    expect(manifest!.schema[0].logicalType).toBe("int64");
+  });
+
+  it("parses mixed_types manifest with multiple schema fields", () => {
+    const buf = readFileSync("wasm/tests/fixtures/mixed_types.lance/_versions/1.manifest");
+    const manifest = parseManifest(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    expect(manifest).not.toBeNull();
+    expect(manifest!.schema.length).toBeGreaterThanOrEqual(3);
+    const names = manifest!.schema.map(f => f.name);
+    expect(names).toContain("id");
+    expect(names).toContain("value");
+    expect(names).toContain("name");
+    const valueField = manifest!.schema.find(f => f.name === "value");
+    expect(valueField!.logicalType).toBe("double");
+    const nameField = manifest!.schema.find(f => f.name === "name");
+    expect(nameField!.logicalType).toBe("string");
+  });
+
+  it("parses simple_float64 manifest", () => {
+    const buf = readFileSync("wasm/tests/fixtures/simple_float64.lance/_versions/1.manifest");
+    const manifest = parseManifest(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    expect(manifest).not.toBeNull();
+    expect(manifest!.schema).toHaveLength(1);
+    expect(manifest!.schema[0].name).toBe("value");
+    expect(manifest!.schema[0].logicalType).toBe("double");
   });
 });

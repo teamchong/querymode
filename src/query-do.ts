@@ -1,7 +1,7 @@
 import type { ColumnMeta, Env, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
-import { parseManifest } from "./manifest.js";
+import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
 import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
@@ -336,10 +336,21 @@ export class QueryDO implements DurableObject {
         }
       }
 
-      // Column name from the footer-level column meta (stored in TS footerCache, not in protobuf)
+      // Column name/type from footer-level metadata or manifest schema
       const colMeta = meta.columns[col];
-      const colName = colMeta?.name ?? `column_${col}`;
-      const dtype = colMeta?.dtype ?? "int64";
+      let colName = colMeta?.name ?? `column_${col}`;
+      let dtype = colMeta?.dtype ?? "int64";
+
+      // Override from manifest schema if available (covers v2 format where column meta has encoding paths)
+      const dataset = this.datasetCache.get(query.table);
+      if (dataset?.manifest.schema.length) {
+        const leafFields = dataset.manifest.schema.filter(f => f.parentId === -1 || f.parentId === 0);
+        const schemaField = leafFields[col];
+        if (schemaField) {
+          colName = schemaField.name;
+          dtype = logicalTypeToDataType(schemaField.logicalType);
+        }
+      }
 
       colInfos.push({ name: colName, dtype, rowCount, dataOffset: 0, dataSize: rowCount * 8 });
     }
@@ -883,9 +894,18 @@ export class QueryDO implements DurableObject {
         const footer = parseFooter(await footerObj.arrayBuffer());
         if (!footer) continue;
 
-        const columns = await this.readColumnMeta(fragKey, footer);
+        let columns = await this.readColumnMeta(fragKey, footer);
+        // Apply manifest schema names/types to columns (v2 protobuf may have encoding paths instead of names)
+        if (manifest.schema.length > 0) {
+          const leafFields = manifest.schema.filter(f => f.parentId === -1 || f.parentId === 0);
+          columns = columns.map((col, i) => {
+            const field = leafFields[i];
+            if (!field) return col;
+            return { ...col, name: field.name, dtype: logicalTypeToDataType(field.logicalType) };
+          });
+        }
         fragmentMetas.set(frag.id, {
-          name: frag.filePath, footer, columns,
+          name: frag.filePath, footer, format: "lance", columns,
           totalRows: frag.physicalRows,
           fileSize, r2Key: fragKey, updatedAt: Date.now(),
         });
@@ -972,7 +992,7 @@ export class QueryDO implements DurableObject {
       // Store in datasetCache for multi-fragment query execution
       this.datasetCache.set(tableName, {
         name: tableName, r2Prefix: prefix,
-        manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows },
+        manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
         fragmentMetas, totalRows, updatedAt: Date.now(),
       });
       return dataset;
@@ -991,7 +1011,12 @@ export class QueryDO implements DurableObject {
     // Small datasets: scan locally
     const partials: QueryResult[] = [];
     for (const meta of fragments) {
-      partials.push(await this.scanPages(query, meta, t0));
+      const hasPages = meta.columns.some(c => c.pages.length > 0);
+      if (!hasPages && meta.format === "lance" && meta.r2Key) {
+        partials.push(await this.executeLanceWholeFile(query, meta, t0));
+      } else {
+        partials.push(await this.scanPages(query, meta, t0));
+      }
     }
     return mergeQueryResults(partials, query);
   }

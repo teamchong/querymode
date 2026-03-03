@@ -173,28 +173,24 @@ function parsePageInfo(bytes: Uint8Array): PageInfo | null {
   return { byteOffset, byteLength, rowCount, nullCount, minValue, maxValue };
 }
 
-/** Read a varint from a byte array */
+/** Read a varint from a byte array. Consumes all bytes including 64-bit encodings. */
 export function readVarint(bytes: Uint8Array, offset: number): { value: number; bytesRead: number } {
   let result = 0;
   let shift = 0;
   let pos = offset;
 
   while (pos < bytes.length) {
-    const byte = bytes[pos];
-    result |= (byte & 0x7f) << shift;
-    pos++;
-
+    const byte = bytes[pos++];
+    if (shift < 32) {
+      result |= (byte & 0x7f) << shift;
+    }
     if ((byte & 0x80) === 0) {
-      return { value: result, bytesRead: pos - offset };
+      return { value: result >>> 0, bytesRead: pos - offset };
     }
-
     shift += 7;
-    if (shift >= 35) {
-      return { value: result, bytesRead: pos - offset };
-    }
   }
 
-  return { value: result, bytesRead: pos - offset };
+  return { value: result >>> 0, bytesRead: pos - offset };
 }
 
 /** Map Lance data type enum to string */
