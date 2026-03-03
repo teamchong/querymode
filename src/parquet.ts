@@ -12,7 +12,9 @@ const THRIFT_I32 = 5;
 const THRIFT_I64 = 6;
 const THRIFT_DOUBLE = 7;
 const THRIFT_BINARY = 8;
-const THRIFT_LIST = 11;
+const THRIFT_LIST = 9;
+const THRIFT_SET = 10;
+const THRIFT_MAP = 11;
 const THRIFT_STRUCT = 12;
 
 export const PARQUET_MAGIC = 0x31524150; // "PAR1" as u32 LE
@@ -148,9 +150,21 @@ export class ThriftReader {
       case THRIFT_BINARY:
         this.readBinary(); // consume length + bytes
         break;
-      case THRIFT_LIST: {
+      case THRIFT_LIST:
+      case THRIFT_SET: {
         const { size, elemType } = this.readListHeader();
         for (let i = 0; i < size; i++) this.skip(elemType);
+        break;
+      }
+      case THRIFT_MAP: {
+        // Compact protocol map: varint size, then (if size>0) kv-type byte
+        const size = this.readVarint();
+        if (size > 0) {
+          const kvType = this.bytes[this.ofs++];
+          const keyType = (kvType >> 4) & 0x0f;
+          const valType = kvType & 0x0f;
+          for (let i = 0; i < size; i++) { this.skip(keyType); this.skip(valType); }
+        }
         break;
       }
       case THRIFT_STRUCT: {
