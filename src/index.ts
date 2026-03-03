@@ -525,7 +525,7 @@ class LocalExecutor implements QueryExecutor {
 
       const wasm = await this.getWasm();
       const rows = assembleRows(columnData, projectedColumns, query, wasm);
-      allRows.push(...rows);
+      for (let ri = 0; ri < rows.length; ri++) allRows.push(rows[ri]);
     }
 
     // Apply limit if no sort (sorted results already limited per-fragment)

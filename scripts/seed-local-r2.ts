@@ -53,12 +53,17 @@ async function seedLanceDataset(dir: string): Promise<void> {
     console.log(`  PUT ${r2Key} (${data.length} bytes)`);
     uploadFile(r2Key, data);
   }
-  const resp = await fetch(`${BASE_URL}/write`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ r2Key: `${name}/` }),
-  });
-  console.log(`  Master:`, await resp.json());
+  try {
+    const resp = await fetch(`${BASE_URL}/write`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ r2Key: `${name}/` }),
+    });
+    if (resp.ok) console.log(`  Master:`, await resp.json());
+    else console.log(`  Master: ${resp.status} (will lazy-load)`);
+  } catch (err) {
+    console.log(`  Master error: ${String(err).slice(0, 100)} (will lazy-load)`);
+  }
 }
 
 async function seedParquetFile(filePath: string, r2Key?: string): Promise<void> {
@@ -116,7 +121,9 @@ async function main(): Promise<void> {
     .filter(f => statSync(f).isDirectory());
 
   for (const dir of lanceDatasets) {
-    await seedLanceDataset(dir);
+    try { await seedLanceDataset(dir); } catch (err) {
+      console.log(`  SKIP ${basename(dir)}: ${String(err).slice(0, 80)}`);
+    }
   }
 
   // --- 2. Seed fixture Parquet files ---
@@ -125,7 +132,9 @@ async function main(): Promise<void> {
     .map(f => join(FIXTURES, f));
 
   for (const file of parquetFiles) {
-    await seedParquetFile(file);
+    try { await seedParquetFile(file); } catch (err) {
+      console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
+    }
   }
 
   // --- 3. Seed generated benchmark data ---
@@ -134,7 +143,9 @@ async function main(): Promise<void> {
       .filter(f => f.endsWith(".parquet"))
       .map(f => join(GENERATED, f));
     for (const file of genParquets) {
-      await seedParquetFile(file);
+      try { await seedParquetFile(file); } catch (err) {
+        console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
+      }
     }
 
     // Iceberg tables
@@ -143,7 +154,9 @@ async function main(): Promise<void> {
       .map(f => join(GENERATED, f))
       .filter(f => statSync(f).isDirectory());
     for (const dir of icebergDirs) {
-      await seedIcebergTable(dir);
+      try { await seedIcebergTable(dir); } catch (err) {
+        console.log(`  SKIP ${basename(dir)}: ${String(err).slice(0, 80)}`);
+      }
     }
   } else {
     console.log("\nNo generated data found. Run: npx tsx scripts/generate-bench-data.ts");
@@ -151,28 +164,32 @@ async function main(): Promise<void> {
 
   // --- 4. Register Query DO and re-broadcast ---
   console.log("\nRegistering Query DO with Master...");
-  await fetch(`${BASE_URL}/tables`);
+  try { await fetch(`${BASE_URL}/tables`); } catch {}
   await new Promise(r => setTimeout(r, 1000));
 
   console.log("Re-broadcasting footers...");
   for (const dir of lanceDatasets) {
     const name = basename(dir);
-    await fetch(`${BASE_URL}/write`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ r2Key: `${name}/` }),
-    });
+    try {
+      await fetch(`${BASE_URL}/write`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ r2Key: `${name}/` }),
+      });
+    } catch {}
   }
   const allParquets = [...parquetFiles.map(f => basename(f))];
   if (existsSync(GENERATED)) {
     allParquets.push(...readdirSync(GENERATED).filter(f => f.endsWith(".parquet")));
   }
   for (const name of allParquets) {
-    await fetch(`${BASE_URL}/write`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ r2Key: name }),
-    });
+    try {
+      await fetch(`${BASE_URL}/write`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ r2Key: name }),
+      });
+    } catch {}
   }
   await new Promise(r => setTimeout(r, 500));
 

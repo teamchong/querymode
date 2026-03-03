@@ -37,11 +37,11 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
         length += 1;
       } else {
         const extraBytes = length - 59;
-        length = 1;
+        length = 0;
         for (let i = 0; i < extraBytes; i++) {
-          length += input[pos++] << (i * 8);
+          length |= input[pos++] << (i * 8);
         }
-        length += 1;
+        length = (length >>> 0) + 1; // unsigned + 1
       }
       output.set(input.subarray(pos, pos + length), outPos);
       pos += length;
@@ -66,7 +66,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
     } else {
       // Copy with 4-byte offset
       const length = ((tag >> 2) & 0x3f) + 1;
-      const offset = input[pos] | (input[pos + 1] << 8) | (input[pos + 2] << 16) | (input[pos + 3] << 24);
+      const offset = (input[pos] | (input[pos + 1] << 8) | (input[pos + 2] << 16) | (input[pos + 3] << 24)) >>> 0;
       pos += 4;
       let srcPos = outPos - offset;
       for (let i = 0; i < length; i++) {
@@ -378,14 +378,9 @@ export function decodeParquetColumnChunk(
       pageData = decompressPage(pageData, pageEncoding.compression, header.uncompressedSize, wasm);
 
       let dataOffset = 0;
-
-      // Skip repetition levels (assume flat schema, max_rep_level = 0 typically)
-      // In v1, def/rep levels are prefixed with 4-byte LE length
-      // Definition levels
-      if (dataOffset + 4 <= pageData.length) {
-        const defLen = new DataView(pageData.buffer, pageData.byteOffset + dataOffset, 4).getUint32(0, true);
-        dataOffset += 4 + defLen;
-      }
+      // Note: for flat schemas (max_rep_level=0, max_def_level=0),
+      // no repetition or definition levels are present.
+      // Data starts immediately after decompression.
 
       // Check if dictionary encoding
       const enc = header.encoding;

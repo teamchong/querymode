@@ -206,15 +206,21 @@ export class QueryDO implements DurableObject {
       aggregates: body.aggregates as QueryDescriptor["aggregates"],
       groupBy: body.groupBy as string[] | undefined,
     };
-    const result = await this.executeQuery(query);
-    result.requestId = requestId;
-    this.log("info", "query_complete", {
-      requestId, table: query.table, rowCount: result.rowCount,
-      bytesRead: result.bytesRead, durationMs: result.durationMs,
-      r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
-      cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
-    });
-    return this.json(result);
+    try {
+      const result = await this.executeQuery(query);
+      result.requestId = requestId;
+      this.log("info", "query_complete", {
+        requestId, table: query.table, rowCount: result.rowCount,
+        bytesRead: result.bytesRead, durationMs: result.durationMs,
+        r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
+        cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
+      });
+      return this.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+      this.log("error", "query_error", { requestId, table: query.table, error: msg });
+      return this.json({ error: msg }, 500);
+    }
   }
 
   /** Execute query using page-level R2 Range reads + WASM compute. Never downloads full files. */
@@ -593,14 +599,15 @@ export class QueryDO implements DurableObject {
           const decoded = decodeParquetColumnChunk(
             chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
           );
-          allValues.push(...decoded);
+          for (let di = 0; di < decoded.length; di++) allValues.push(decoded[di]);
         }
         decodedColumns.set(col.name, allValues);
       }
 
       // Assemble rows from decoded columns
       const colNames = cols.map(c => c.name);
-      const numRows = Math.max(...[...decodedColumns.values()].map(v => v.length), 0);
+      let numRows = 0;
+      for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
       let rows: Row[] = [];
       for (let i = 0; i < numRows; i++) {
         const row: Row = {};

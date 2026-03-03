@@ -178,7 +178,7 @@ export class FragmentDO implements DurableObject {
       const rows = this.wasmEngine.executeQuery(fragQuery);
       if (!rows) throw new Error(`WASM query execution failed for fragment "${r2Key}"`);
       this.wasmEngine.clearTable(fragTable);
-      allRows.push(...rows);
+      for (let ri = 0; ri < rows.length; ri++) allRows.push(rows[ri]);
       totalWasmExecMs += Date.now() - wasmStart;
     }
 
