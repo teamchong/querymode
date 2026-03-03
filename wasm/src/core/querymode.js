@@ -57,7 +57,7 @@ export const wasmUtils = {
 };
 
 // QueryMode high-level methods factory (needs proxy reference)
-const _createEdgeqMethods = (proxy) => ({
+const _createQuerymodeMethods = (proxy) => ({
     /**
      * Get the library version.
      * @returns {string} Version string like "0.1.0"
@@ -176,7 +176,7 @@ export class QueryModeWasm {
         const proxy = new Proxy({}, {
             get(_, n) {
                 // Lazy init methods with proxy reference
-                if (!_methods) _methods = _createEdgeqMethods(proxy);
+                if (!_methods) _methods = _createQuerymodeMethods(proxy);
                 // High-level QueryMode methods
                 if (n in _methods) return _methods[n];
                 // Special properties
