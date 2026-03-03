@@ -8,10 +8,13 @@ import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import { VipCache } from "./vip-cache.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
 const R2_TIMEOUT_MS = 10_000;
 const FRAGMENT_TIMEOUT_MS = 25_000;
+const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
+const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from eviction)
 
 /**
  * Query DO — per-region reader with cached footers.
@@ -20,8 +23,8 @@ const FRAGMENT_TIMEOUT_MS = 25_000;
 export class QueryDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
-  private footerCache = new Map<string, TableMeta>();
-  private datasetCache = new Map<string, DatasetMeta>();
+  private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
+  private datasetCache = new Map<string, DatasetMeta>();  // datasets are few, no eviction needed
   private wasmEngine!: WasmEngine;
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
   private initialized = false;
@@ -262,12 +265,16 @@ export class QueryDO implements DurableObject {
       }
     }
 
-    // Fetch only uncached ranges from R2 with retry + timeout
+    // Bounded prefetch pipeline: fire all R2 reads eagerly (up to 8 concurrent),
+    // each fetch resolves independently so later logic doesn't block on earlier slow reads.
+    // This overlaps R2 I/O: while fetch N is downloading, fetch N+1..N+7 are already in-flight.
     const r2Start = Date.now();
     let bytesRead = 0;
 
     if (uncachedRanges.length > 0) {
       const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+
+      // Fire all fetches eagerly — fetchBounded gates concurrency to 8
       const fetched = await fetchBounded(
         coalesced.map(c => () =>
           withRetry(() =>
@@ -406,8 +413,9 @@ export class QueryDO implements DurableObject {
   }
 
   private handleListTables(): Response {
-    const tables = [...this.footerCache.entries()].map(([name, meta]) => ({
-      name, columns: meta.columns.map(c => c.name), totalRows: meta.totalRows, updatedAt: meta.updatedAt,
+    const tables = [...this.footerCache.entries()].map(([name, entry]) => ({
+      name, columns: entry.value.columns.map(c => c.name), totalRows: entry.value.totalRows,
+      updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
     }));
     return this.json({ tables });
   }
@@ -425,9 +433,12 @@ export class QueryDO implements DurableObject {
     return this.json({
       tableCount: this.footerCache.size,
       datasetCount: this.datasetCache.size,
-      tables: [...this.footerCache.entries()].map(([name, m]) => ({
-        name, totalRows: m.totalRows, columns: m.columns.length, updatedAt: m.updatedAt,
+      tables: [...this.footerCache.entries()].map(([name, entry]) => ({
+        name, totalRows: entry.value.totalRows, columns: entry.value.columns.length,
+        updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
+        isVip: entry.accessCount >= VIP_THRESHOLD,
       })),
+      footerCacheStats: this.footerCache.stats(),
       cache: {
         entries: cache.count,
         bytesUsed: cache.bytes,
