@@ -1,6 +1,6 @@
 import { TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { ColumnMeta, Env, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
+import type { AppendResult, ColumnMeta, Env, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest, type ManifestInfo } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -30,6 +30,8 @@ export type {
   VectorSearchParams,
   IcebergSchema,
   IcebergDatasetMeta,
+  AppendResult,
+  VectorIndexInfo,
 } from "./types.js";
 
 /**
@@ -129,6 +131,25 @@ class RemoteExecutor implements QueryExecutor {
     return response.json() as Promise<QueryResult>;
   }
 
+  async append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+    // Append goes to Master DO (single writer)
+    const id = this.namespace.idFromName("master");
+    const masterDo = this.namespace.get(id);
+
+    const response = await masterDo.fetch(new Request("http://internal/append", {
+      method: "POST",
+      body: JSON.stringify({ table, rows }, bigIntReplacer),
+      headers: { "content-type": "application/json" },
+    }));
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`EdgeQ append failed: ${error}`);
+    }
+
+    return response.json() as Promise<AppendResult>;
+  }
+
   async executeStream(query: QueryDescriptor): Promise<ReadableStream<Row>> {
     const queryDo = this.getQueryDo();
 
@@ -200,6 +221,92 @@ class LocalExecutor implements QueryExecutor {
     }
     this.wasmEngine = await instantiateWasm(this.wasmModule!);
     return this.wasmEngine;
+  }
+
+  /** Append rows to a local Lance dataset. Builds fragment via WASM and writes to disk. */
+  async append(tablePath: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+    const fs = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const wasm = await this.getWasm();
+
+    // Ensure dataset directory structure exists
+    const dataDir = pathMod.join(tablePath, "data");
+    const versionsDir = pathMod.join(tablePath, "_versions");
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.mkdir(versionsDir, { recursive: true });
+
+    // Convert rows to column arrays
+    const columnNames = Object.keys(rows[0]);
+    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike }[] = [];
+
+    for (const colName of columnNames) {
+      const sample = rows.find(r => r[colName] != null)?.[colName];
+      if (sample === undefined) continue;
+
+      if (typeof sample === "number") {
+        if (Number.isInteger(sample)) {
+          const arr = new BigInt64Array(rows.length);
+          for (let i = 0; i < rows.length; i++) arr[i] = BigInt(rows[i][colName] as number);
+          columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
+        } else {
+          const arr = new Float64Array(rows.length);
+          for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as number;
+          columnArrays.push({ name: colName, dtype: "float64", values: arr.buffer });
+        }
+      } else if (typeof sample === "bigint") {
+        const arr = new BigInt64Array(rows.length);
+        for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as bigint;
+        columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
+      } else if (typeof sample === "string") {
+        const enc = new TextEncoder();
+        const parts: Uint8Array[] = [];
+        let totalLen = 0;
+        for (const row of rows) {
+          const str = enc.encode(String(row[colName] ?? ""));
+          const header = new Uint8Array(4);
+          new DataView(header.buffer).setUint32(0, str.length, true);
+          parts.push(header, str);
+          totalLen += 4 + str.length;
+        }
+        const buf = new Uint8Array(totalLen);
+        let off = 0;
+        for (const p of parts) { buf.set(p, off); off += p.length; }
+        columnArrays.push({ name: colName, dtype: "utf8", values: buf.buffer });
+      }
+    }
+
+    // Build fragment via WASM
+    const fragmentBytes = wasm.buildFragment(columnArrays);
+
+    // Write data file
+    const uuid = crypto.randomUUID();
+    const dataFilePath = `data/${uuid}.lance`;
+    const fullDataPath = pathMod.join(tablePath, dataFilePath);
+    await fs.writeFile(fullDataPath, fragmentBytes);
+
+    // Read current version
+    const latestPath = pathMod.join(versionsDir, "_latest");
+    let currentVersion = 0;
+    try {
+      const text = await fs.readFile(latestPath, "utf8");
+      currentVersion = parseInt(text.trim(), 10) || 0;
+    } catch { /* file doesn't exist yet */ }
+
+    const newVersion = currentVersion + 1;
+
+    // Write _latest
+    await fs.writeFile(latestPath, String(newVersion));
+
+    // Invalidate meta cache
+    this.metaCache.delete(tablePath);
+    this.datasetCache.delete(tablePath);
+
+    return {
+      version: newVersion,
+      dataFilePath,
+      retries: 0,
+      rowsWritten: rows.length,
+    };
   }
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {

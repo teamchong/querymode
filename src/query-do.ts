@@ -300,6 +300,20 @@ export class QueryDO implements DurableObject {
     }
     const r2ReadMs = Date.now() - r2Start;
 
+    // IVF-PQ index-aware path: if a vector search is requested, check for an index
+    if (query.vectorSearch) {
+      const indexResult = await this.tryIvfPqSearch(query, meta);
+      if (indexResult) {
+        indexResult.durationMs = Date.now() - t0;
+        indexResult.r2ReadMs = Date.now() - r2Start;
+        indexResult.pagesSkipped = pagesSkipped;
+        indexResult.cacheHits = cacheHits;
+        indexResult.cacheMisses = cacheMisses;
+        return indexResult;
+      }
+      // Fall through to flat search via SQL executor
+    }
+
     // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
     const wasmStart = Date.now();
     this.wasmEngine.exports.resetHeap();
@@ -321,6 +335,72 @@ export class QueryDO implements DurableObject {
       bytesRead, pagesSkipped, durationMs: Date.now() - t0,
       r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
     };
+  }
+
+  /** Try IVF-PQ indexed vector search. Returns null if no index available. */
+  private async tryIvfPqSearch(query: QueryDescriptor, meta: TableMeta): Promise<QueryResult | null> {
+    if (!query.vectorSearch) return null;
+
+    // Check for vector index metadata
+    const vs = query.vectorSearch;
+    const indexInfo = meta.vectorIndexes?.find(
+      vi => vi.column === vs.column && vi.type === "ivf_pq",
+    );
+
+    // Also try convention-based index path: {r2Key}.index
+    const indexPath = indexInfo?.indexPath ?? `${meta.r2Key}.ivf_pq.index`;
+
+    // Check buffer pool cache first
+    const cacheKey = `ivf_pq:${indexPath}`;
+    let indexData = this.wasmEngine.cacheGet(cacheKey);
+
+    if (!indexData) {
+      // Try loading from R2
+      const indexObj = await this.env.DATA_BUCKET.get(indexPath);
+      if (!indexObj) return null; // No index → fall through to flat search
+
+      indexData = await indexObj.arrayBuffer();
+      this.wasmEngine.cacheSet(cacheKey, indexData);
+    }
+
+    // Load index into WASM
+    let handle: number;
+    try {
+      handle = this.wasmEngine.loadIvfPqIndex(indexData);
+    } catch {
+      return null; // Invalid index format → fall through
+    }
+
+    try {
+      const nprobe = indexInfo?.config?.nProbe ?? 10;
+      const { indices, scores } = this.wasmEngine.searchIvfPq(handle, vs.queryVector, vs.topK, nprobe);
+
+      // Build result rows with distances
+      const rows: Row[] = [];
+      for (let i = 0; i < indices.length; i++) {
+        rows.push({
+          _index: indices[i],
+          _distance: scores[i],
+          _score: 1 / (1 + scores[i]), // Convert L2 distance to similarity score
+        });
+      }
+
+      this.log("info", "ivf_pq_search", {
+        table: query.table, column: vs.column, topK: vs.topK,
+        nprobe, resultsFound: rows.length,
+      });
+
+      return {
+        rows,
+        rowCount: rows.length,
+        columns: ["_index", "_distance", "_score"],
+        bytesRead: indexData.byteLength,
+        pagesSkipped: 0,
+        durationMs: 0,
+      };
+    } finally {
+      this.wasmEngine.freeIvfPqIndex(handle);
+    }
   }
 
   private handleListTables(): Response {

@@ -76,6 +76,8 @@ export interface TableMeta {
   r2Key: string;
   /** Timestamp of last footer update from Master DO */
   updatedAt: number;
+  /** Vector indexes available for this table */
+  vectorIndexes?: VectorIndexInfo[];
 }
 
 /** A filter predicate that can be pushed down to page-level skipping */
@@ -167,6 +169,22 @@ export interface IcebergDatasetMeta {
   fragmentMetas: Map<number, TableMeta>;
   totalRows: number;
   updatedAt: number;
+}
+
+/** Result of an append (write) operation */
+export interface AppendResult {
+  version: number;
+  dataFilePath: string;
+  retries: number;
+  rowsWritten: number;
+}
+
+/** Vector index metadata for IVF-PQ acceleration */
+export interface VectorIndexInfo {
+  column: string;
+  indexPath: string;
+  type: "flat" | "ivf_pq";
+  config?: { nPartitions: number; nSubvectors: number; nProbe: number };
 }
 
 /** Environment bindings for Cloudflare Workers */

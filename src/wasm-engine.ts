@@ -95,6 +95,36 @@ export interface WasmExports {
   fragmentReadFloat64(colIdx: number, outPtr: number, maxCount: number): number;
   fragmentReadFloat32(colIdx: number, outPtr: number, maxCount: number): number;
   fragmentReadInt32(colIdx: number, outPtr: number, maxCount: number): number;
+
+  // Fragment writer (lance_writer.zig via dataset_writer.zig)
+  writerInit(capacity: number): number;
+  writerGetBuffer(): number;
+  writerGetOffset(): number;
+  writerReset(): void;
+  fragmentBegin(capacity: number): number;
+  fragmentAddInt64Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentAddInt32Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentAddFloat64Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentAddFloat32Column(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentAddStringColumn(namePtr: number, nameLen: number, dataPtr: number, dataLen: number, count: number, nullable: number): number;
+  fragmentAddVectorColumn(namePtr: number, nameLen: number, values: number, count: number, dim: number, nullable: number): number;
+  fragmentAddBoolColumn(namePtr: number, nameLen: number, values: number, count: number, nullable: number): number;
+  fragmentEnd(): number;
+
+  // Dataset writer (dataset_writer.zig)
+  datasetWriterInit(urlPtr: number, urlLen: number): number;
+  setCurrentDataPath(pathPtr: number, pathLen: number): number;
+  setUUIDSeed(seed: bigint): void;
+  parseLatestVersion(dataPtr: number, dataLen: number): bigint;
+  formatVersion(version: bigint, outPtr: number, maxLen: number): number;
+  casRetry(): number;
+  casReset(): void;
+  casGetRetryCount(): number;
+
+  // IVF-PQ vector index (ivf_pq.zig)
+  ivfPqLoadIndex(dataPtr: number, dataLen: number): number;
+  ivfPqSearch(handle: number, queryPtr: number, dim: number, topK: number, nprobe: number, outIndices: number, outScores: number): number;
+  ivfPqFree(handle: number): void;
 }
 
 export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<WasmEngine> {
@@ -102,6 +132,7 @@ export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<W
     env: {
       opfs_open: () => 0, opfs_close: () => {}, opfs_read: () => 0,
       opfs_write: () => 0, opfs_size: () => 0, opfs_flush: () => {}, opfs_truncate: () => {},
+      js_log: () => {},
     },
   });
   const engine = new WasmEngine(instance.exports as unknown as WasmExports);
@@ -549,6 +580,148 @@ export class WasmEngine {
       }
       default: return null;
     }
+  }
+
+  /**
+   * Build a Lance fragment file from column data.
+   * Returns the raw Lance binary bytes ready to write to R2/disk.
+   */
+  buildFragment(columns: { name: string; dtype: string; values: ArrayBufferLike }[]): Uint8Array {
+    // Estimate capacity: sum of all values plus overhead
+    let totalBytes = 0;
+    for (const col of columns) totalBytes += col.values.byteLength;
+    const capacity = totalBytes + columns.length * 256 + 4096; // metadata overhead
+
+    if (!this.exports.fragmentBegin(capacity)) {
+      throw new Error("WASM fragmentBegin failed — OOM or init error");
+    }
+
+    for (const col of columns) {
+      const { ptr: namePtr, len: nameLen } = this.writeString(col.name);
+      if (!namePtr) throw new Error(`WASM OOM writing column name "${col.name}"`);
+
+      let result = 0;
+      switch (col.dtype) {
+        case "int64": {
+          const i64 = new BigInt64Array(col.values);
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          result = this.exports.fragmentAddInt64Column(namePtr, nameLen, dataPtr, i64.length, 0);
+          break;
+        }
+        case "int32": {
+          const i32 = new Int32Array(col.values);
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          result = this.exports.fragmentAddInt32Column(namePtr, nameLen, dataPtr, i32.length, 0);
+          break;
+        }
+        case "float64": {
+          const f64 = new Float64Array(col.values);
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          result = this.exports.fragmentAddFloat64Column(namePtr, nameLen, dataPtr, f64.length, 0);
+          break;
+        }
+        case "float32": {
+          const f32 = new Float32Array(col.values);
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          result = this.exports.fragmentAddFloat32Column(namePtr, nameLen, dataPtr, f32.length, 0);
+          break;
+        }
+        case "utf8": case "string": {
+          // Values should be pre-encoded as length-prefixed strings
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          // Count strings by scanning length prefixes
+          const view = new DataView(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0));
+          let count = 0, pos = 0;
+          while (pos + 4 <= col.values.byteLength) {
+            const strLen = view.getUint32(pos, true);
+            pos += 4 + strLen;
+            count++;
+          }
+          result = this.exports.fragmentAddStringColumn(namePtr, nameLen, dataPtr, col.values.byteLength, count, 0);
+          break;
+        }
+        case "bool": {
+          const dataPtr = this.exports.wasmAlloc(col.values.byteLength);
+          if (!dataPtr) throw new Error("WASM OOM");
+          new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
+            .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
+          // Bit-packed bools: count = byteLength * 8 (caller should provide exact count)
+          const count = col.values.byteLength * 8;
+          result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, count, 0);
+          break;
+        }
+        default:
+          throw new Error(`Unsupported dtype for fragment building: ${col.dtype}`);
+      }
+
+      if (!result) throw new Error(`WASM failed to add column "${col.name}" (dtype: ${col.dtype})`);
+    }
+
+    const bytesWritten = this.exports.fragmentEnd();
+    if (!bytesWritten) throw new Error("WASM fragmentEnd failed");
+
+    const bufPtr = this.exports.writerGetBuffer();
+    if (!bufPtr) throw new Error("WASM writerGetBuffer returned null");
+
+    return new Uint8Array(this.exports.memory.buffer, bufPtr, bytesWritten).slice();
+  }
+
+  // --- IVF-PQ vector index ---
+
+  /** Load a serialized IVF-PQ index into WASM. Returns a handle (>0) or throws on failure. */
+  loadIvfPqIndex(indexData: ArrayBuffer): number {
+    const ptr = this.exports.wasmAlloc(indexData.byteLength);
+    if (!ptr) throw new Error("WASM OOM allocating IVF-PQ index data");
+    new Uint8Array(this.exports.memory.buffer, ptr, indexData.byteLength).set(new Uint8Array(indexData));
+    const handle = this.exports.ivfPqLoadIndex(ptr, indexData.byteLength);
+    if (!handle) throw new Error("Failed to load IVF-PQ index — invalid format or no free slots");
+    return handle;
+  }
+
+  /** Search an IVF-PQ index for nearest neighbors. */
+  searchIvfPq(
+    handle: number, query: Float32Array, topK: number, nprobe = 0,
+  ): { indices: Uint32Array; scores: Float32Array } {
+    const dim = query.length;
+    const totalBytes = query.byteLength + topK * 4 + topK * 4;
+    const basePtr = this.exports.wasmAlloc(totalBytes);
+    if (!basePtr) return { indices: new Uint32Array(0), scores: new Float32Array(0) };
+
+    const qPtr = basePtr;
+    new Uint8Array(this.exports.memory.buffer, qPtr, query.byteLength).set(
+      new Uint8Array(query.buffer, query.byteOffset, query.byteLength),
+    );
+    const iPtr = qPtr + query.byteLength;
+    const sPtr = iPtr + topK * 4;
+
+    const count = this.exports.ivfPqSearch(
+      handle, qPtr / 4, dim, topK, nprobe, iPtr / 4, sPtr / 4,
+    );
+
+    return {
+      indices: new Uint32Array(this.exports.memory.buffer.slice(iPtr, iPtr + count * 4)),
+      scores: new Float32Array(this.exports.memory.buffer.slice(sPtr, sPtr + count * 4)),
+    };
+  }
+
+  /** Free an IVF-PQ index handle. */
+  freeIvfPqIndex(handle: number): void {
+    this.exports.ivfPqFree(handle);
   }
 
   vectorSearchBuffer(

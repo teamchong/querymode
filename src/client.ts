@@ -1,5 +1,6 @@
 import type {
   AggregateOp,
+  AppendResult,
   FilterOp,
   QueryResult,
   Row,
@@ -81,6 +82,15 @@ export class TableQuery {
   vector(column: string, queryVector: Float32Array, topK: number): this {
     this._vectorSearch = { column, queryVector, topK };
     return this;
+  }
+
+  /** Append rows to this table. Uses CAS coordination for safe concurrent writes. */
+  async append(rows: Record<string, unknown>[]): Promise<AppendResult> {
+    if (!("append" in this._executor)) {
+      throw new Error("append() requires an executor with write support");
+    }
+    return (this._executor as QueryExecutor & { append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> })
+      .append(this._table, rows);
   }
 
   /** Execute the query. Resolves page ranges from cached footer, issues parallel Range reads. */
