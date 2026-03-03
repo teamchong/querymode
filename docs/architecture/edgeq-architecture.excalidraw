@@ -2189,7 +2189,7 @@
       "y": 830,
       "width": 140,
       "height": 40,
-      "text": "PageProcessor\nWASM (Zig SIMD)\nor TS fallback",
+      "text": "PageProcessor\nWASM (Zig SIMD)",
       "fontSize": 11,
       "fontFamily": 1,
       "textAlign": "center",
@@ -2215,7 +2215,7 @@
       "roundness": null,
       "updated": 1772496885793,
       "link": null,
-      "originalText": "PageProcessor\nWASM (Zig SIMD)\nor TS fallback",
+      "originalText": "PageProcessor\nWASM (Zig SIMD)",
       "autoResize": true,
       "lineHeight": 1.2121212121212122
     },

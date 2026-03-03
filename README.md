@@ -11,7 +11,6 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance fi
 - **Code-first query API** — `.table().filter().select().sort().limit().exec()`, no SQL
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
 - **Footer caching** — table footers (~4KB each) cached in DO memory + SQLite, eliminating the metadata round-trip
-- **TS fallback** — pure TypeScript decode path for when WASM is unavailable or files exceed 64MB
 - **Local mode** — same API reads Lance files from disk or HTTP (Node/Bun)
 - **35 unit tests passing** — footer parsing and column decoding
 
@@ -26,8 +25,7 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance fi
 - No npm package published
 
 ## Architecture
-
-<img width="1070" height="1188" alt="edgeq-architecture" src="https://github.com/user-attachments/assets/bde85c18-8ca5-4197-a43a-695617336f21" />
+![edgeq-architecture](.docs/architecture/edgeq-architecture.svg)
 
 ## Build
 
