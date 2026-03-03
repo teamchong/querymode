@@ -1,13 +1,17 @@
-import type { ColumnMeta, Env, Footer, Row, TableMeta, DatasetMeta, QueryResult } from "./types.js";
+import type { ColumnMeta, Env, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest } from "./manifest.js";
-import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
+import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
+import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
+import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
-import { coalesceRanges } from "./coalesce.js";
+import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
+const R2_TIMEOUT_MS = 10_000;
+const FRAGMENT_TIMEOUT_MS = 25_000;
 
 /**
  * Query DO — per-region reader with cached footers.
@@ -19,7 +23,6 @@ export class QueryDO implements DurableObject {
   private footerCache = new Map<string, TableMeta>();
   private datasetCache = new Map<string, DatasetMeta>();
   private wasmEngine!: WasmEngine;
-  private queryCount = new Map<string, number>(); // table → hit count (for VIP pinning)
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
   private initialized = false;
   private registeredWithMaster = false;
@@ -27,6 +30,12 @@ export class QueryDO implements DurableObject {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+  }
+
+  private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
+    console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
+      JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
+    );
   }
 
   private json(body: unknown, status = 200): Response {
@@ -50,6 +59,7 @@ export class QueryDO implements DurableObject {
       case "/query/stream": return this.handleQueryStream(request);
       case "/tables":       return this.handleListTables();
       case "/meta":         return this.handleGetMeta(request);
+      case "/diagnostics":  return this.handleDiagnostics();
       default:              return new Response("Not found", { status: 404 });
     }
   }
@@ -86,7 +96,7 @@ export class QueryDO implements DurableObject {
           await this.refreshStaleTables(body.tableVersions);
         }
       }).catch(() => {
-        console.warn("Failed to register with Master DO, will retry on next request");
+        this.log("warn", "master_register_failed", { note: "will retry on next request" });
       });
     });
   }
@@ -104,20 +114,38 @@ export class QueryDO implements DurableObject {
       if (!head) continue;
 
       const fileSize = BigInt(head.size);
-      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - 40, length: 40 } });
+      const tailSize = Math.min(Number(fileSize), 40);
+      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
       if (!obj) continue;
 
-      const footer = parseFooter(await obj.arrayBuffer());
-      if (!footer) continue;
+      const tailBuf = await obj.arrayBuffer();
+      const fmt = detectFormat(tailBuf);
 
-      const columns = await this.readColumnMeta(r2Key, footer);
-      const meta: TableMeta = {
-        name: table, footer, columns,
-        totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
-        fileSize, r2Key, updatedAt,
-      };
+      let meta: TableMeta;
+      if (fmt === "parquet") {
+        const footerLen = getParquetFooterLength(tailBuf);
+        if (!footerLen) continue;
+        const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+          range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
+        });
+        if (!footerObj) continue;
+        const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
+        if (!parquetMeta) continue;
+        meta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
+        meta.name = table;
+        meta.updatedAt = updatedAt;
+      } else {
+        const footer = parseFooter(tailBuf);
+        if (!footer) continue;
+        const columns = await this.readColumnMeta(r2Key, footer);
+        meta = {
+          name: table, footer, format: "lance", columns,
+          totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+          fileSize, r2Key, updatedAt,
+        };
+      }
+
       this.footerCache.set(table, meta);
-
       this.wasmEngine.clearTable(table);
       await this.state.storage.put(`table:${table}`, meta);
     }
@@ -127,14 +155,26 @@ export class QueryDO implements DurableObject {
     const body = (await request.json()) as {
       table: string; r2Key: string; footerBytes: number[];
       columns?: ColumnMeta[]; fileSize?: string; timestamp: number;
+      format?: "lance" | "parquet" | "iceberg";
     };
 
-    const footer = parseFooter(new Uint8Array(body.footerBytes).buffer);
-    if (!footer) return this.json({ error: "Invalid footer" }, 400);
+    const fmt = body.format ?? "lance";
+    let columns: ColumnMeta[];
+    let footer: Footer | undefined;
 
-    const columns = body.columns ?? await this.readColumnMeta(body.r2Key, footer);
+    if (fmt === "parquet" && body.columns) {
+      // Parquet invalidation — columns already parsed by Master
+      columns = body.columns;
+    } else {
+      // Lance invalidation — parse footer from raw bytes
+      const parsed = parseFooter(new Uint8Array(body.footerBytes).buffer);
+      if (!parsed) return this.json({ error: "Invalid footer" }, 400);
+      footer = parsed;
+      columns = body.columns ?? await this.readColumnMeta(body.r2Key, parsed);
+    }
+
     const meta: TableMeta = {
-      name: body.table, footer, columns,
+      name: body.table, footer, format: fmt, columns,
       totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
       fileSize: body.fileSize ? BigInt(body.fileSize) : 0n,
       r2Key: body.r2Key, updatedAt: body.timestamp,
@@ -142,13 +182,23 @@ export class QueryDO implements DurableObject {
 
     this.footerCache.set(body.table, meta);
     this.wasmEngine.clearTable(body.table);
+    this.wasmEngine.cacheClear();
     await this.state.storage.put(`table:${body.table}`, meta);
     return this.json({ updated: true, table: body.table });
   }
 
   private async handleQuery(request: Request): Promise<Response> {
+    const requestId = request.headers.get("x-edgeq-request-id") ?? crypto.randomUUID();
     const query = (await request.json()) as QueryDescriptor;
-    return this.json(await this.executeQuery(query));
+    const result = await this.executeQuery(query);
+    result.requestId = requestId;
+    this.log("info", "query_complete", {
+      requestId, table: query.table, rowCount: result.rowCount,
+      bytesRead: result.bytesRead, durationMs: result.durationMs,
+      r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
+      cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
+    });
+    return this.json(result);
   }
 
   /** Execute query using page-level R2 Range reads + WASM compute. Never downloads full files. */
@@ -165,11 +215,10 @@ export class QueryDO implements DurableObject {
       if (!meta) throw new Error(`Table "${query.table}" not found`);
     }
 
-    this.queryCount.set(query.table, (this.queryCount.get(query.table) ?? 0) + 1);
     return this.scanPages(query, meta, t0);
   }
 
-  /** Scan only the needed pages from R2 via coalesced Range reads. */
+  /** Scan only the needed pages from R2 via coalesced Range reads, with cache-before-fetch. */
   private async scanPages(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
     let cols = query.projections.length > 0
       ? meta.columns.filter(c => query.projections.includes(c.name))
@@ -183,6 +232,7 @@ export class QueryDO implements DurableObject {
       }
     }
 
+    // Build per-page ranges, applying page-level skip
     const ranges: { column: string; offset: number; length: number }[] = [];
     let pagesSkipped = 0;
     for (const col of cols) {
@@ -192,29 +242,92 @@ export class QueryDO implements DurableObject {
       }
     }
 
-    const coalesced = coalesceRanges(ranges, 64 * 1024);
-    const fetched = await Promise.all(coalesced.map(async c => {
-      const obj = await this.env.DATA_BUCKET.get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
-      return obj ? { ...c, data: await obj.arrayBuffer() } : null;
-    }));
-
+    // Cache-before-fetch: check WASM buffer pool for each range
     const columnData = new Map<string, ArrayBuffer[]>();
-    let bytesRead = 0;
-    for (const f of fetched) {
-      if (!f) continue;
-      bytesRead += f.data.byteLength;
-      for (const sub of f.ranges) {
-        const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
-        const arr = columnData.get(sub.column) ?? [];
-        arr.push(slice);
-        columnData.set(sub.column, arr);
+    let cacheHits = 0;
+    let cacheMisses = 0;
+    const uncachedRanges: typeof ranges = [];
+
+    for (const r of ranges) {
+      const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
+      const cached = this.wasmEngine.cacheGet(cacheKey);
+      if (cached) {
+        cacheHits++;
+        const arr = columnData.get(r.column) ?? [];
+        arr.push(cached);
+        columnData.set(r.column, arr);
+      } else {
+        cacheMisses++;
+        uncachedRanges.push(r);
       }
     }
 
-    const rows = assembleRows(columnData, cols, query, this.wasmEngine);
+    // Fetch only uncached ranges from R2 with retry + timeout
+    const r2Start = Date.now();
+    let bytesRead = 0;
+
+    if (uncachedRanges.length > 0) {
+      const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+      const fetched = await fetchBounded(
+        coalesced.map(c => () =>
+          withRetry(() =>
+            withTimeout(
+              (async () => {
+                const obj = await this.env.DATA_BUCKET.get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
+                return obj ? { ...c, data: await obj.arrayBuffer() } : null;
+              })(),
+              R2_TIMEOUT_MS,
+            ),
+          ),
+        ),
+        8,
+      );
+
+      for (const f of fetched) {
+        if (!f) continue;
+        bytesRead += f.data.byteLength;
+        for (const sub of f.ranges) {
+          const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
+          const arr = columnData.get(sub.column) ?? [];
+          arr.push(slice);
+          columnData.set(sub.column, arr);
+
+          // Populate cache for next time
+          const cacheKey = `${meta.r2Key}:${sub.offset}:${sub.length}`;
+          this.wasmEngine.cacheSet(cacheKey, slice);
+        }
+      }
+    }
+    const r2ReadMs = Date.now() - r2Start;
+
+    // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
+    const wasmStart = Date.now();
+    this.wasmEngine.exports.resetHeap();
+    let wasmOom = false;
+    for (const col of cols) {
+      const pages = columnData.get(col.name);
+      if (!pages?.length) continue;
+      if (!this.wasmEngine.registerColumn(query.table, col.name, col.dtype, pages, col.pages, col.listDimension)) {
+        wasmOom = true;
+        break;
+      }
+    }
+
+    let rows: Row[];
+    if (!wasmOom) {
+      rows = this.wasmEngine.executeQuery(query) ?? [];
+      this.wasmEngine.clearTable(query.table);
+    } else {
+      // WASM OOM fallback — decode in JS
+      this.log("warn", "wasm_oom_fallback", { table: query.table });
+      rows = assembleRows(columnData, cols, query, this.wasmEngine);
+    }
+    const wasmExecMs = Date.now() - wasmStart;
+
     return {
       rows, rowCount: rows.length, columns: cols.map(c => c.name),
       bytesRead, pagesSkipped, durationMs: Date.now() - t0,
+      r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
     };
   }
 
@@ -233,6 +346,28 @@ export class QueryDO implements DurableObject {
     return this.json(meta);
   }
 
+  private handleDiagnostics(): Response {
+    const cache = this.wasmEngine.cacheStats();
+    return this.json({
+      tableCount: this.footerCache.size,
+      datasetCount: this.datasetCache.size,
+      tables: [...this.footerCache.entries()].map(([name, m]) => ({
+        name, totalRows: m.totalRows, columns: m.columns.length, updatedAt: m.updatedAt,
+      })),
+      cache: {
+        entries: cache.count,
+        bytesUsed: cache.bytes,
+        maxBytes: cache.maxBytes,
+        utilizationPct: cache.maxBytes > 0 ? Math.round((cache.bytes / cache.maxBytes) * 100) : 0,
+      },
+      wasm: {
+        memoryBytes: this.wasmEngine.exports.memory.buffer.byteLength,
+        memoryMB: Math.round(this.wasmEngine.exports.memory.buffer.byteLength / (1024 * 1024)),
+      },
+      activeFragmentSlots: this.activeFragmentSlots.size,
+    });
+  }
+
   private async readColumnMeta(r2Key: string, footer: Footer): Promise<ColumnMeta[]> {
     const len = Number(footer.columnMetaOffsetsStart) - Number(footer.columnMetaStart);
     if (len <= 0) return [];
@@ -242,31 +377,64 @@ export class QueryDO implements DurableObject {
   }
 
   private async loadTableFromR2(tableName: string): Promise<TableMeta | null> {
-    for (const r2Key of [`${tableName}.lance`, tableName, `data/${tableName}.lance`, `data/${tableName}`]) {
+    const candidates = [
+      `${tableName}.lance`, `${tableName}.parquet`, tableName,
+      `data/${tableName}.lance`, `data/${tableName}.parquet`, `data/${tableName}`,
+    ];
+    for (const r2Key of candidates) {
       const head = await this.env.DATA_BUCKET.head(r2Key);
       if (!head) continue;
 
       const fileSize = BigInt(head.size);
-      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - 40, length: 40 } });
+      const tailSize = Math.min(Number(fileSize), 40);
+      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
       if (!obj) continue;
 
-      const footer = parseFooter(await obj.arrayBuffer());
-      if (!footer) continue;
+      const tailBuf = await obj.arrayBuffer();
+      const fmt = detectFormat(tailBuf);
 
-      const columns = await this.readColumnMeta(r2Key, footer);
-      const meta: TableMeta = {
-        name: tableName, footer, columns,
-        totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
-        fileSize, r2Key, updatedAt: Date.now(),
-      };
-      this.footerCache.set(tableName, meta);
-      await this.state.storage.put(`table:${tableName}`, meta);
-      return meta;
+      if (fmt === "parquet") {
+        const footerLen = getParquetFooterLength(tailBuf);
+        if (!footerLen) continue;
+
+        const footerOffset = Number(fileSize) - footerLen - 8;
+        const footerObj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: footerOffset, length: footerLen } });
+        if (!footerObj) continue;
+
+        const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
+        if (!parquetMeta) continue;
+
+        const meta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
+        meta.name = tableName;
+        this.footerCache.set(tableName, meta);
+        await this.state.storage.put(`table:${tableName}`, meta);
+        return meta;
+      }
+
+      if (fmt === "lance") {
+        const footer = parseFooter(tailBuf);
+        if (!footer) continue;
+
+        const columns = await this.readColumnMeta(r2Key, footer);
+        const meta: TableMeta = {
+          name: tableName, footer, format: "lance", columns,
+          totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+          fileSize, r2Key, updatedAt: Date.now(),
+        };
+        this.footerCache.set(tableName, meta);
+        await this.state.storage.put(`table:${tableName}`, meta);
+        return meta;
+      }
     }
 
     // Try as Lance dataset directory (has _versions/ with manifests)
     const datasetMeta = await this.loadDatasetFromR2(tableName);
     if (datasetMeta) return datasetMeta.fragmentMetas.values().next().value ?? null;
+
+    // Try as Iceberg table (has metadata/ directory)
+    const icebergMeta = await this.loadIcebergFromR2(tableName);
+    if (icebergMeta) return icebergMeta.fragmentMetas.values().next().value ?? null;
+
     return null;
   }
 
@@ -321,6 +489,83 @@ export class QueryDO implements DurableObject {
     return null;
   }
 
+  /** Discover an Iceberg table in R2 by listing metadata/ for .metadata.json files. */
+  private async loadIcebergFromR2(tableName: string): Promise<IcebergDatasetMeta | null> {
+    for (const prefix of [`${tableName}/`, `data/${tableName}/`]) {
+      const listed = await this.env.DATA_BUCKET.list({ prefix: `${prefix}metadata/`, limit: 100 });
+      const metadataKeys = listed.objects
+        .filter(o => o.key.endsWith(".metadata.json"))
+        .sort((a, b) => a.key.localeCompare(b.key));
+      if (metadataKeys.length === 0) continue;
+
+      // Read latest metadata JSON
+      const latestKey = metadataKeys[metadataKeys.length - 1].key;
+      const metaObj = await this.env.DATA_BUCKET.get(latestKey);
+      if (!metaObj) continue;
+
+      const metaJson = await metaObj.text();
+      const icebergMeta = parseIcebergMetadata(metaJson);
+      if (!icebergMeta) continue;
+
+      // Read manifest list to get data file paths
+      const manifestListKey = `${prefix}${icebergMeta.manifestListPath}`;
+      const manifestListObj = await this.env.DATA_BUCKET.get(manifestListKey);
+      if (!manifestListObj) continue;
+
+      const manifestListBytes = await manifestListObj.arrayBuffer();
+      const parquetPaths = extractParquetPathsFromManifest(manifestListBytes);
+      if (parquetPaths.length === 0) continue;
+
+      // Load each Parquet file's metadata
+      const fragmentMetas = new Map<number, TableMeta>();
+      let totalRows = 0;
+      for (let i = 0; i < parquetPaths.length; i++) {
+        const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
+        const head = await this.env.DATA_BUCKET.head(parquetKey);
+        if (!head) continue;
+
+        const fileSize = BigInt(head.size);
+        const tailObj = await this.env.DATA_BUCKET.get(parquetKey, {
+          range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
+        });
+        if (!tailObj) continue;
+
+        const tailBuf = await tailObj.arrayBuffer();
+        const footerLen = getParquetFooterLength(tailBuf);
+        if (!footerLen) continue;
+
+        const footerObj = await this.env.DATA_BUCKET.get(parquetKey, {
+          range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
+        });
+        if (!footerObj) continue;
+
+        const parquetFileMeta = parseParquetFooter(await footerObj.arrayBuffer());
+        if (!parquetFileMeta) continue;
+
+        const meta = parquetMetaToTableMeta(parquetFileMeta, parquetKey, fileSize);
+        meta.name = parquetPaths[i];
+        fragmentMetas.set(i, meta);
+        totalRows += meta.totalRows;
+      }
+
+      if (fragmentMetas.size === 0) continue;
+
+      const dataset: IcebergDatasetMeta = {
+        name: tableName, r2Prefix: prefix,
+        schema: icebergMeta.schema, snapshotId: icebergMeta.currentSnapshotId,
+        parquetFiles: parquetPaths, fragmentMetas, totalRows, updatedAt: Date.now(),
+      };
+      // Store in datasetCache for multi-fragment query execution
+      this.datasetCache.set(tableName, {
+        name: tableName, r2Prefix: prefix,
+        manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows },
+        fragmentMetas, totalRows, updatedAt: Date.now(),
+      });
+      return dataset;
+    }
+    return null;
+  }
+
   /** Execute a query across multiple fragments of a dataset. */
   private async executeMultiFragment(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
     const fragments = [...dataset.fragmentMetas.values()];
@@ -356,7 +601,7 @@ export class QueryDO implements DurableObject {
   }
 
   /** Fan-out query to pooled Fragment DOs for parallel scanning.
-   *  Dynamically claims available slots to avoid queueing behind concurrent queries.
+   *  Uses Promise.allSettled for partial failure tolerance.
    *  Pool is per-datacenter (frag-{region}-slot-{N}), max FRAGMENT_POOL_MAX slots. */
   private async executeWithFragmentDOs(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
     const fragments = [...dataset.fragmentMetas.entries()];
@@ -385,21 +630,37 @@ export class QueryDO implements DurableObject {
     const region = (await this.state.storage.get<string>("region")) ?? "default";
 
     try {
-      const results = await Promise.all(groups.map(async (group, idx) => {
+      const settled = await Promise.allSettled(groups.map(async (group, idx) => {
         const doName = `frag-${region}-slot-${slots[idx]}`;
         const doId = this.env.FRAGMENT_DO.idFromName(doName);
         const fragmentDo = this.env.FRAGMENT_DO.get(doId);
 
-        const resp = await fragmentDo.fetch(new Request("http://internal/scan", {
-          method: "POST",
-          body: JSON.stringify({ fragments: group, query }, bigIntReplacer),
-          headers: { "content-type": "application/json" },
-        }));
+        const resp = await withTimeout(
+          fragmentDo.fetch(new Request("http://internal/scan", {
+            method: "POST",
+            body: JSON.stringify({ fragments: group, query }, bigIntReplacer),
+            headers: { "content-type": "application/json" },
+          })),
+          FRAGMENT_TIMEOUT_MS,
+        );
 
         return resp.json() as Promise<QueryResult>;
       }));
 
-      const merged = mergeQueryResults(results, query);
+      const fulfilled: QueryResult[] = [];
+      for (const s of settled) {
+        if (s.status === "fulfilled") {
+          fulfilled.push(s.value);
+        } else {
+          this.log("warn", "fragment_do_failed", { reason: String(s.reason) });
+        }
+      }
+
+      if (fulfilled.length === 0) {
+        throw new Error("All Fragment DOs failed");
+      }
+
+      const merged = mergeQueryResults(fulfilled, query);
       merged.durationMs = Date.now() - t0;
       return merged;
     } finally {
@@ -432,4 +693,3 @@ export class QueryDO implements DurableObject {
   }
 
 }
-

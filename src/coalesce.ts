@@ -33,3 +33,44 @@ export function coalesceRanges(ranges: Range[], maxGap: number): CoalescedRange[
   result.push(cur);
   return result;
 }
+
+/** Run async tasks with bounded concurrency (max `limit` in-flight at once). */
+export async function fetchBounded<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let i = 0;
+  async function next(): Promise<void> {
+    const idx = i++;
+    if (idx >= tasks.length) return;
+    results[idx] = await tasks[idx]();
+    return next();
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => next()));
+  return results;
+}
+
+/** Retry an async function with exponential backoff. 3 total attempts max. */
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelayMs = 100): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, baseDelayMs * (1 << attempt)));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/** Race a promise against a timeout. Rejects with an error if the timeout fires first. */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}

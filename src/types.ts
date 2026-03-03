@@ -26,6 +26,14 @@ export interface ColumnMeta {
   listDimension?: number;
 }
 
+/** Parquet-specific encoding info attached to pages */
+export interface PageEncoding {
+  encoding?: string;      // "PLAIN" | "RLE_DICTIONARY" | ...
+  compression?: string;   // "UNCOMPRESSED" | "SNAPPY" | ...
+  dictionaryPageOffset?: bigint;
+  dictionaryPageLength?: number;
+}
+
 /** Page-level metadata for skip/pushdown decisions */
 export interface PageInfo {
   byteOffset: bigint;
@@ -34,6 +42,8 @@ export interface PageInfo {
   nullCount: number;
   minValue?: number | bigint | string;
   maxValue?: number | bigint | string;
+  /** Present only for Parquet pages */
+  encoding?: PageEncoding;
 }
 
 export type DataType =
@@ -56,7 +66,9 @@ export type DataType =
 /** Cached table metadata — everything needed to plan a query without touching R2 */
 export interface TableMeta {
   name: string;
-  footer: Footer;
+  /** Lance footer — only present for Lance format */
+  footer?: Footer;
+  format?: "lance" | "parquet" | "iceberg";
   columns: ColumnMeta[];
   totalRows: number;
   fileSize: bigint;
@@ -95,6 +107,7 @@ export interface FooterInvalidation {
   type: "footer_invalidation";
   table: string;
   r2Key: string;
+  format?: "lance" | "parquet" | "iceberg";
   /** New footer bytes — Query DO doesn't need to re-read from R2 */
   footerBytes: ArrayBuffer;
   /** File size in bytes — needed by Query DO for cache metadata */
@@ -118,6 +131,16 @@ export interface QueryResult {
   pagesSkipped: number;
   /** Query execution time in milliseconds */
   durationMs: number;
+  /** Trace ID for correlating logs (cf-ray or UUID) */
+  requestId?: string;
+  /** Time spent fetching pages from R2 */
+  r2ReadMs?: number;
+  /** Time spent in WASM compute */
+  wasmExecMs?: number;
+  /** Number of page cache hits */
+  cacheHits?: number;
+  /** Number of page cache misses */
+  cacheMisses?: number;
 }
 
 /** Parsed Lance manifest — describes all fragments in a dataset version */
@@ -139,6 +162,23 @@ export interface DatasetMeta {
   name: string;
   r2Prefix: string;
   manifest: ManifestInfo;
+  fragmentMetas: Map<number, TableMeta>;
+  totalRows: number;
+  updatedAt: number;
+}
+
+/** Iceberg table schema */
+export interface IcebergSchema {
+  fields: { name: string; type: string; required: boolean }[];
+}
+
+/** Cached Iceberg dataset metadata — multiple Parquet data files under one logical table */
+export interface IcebergDatasetMeta {
+  name: string;
+  r2Prefix: string;
+  schema: IcebergSchema;
+  snapshotId: string;
+  parquetFiles: string[];
   fragmentMetas: Map<number, TableMeta>;
   totalRows: number;
   updatedAt: number;

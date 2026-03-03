@@ -16,7 +16,13 @@ vi.mock("./wasm-engine.js", () => ({
     },
     reset: () => {},
     clearTable: () => {},
+    registerColumn: () => true,
+    executeQuery: () => [],
     vectorSearchBuffer: () => ({ indices: new Uint32Array(0), scores: new Float32Array(0) }),
+    cacheGet: () => null,
+    cacheSet: () => false,
+    cacheClear: () => {},
+    cacheStats: () => ({ count: 0, bytes: 0, maxBytes: 0 }),
   }),
 }));
 

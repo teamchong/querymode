@@ -15,15 +15,44 @@ export { MasterDO, QueryDO, FragmentDO };
  *   POST /refresh        → Master DO (re-read footer from R2)
  *   GET  /tables         → Regional Query DO (list cached tables)
  *   GET  /meta?table=X   → Regional Query DO (table metadata)
+ *   GET  /health         → Health check (optional ?deep=true for diagnostics)
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
 
     // Health check
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ status: "ok", service: "edgeq" }), {
-        headers: { "content-type": "application/json" },
+      const base = {
+        status: "ok",
+        service: "edgeq",
+        region: request.headers.get("cf-ray")?.split("-").pop() ?? "unknown",
+        timestamp: new Date().toISOString(),
+      };
+
+      if (url.searchParams.get("deep") === "true") {
+        try {
+          const cfRay = request.headers.get("cf-ray") ?? "";
+          const datacenter = cfRay.split("-").pop() ?? "default";
+          const regionName = `query-${datacenter}`;
+          const queryId = env.QUERY_DO.idFromName(regionName);
+          const queryDo = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint });
+
+          const diagResp = await queryDo.fetch(new Request("http://internal/diagnostics"));
+          const diagnostics = await diagResp.json();
+          return new Response(JSON.stringify({ ...base, diagnostics }), {
+            headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ ...base, diagnostics: { error: String(err) } }), {
+            headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
+          });
+        }
+      }
+
+      return new Response(JSON.stringify(base), {
+        headers: { "content-type": "application/json", "x-edgeq-request-id": requestId },
       });
     }
 
@@ -50,10 +79,15 @@ export default {
       const queryId = env.QUERY_DO.idFromName(regionName);
       const queryDo = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint });
 
-      // Pass region name via header so the Query DO can store it for Master registration
+      // Pass region name + request ID via headers
       const reqWithRegion = new Request(request.url, request);
       reqWithRegion.headers.set("x-edgeq-region", regionName);
-      return queryDo.fetch(reqWithRegion);
+      reqWithRegion.headers.set("x-edgeq-request-id", requestId);
+
+      const resp = await queryDo.fetch(reqWithRegion);
+      const respWithId = new Response(resp.body, resp);
+      respWithId.headers.set("x-edgeq-request-id", requestId);
+      return respWithId;
     }
 
     // Register a regional Query DO with the Master DO

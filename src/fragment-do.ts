@@ -1,10 +1,10 @@
-import type { ColumnMeta, Env, Footer, TableMeta, QueryResult, Row } from "./types.js";
+import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
-import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
-import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
+import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
-import { computePartialAgg, type PartialAgg } from "./partial-agg.js";
-import { coalesceRanges } from "./coalesce.js";
+import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+
+const R2_TIMEOUT_MS = 10_000;
 
 interface ScanRequest {
   fragments: { r2Key: string; meta: TableMeta }[];
@@ -28,6 +28,12 @@ export class FragmentDO implements DurableObject {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+  }
+
+  private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
+    console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
+      JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -60,6 +66,10 @@ export class FragmentDO implements DurableObject {
     const t0 = Date.now();
     let totalBytesRead = 0;
     let totalPagesSkipped = 0;
+    let totalCacheHits = 0;
+    let totalCacheMisses = 0;
+    let totalR2ReadMs = 0;
+    let totalWasmExecMs = 0;
     const allRows: Row[] = [];
 
     for (const { r2Key, meta } of fragments) {
@@ -96,39 +106,86 @@ export class FragmentDO implements DurableObject {
         }
       }
 
-      // Coalesce nearby ranges into fewer R2 reads (max 64KB gap to merge)
-      const coalesced = coalesceRanges(ranges, 64 * 1024);
+      // Cache-before-fetch: check WASM buffer pool for each range
       const columnData = new Map<string, ArrayBuffer[]>();
-      const fetched = await Promise.all(coalesced.map(async c => {
-        const obj = await this.env.DATA_BUCKET.get(r2Key, {
-          range: { offset: c.offset, length: c.length },
-        });
-        return obj ? { ...c, data: await obj.arrayBuffer() } : null;
-      }));
-      for (const f of fetched) {
-        if (!f) continue;
-        totalBytesRead += f.data.byteLength;
-        for (const sub of f.ranges) {
-          const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
-          const arr = columnData.get(sub.column) ?? [];
-          arr.push(slice);
-          columnData.set(sub.column, arr);
+      const uncachedRanges: typeof ranges = [];
+
+      for (const r of ranges) {
+        const cacheKey = `${r2Key}:${r.offset}:${r.length}`;
+        const cached = this.wasmEngine.cacheGet(cacheKey);
+        if (cached) {
+          totalCacheHits++;
+          const arr = columnData.get(r.column) ?? [];
+          arr.push(cached);
+          columnData.set(r.column, arr);
+        } else {
+          totalCacheMisses++;
+          uncachedRanges.push(r);
         }
       }
 
-      const rows = assembleRows(columnData, cols, query, this.wasmEngine);
-      allRows.push(...rows);
-    }
+      // Fetch uncached ranges from R2 with retry + timeout
+      const r2Start = Date.now();
+      if (uncachedRanges.length > 0) {
+        const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+        const fetched = await fetchBounded(
+          coalesced.map(c => () =>
+            withRetry(() =>
+              withTimeout(
+                (async () => {
+                  const obj = await this.env.DATA_BUCKET.get(r2Key, {
+                    range: { offset: c.offset, length: c.length },
+                  });
+                  return obj ? { ...c, data: await obj.arrayBuffer() } : null;
+                })(),
+                R2_TIMEOUT_MS,
+              ),
+            ),
+          ),
+          8,
+        );
+        for (const f of fetched) {
+          if (!f) continue;
+          totalBytesRead += f.data.byteLength;
+          for (const sub of f.ranges) {
+            const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
+            const arr = columnData.get(sub.column) ?? [];
+            arr.push(slice);
+            columnData.set(sub.column, arr);
 
-    // If query has aggregates, compute partial and return
-    if (query.aggregates?.length) {
-      const partial = computePartialAgg(allRows, query);
-      return this.json({
-        partial,
-        bytesRead: totalBytesRead,
-        pagesSkipped: totalPagesSkipped,
-        durationMs: Date.now() - t0,
-      });
+            // Populate cache for next time
+            const cacheKey = `${r2Key}:${sub.offset}:${sub.length}`;
+            this.wasmEngine.cacheSet(cacheKey, slice);
+          }
+        }
+      }
+      totalR2ReadMs += Date.now() - r2Start;
+
+      // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
+      const wasmStart = Date.now();
+      const fragTable = `__frag_${r2Key}`;
+      this.wasmEngine.exports.resetHeap();
+      let wasmOom = false;
+      for (const col of cols) {
+        const pages = columnData.get(col.name);
+        if (!pages?.length) continue;
+        if (!this.wasmEngine.registerColumn(fragTable, col.name, col.dtype, pages, col.pages, col.listDimension)) {
+          wasmOom = true;
+          break;
+        }
+      }
+
+      if (!wasmOom) {
+        const fragQuery = { ...query, table: fragTable };
+        const rows = this.wasmEngine.executeQuery(fragQuery) ?? [];
+        this.wasmEngine.clearTable(fragTable);
+        allRows.push(...rows);
+      } else {
+        this.log("warn", "wasm_oom_fallback", { r2Key });
+        const rows = assembleRows(columnData, cols, query, this.wasmEngine);
+        allRows.push(...rows);
+      }
+      totalWasmExecMs += Date.now() - wasmStart;
     }
 
     const result: QueryResult = {
@@ -140,7 +197,19 @@ export class FragmentDO implements DurableObject {
       bytesRead: totalBytesRead,
       pagesSkipped: totalPagesSkipped,
       durationMs: Date.now() - t0,
+      r2ReadMs: totalR2ReadMs,
+      wasmExecMs: totalWasmExecMs,
+      cacheHits: totalCacheHits,
+      cacheMisses: totalCacheMisses,
     };
+
+    this.log("info", "scan_complete", {
+      fragmentCount: fragments.length, rowCount: result.rowCount,
+      bytesRead: totalBytesRead, durationMs: result.durationMs,
+      r2ReadMs: totalR2ReadMs, wasmExecMs: totalWasmExecMs,
+      cacheHits: totalCacheHits, cacheMisses: totalCacheMisses,
+    });
+
     return this.json(result);
   }
 }

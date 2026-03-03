@@ -3,7 +3,7 @@
  * TS handles orchestration (R2 reads, cache); WASM handles all compute.
  */
 
-import type { Row } from "./types.js";
+import type { Row, DataType, PageInfo } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 
 const textEncoder = new TextEncoder();
@@ -39,6 +39,7 @@ export interface WasmExports {
   bufferPoolHas(keyPtr: number, keyLen: number): number;
   bufferPoolDelete(keyPtr: number, keyLen: number): void;
   bufferPoolClear(): void;
+  bufferPoolGetStats(outCount: number, outBytes: number, outMax: number): void;
   vectorSearchBuffer(
     vectorsPtr: number, numVectors: number, dim: number,
     queryPtr: number, topK: number,
@@ -55,6 +56,17 @@ export interface WasmExports {
   readInt32Column(colIdx: number, outPtr: number, maxLen: number): number;
   filterInt64Column(colIdx: number, op: number, value: bigint, outIndices: number, maxIndices: number): number;
   filterFloat64Column(colIdx: number, op: number, value: number, outIndices: number, maxIndices: number): number;
+
+  // Per-column table registration (sql_executor.zig)
+  registerTableInt64(namePtr: number, nameLen: number, colPtr: number, colLen: number, dataPtr: number, rowCount: number): number;
+  registerTableFloat64(namePtr: number, nameLen: number, colPtr: number, colLen: number, dataPtr: number, rowCount: number): number;
+  registerTableFloat32Vector(namePtr: number, nameLen: number, colPtr: number, colLen: number, dataPtr: number, rowCount: number, vectorDim: number): number;
+  registerTableString(namePtr: number, nameLen: number, colPtr: number, colLen: number, offsetsPtr: number, lengthsPtr: number, dataPtr: number, dataLen: number, rowCount: number): number;
+
+  // Buffer SIMD filter (aggregates.zig)
+  filterFloat64Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
+  filterInt32Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
+  intersectIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
 
   // Buffer SIMD aggregates (aggregates.zig) — ptr in element units, len = element count
   sumFloat64Buffer(ptr: number, len: number): number;
@@ -131,6 +143,263 @@ export class WasmEngine {
   clearTable(name: string): void {
     const { ptr, len } = this.writeString(name);
     if (ptr) this.exports.clearTable(ptr, len);
+  }
+
+  /**
+   * Register a column's raw page buffers in WASM for SQL execution.
+   * Handles null bitmap stripping, type promotion, and utf8 offset extraction.
+   * Returns false on WASM OOM (caller should fall back to JS path).
+   */
+  registerColumn(
+    table: string, colName: string, dtype: DataType,
+    pages: ArrayBuffer[], pageInfos: PageInfo[], listDim?: number,
+  ): boolean {
+    const { ptr: tPtr, len: tLen } = this.writeString(table);
+    if (!tPtr) return false;
+    const { ptr: cPtr, len: cLen } = this.writeString(colName);
+    if (!cPtr) return false;
+
+    // Concatenate page buffers, stripping null bitmaps
+    let totalBytes = 0;
+    const cleaned: Uint8Array[] = [];
+    let totalRows = 0;
+
+    for (let i = 0; i < pages.length; i++) {
+      const pi = pageInfos[i];
+      const rowCount = pi?.rowCount ?? 0;
+      totalRows += rowCount;
+      let raw = new Uint8Array(pages[i]);
+      if ((pi?.nullCount ?? 0) > 0 && rowCount > 0) {
+        const bitmapBytes = Math.ceil(rowCount / 8);
+        raw = raw.subarray(bitmapBytes);
+      }
+      cleaned.push(raw);
+      totalBytes += raw.byteLength;
+    }
+
+    if (totalBytes === 0 || totalRows === 0) return true;
+
+    const flat = new Uint8Array(totalBytes);
+    let off = 0;
+    for (const chunk of cleaned) { flat.set(chunk, off); off += chunk.byteLength; }
+
+    // Dispatch by dtype
+    switch (dtype) {
+      case "int64": {
+        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        if (!dataPtr) return false;
+        new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "float64": {
+        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        if (!dataPtr) return false;
+        new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
+        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "float32": {
+        if (dtype === "float32" && listDim && listDim > 0) {
+          // fixed_size_list path handled below
+          break;
+        }
+        // Promote float32 → float64
+        const src = new Float32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
+        const f64Bytes = totalRows * 8;
+        const dataPtr = this.exports.wasmAlloc(f64Bytes);
+        if (!dataPtr) return false;
+        const dst = new Float64Array(this.exports.memory.buffer, dataPtr, totalRows);
+        for (let i = 0; i < totalRows; i++) dst[i] = src[i];
+        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "int32": case "uint32": {
+        // Promote to i64
+        const src = dtype === "int32"
+          ? new Int32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2)
+          : new Uint32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
+        const i64Bytes = totalRows * 8;
+        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
+        for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "int16": case "uint16": case "int8": case "uint8": {
+        // Promote to i64
+        let src: ArrayLike<number>;
+        switch (dtype) {
+          case "int8": src = new Int8Array(flat.buffer, flat.byteOffset, flat.byteLength); break;
+          case "uint8": src = new Uint8Array(flat.buffer, flat.byteOffset, flat.byteLength); break;
+          case "int16": src = new Int16Array(flat.buffer, flat.byteOffset, flat.byteLength >> 1); break;
+          case "uint16": src = new Uint16Array(flat.buffer, flat.byteOffset, flat.byteLength >> 1); break;
+        }
+        const i64Bytes = totalRows * 8;
+        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
+        for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "uint64": {
+        // Cast to signed i64
+        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        if (!dataPtr) return false;
+        new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "bool": {
+        // Unpack bitmap to i64 (0/1)
+        const i64Bytes = totalRows * 8;
+        const dataPtr = this.exports.wasmAlloc(i64Bytes);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
+        let idx = 0;
+        for (let b = 0; b < flat.byteLength && idx < totalRows; b++) {
+          for (let bit = 0; bit < 8 && idx < totalRows; bit++, idx++) {
+            dst[idx] = BigInt((flat[b] >> bit) & 1);
+          }
+        }
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        return true;
+      }
+
+      case "fixed_size_list": {
+        const dim = listDim ?? 0;
+        if (dim === 0) return true;
+        const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+        if (!dataPtr) return false;
+        new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
+        this.exports.registerTableFloat32Vector(tPtr, tLen, cPtr, cLen, dataPtr, totalRows, dim);
+        return true;
+      }
+
+      case "utf8": {
+        // Scan length-prefixed strings to build offset/length arrays
+        const offsets = new Uint32Array(totalRows);
+        const lengths = new Uint32Array(totalRows);
+        let dataLen = 0;
+        let pos = 0;
+        const view = new DataView(flat.buffer, flat.byteOffset, flat.byteLength);
+        let ri = 0;
+        while (pos + 4 <= flat.byteLength && ri < totalRows) {
+          const strLen = view.getUint32(pos, true);
+          pos += 4;
+          offsets[ri] = dataLen;
+          lengths[ri] = strLen;
+          dataLen += strLen;
+          pos += strLen;
+          ri++;
+        }
+
+        // Copy string data (without length prefixes) to WASM
+        const strData = new Uint8Array(dataLen);
+        pos = 0;
+        let dOff = 0;
+        const view2 = new DataView(flat.buffer, flat.byteOffset, flat.byteLength);
+        for (let i = 0; i < ri; i++) {
+          const strLen = view2.getUint32(pos, true);
+          pos += 4;
+          strData.set(flat.subarray(pos, pos + strLen), dOff);
+          dOff += strLen;
+          pos += strLen;
+        }
+
+        const offsetsPtr = this.exports.wasmAlloc(offsets.byteLength);
+        if (!offsetsPtr) return false;
+        new Uint32Array(this.exports.memory.buffer, offsetsPtr, ri).set(offsets.subarray(0, ri));
+
+        const lengthsPtr = this.exports.wasmAlloc(lengths.byteLength);
+        if (!lengthsPtr) return false;
+        new Uint32Array(this.exports.memory.buffer, lengthsPtr, ri).set(lengths.subarray(0, ri));
+
+        const dataPtr = this.exports.wasmAlloc(dataLen || 1);
+        if (!dataPtr) return false;
+        if (dataLen > 0) {
+          new Uint8Array(this.exports.memory.buffer, dataPtr, dataLen).set(strData);
+        }
+
+        this.exports.registerTableString(tPtr, tLen, cPtr, cLen, offsetsPtr, lengthsPtr, dataPtr, dataLen, ri);
+        return true;
+      }
+
+      default:
+        return true; // Unsupported dtype — skip silently
+    }
+
+    // fixed_size_list when reached via float32 break
+    if (dtype === "float32" && listDim && listDim > 0) {
+      const dim = listDim;
+      const dataPtr = this.exports.wasmAlloc(flat.byteLength);
+      if (!dataPtr) return false;
+      new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
+      this.exports.registerTableFloat32Vector(tPtr, tLen, cPtr, cLen, dataPtr, totalRows, dim);
+      return true;
+    }
+
+    return true;
+  }
+
+  /** Check if a key exists in the WASM buffer pool cache. */
+  cacheHas(key: string): boolean {
+    const { ptr, len } = this.writeString(key);
+    if (!ptr) return false;
+    return this.exports.bufferPoolHas(ptr, len) !== 0;
+  }
+
+  /** Store data in the WASM buffer pool cache. Returns false on failure (not fatal). */
+  cacheSet(key: string, data: ArrayBuffer): boolean {
+    const { ptr: keyPtr, len: keyLen } = this.writeString(key);
+    if (!keyPtr) return false;
+    const dataPtr = this.exports.wasmAlloc(data.byteLength);
+    if (!dataPtr) return false;
+    new Uint8Array(this.exports.memory.buffer, dataPtr, data.byteLength).set(new Uint8Array(data));
+    return this.exports.bufferPoolSet(keyPtr, keyLen, dataPtr, data.byteLength) !== 0;
+  }
+
+  /** Retrieve data from the WASM buffer pool cache. Returns null on miss.
+   *  Uses .slice() to copy data out — survives resetHeap(). */
+  cacheGet(key: string): ArrayBuffer | null {
+    const { ptr: keyPtr, len: keyLen } = this.writeString(key);
+    if (!keyPtr) return null;
+    // Allocate two 4-byte out-params: [dataPtr: u32, size: u32]
+    const outPtr = this.exports.wasmAlloc(8);
+    if (!outPtr) return null;
+    const found = this.exports.bufferPoolGet(keyPtr, keyLen, outPtr, outPtr + 4);
+    if (!found) return null;
+    const view = new DataView(this.exports.memory.buffer);
+    const dataPtr = view.getUint32(outPtr, true);
+    const size = view.getUint32(outPtr + 4, true);
+    if (!dataPtr || !size) return null;
+    return this.exports.memory.buffer.slice(dataPtr, dataPtr + size);
+  }
+
+  /** Clear all entries from the WASM buffer pool cache. */
+  cacheClear(): void {
+    this.exports.bufferPoolClear();
+  }
+
+  /** Get buffer pool statistics. */
+  cacheStats(): { count: number; bytes: number; maxBytes: number } {
+    const outPtr = this.exports.wasmAlloc(12);
+    if (!outPtr) return { count: 0, bytes: 0, maxBytes: 0 };
+    this.exports.bufferPoolGetStats(outPtr, outPtr + 4, outPtr + 8);
+    const view = new DataView(this.exports.memory.buffer);
+    return {
+      count: view.getUint32(outPtr, true),
+      bytes: view.getUint32(outPtr + 4, true),
+      maxBytes: view.getUint32(outPtr + 8, true),
+    };
   }
 
   executeQuery(query: QueryDescriptor): Row[] | null {
