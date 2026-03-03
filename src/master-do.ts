@@ -1,5 +1,6 @@
-import type { ColumnMeta, Env, Footer, TableMeta } from "./types.js";
+import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
+import { parseManifest } from "./manifest.js";
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
 export class MasterDO implements DurableObject {
@@ -33,11 +34,25 @@ export class MasterDO implements DurableObject {
     const regions = (await this.state.storage.get<Record<string, string>>("regions")) ?? {};
     regions[region] = queryDoId;
     await this.state.storage.put("regions", regions);
-    return this.json({ registered: true, region });
+
+    // Return current table timestamps so waking Query DOs can detect stale caches
+    const tables = await this.state.storage.list<TableMeta>({ prefix: "table:" });
+    const tableVersions: Record<string, { r2Key: string; updatedAt: number }> = {};
+    for (const [key, meta] of tables) {
+      const name = key.replace("table:", "");
+      tableVersions[name] = { r2Key: meta.r2Key ?? name, updatedAt: meta.updatedAt ?? 0 };
+    }
+    return this.json({ registered: true, region, tableVersions });
   }
 
   private async handleWrite(request: Request): Promise<Response> {
     const { r2Key } = (await request.json()) as { r2Key: string };
+
+    // Check if this is a dataset directory (ends with / or .lance/)
+    if (r2Key.endsWith("/") || r2Key.endsWith(".lance/")) {
+      return this.handleDatasetWrite(r2Key);
+    }
+
     const result = await this.readFooterAndColumns(r2Key);
     if (!result) return this.json({ error: "Failed to read footer" }, 500);
 
@@ -50,6 +65,41 @@ export class MasterDO implements DurableObject {
     await this.state.storage.put(`table:${tableName}`, meta);
     await this.broadcast(tableName, r2Key, result);
     return this.json({ success: true, table: tableName });
+  }
+
+  /** Handle write notification for a multi-fragment dataset directory. */
+  private async handleDatasetWrite(r2Prefix: string): Promise<Response> {
+    const tableName = r2Prefix.replace(/\/$/, "").replace(/\.lance$/, "").split("/").pop() ?? r2Prefix;
+
+    // Find latest manifest
+    const listed = await this.env.DATA_BUCKET.list({ prefix: `${r2Prefix}_versions/`, limit: 100 });
+    const manifestKeys = listed.objects
+      .filter(o => o.key.endsWith(".manifest"))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    if (manifestKeys.length === 0) return this.json({ error: "No manifests found" }, 404);
+
+    const latestKey = manifestKeys[manifestKeys.length - 1].key;
+    const manifestObj = await this.env.DATA_BUCKET.get(latestKey);
+    if (!manifestObj) return this.json({ error: "Failed to read manifest" }, 500);
+
+    const manifest = parseManifest(await manifestObj.arrayBuffer());
+    if (!manifest) return this.json({ error: "Failed to parse manifest" }, 500);
+
+    // Read first fragment's footer to broadcast (Query DOs will discover the rest)
+    if (manifest.fragments.length > 0) {
+      const firstFrag = manifest.fragments[0];
+      const fragKey = `${r2Prefix}${firstFrag.filePath}`;
+      const result = await this.readFooterAndColumns(fragKey);
+      if (result) {
+        await this.broadcast(tableName, fragKey, result);
+      }
+    }
+
+    await this.state.storage.put(`table:${tableName}`, {
+      name: tableName, r2Prefix, manifest, totalRows: manifest.totalRows, updatedAt: Date.now(),
+    });
+
+    return this.json({ success: true, table: tableName, fragments: manifest.fragments.length, totalRows: manifest.totalRows });
   }
 
   private async handleRefresh(request: Request): Promise<Response> {

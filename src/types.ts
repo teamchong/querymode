@@ -120,10 +120,35 @@ export interface QueryResult {
   durationMs: number;
 }
 
+/** Parsed Lance manifest — describes all fragments in a dataset version */
+export interface ManifestInfo {
+  version: number;
+  fragments: FragmentInfo[];
+  totalRows: number;
+}
+
+/** A single fragment (data file) within a Lance dataset */
+export interface FragmentInfo {
+  id: number;
+  filePath: string;
+  physicalRows: number;
+}
+
+/** Cached dataset metadata — multi-fragment Lance directories */
+export interface DatasetMeta {
+  name: string;
+  r2Prefix: string;
+  manifest: ManifestInfo;
+  fragmentMetas: Map<number, TableMeta>;
+  totalRows: number;
+  updatedAt: number;
+}
+
 /** Environment bindings for Cloudflare Workers */
 export interface Env {
   DATA_BUCKET: R2Bucket;
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
+  FRAGMENT_DO: DurableObjectNamespace;
   LANCEQL_WASM: WebAssembly.Module;
 }

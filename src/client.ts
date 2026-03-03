@@ -85,7 +85,20 @@ export class TableQuery {
 
   /** Execute the query. Resolves page ranges from cached footer, issues parallel Range reads. */
   async exec(): Promise<QueryResult> {
-    return this._executor.execute({
+    return this._executor.execute(this.toDescriptor());
+  }
+
+  /** Execute and return an NDJSON stream of rows. Only works with RemoteExecutor. */
+  async execStream(): Promise<ReadableStream<Row>> {
+    if (!("executeStream" in this._executor)) {
+      throw new Error("execStream() requires a remote executor with streaming support");
+    }
+    return (this._executor as QueryExecutor & { executeStream(q: QueryDescriptor): Promise<ReadableStream<Row>> })
+      .executeStream(this.toDescriptor());
+  }
+
+  private toDescriptor(): QueryDescriptor {
+    return {
       table: this._table,
       filters: this._filters,
       projections: this._projections,
@@ -95,7 +108,7 @@ export class TableQuery {
       vectorSearch: this._vectorSearch,
       aggregates: this._aggregates.length > 0 ? this._aggregates : undefined,
       groupBy: this._groupBy.length > 0 ? this._groupBy : undefined,
-    });
+    };
   }
 }
 

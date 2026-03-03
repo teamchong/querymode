@@ -55,6 +55,28 @@ export interface WasmExports {
   readInt32Column(colIdx: number, outPtr: number, maxLen: number): number;
   filterInt64Column(colIdx: number, op: number, value: bigint, outIndices: number, maxIndices: number): number;
   filterFloat64Column(colIdx: number, op: number, value: number, outIndices: number, maxIndices: number): number;
+
+  // Buffer SIMD aggregates (aggregates.zig) — ptr in element units, len = element count
+  sumFloat64Buffer(ptr: number, len: number): number;
+  minFloat64Buffer(ptr: number, len: number): number;
+  maxFloat64Buffer(ptr: number, len: number): number;
+  avgFloat64Buffer(ptr: number, len: number): number;
+  sumInt32Buffer(ptr: number, len: number): number;
+  sumInt64Buffer(ptr: number, len: number): bigint;
+  minInt64Buffer(ptr: number, len: number): bigint;
+  maxInt64Buffer(ptr: number, len: number): bigint;
+
+  // Fragment reader (fragment_reader.zig)
+  fragmentLoad(dataPtr: number, len: number): number;
+  fragmentGetColumnCount(): number;
+  fragmentGetRowCount(): bigint;
+  fragmentGetColumnName(idx: number, outPtr: number, maxLen: number): number;
+  fragmentGetColumnType(idx: number, outPtr: number, maxLen: number): number;
+  fragmentGetColumnVectorDim(idx: number): number;
+  fragmentReadInt64(colIdx: number, outPtr: number, maxCount: number): number;
+  fragmentReadFloat64(colIdx: number, outPtr: number, maxCount: number): number;
+  fragmentReadFloat32(colIdx: number, outPtr: number, maxCount: number): number;
+  fragmentReadInt32(colIdx: number, outPtr: number, maxCount: number): number;
 }
 
 export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<WasmEngine> {
@@ -125,6 +147,88 @@ export class WasmEngine {
     const rows = parseWasmResult(this.exports.memory.buffer, resultPtr, resultSize);
     this.exports.resetResult();
     return rows;
+  }
+
+  /** SIMD sum of Float64 buffer. Returns 0 for empty input. */
+  sumFloat64(buf: ArrayBuffer): number {
+    if (buf.byteLength === 0) return 0;
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    if (!ptr) return 0;
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.sumFloat64Buffer(ptr >> 3, numElements);
+  }
+
+  /** SIMD min of Float64 buffer. Returns Infinity for empty input. */
+  minFloat64(buf: ArrayBuffer): number {
+    if (buf.byteLength === 0) return Infinity;
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    if (!ptr) return Infinity;
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.minFloat64Buffer(ptr >> 3, numElements);
+  }
+
+  /** SIMD max of Float64 buffer. Returns -Infinity for empty input. */
+  maxFloat64(buf: ArrayBuffer): number {
+    if (buf.byteLength === 0) return -Infinity;
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    if (!ptr) return -Infinity;
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.maxFloat64Buffer(ptr >> 3, numElements);
+  }
+
+  /** SIMD avg of Float64 buffer. Returns 0 for empty input. */
+  avgFloat64(buf: ArrayBuffer): number {
+    if (buf.byteLength === 0) return 0;
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.wasmAlloc(buf.byteLength);
+    if (!ptr) return 0;
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.avgFloat64Buffer(ptr >> 3, numElements);
+  }
+
+  /** Load a fragment file into the WASM fragment reader. */
+  loadFragment(data: ArrayBuffer): boolean {
+    const ptr = this.exports.wasmAlloc(data.byteLength);
+    if (!ptr) return false;
+    new Uint8Array(this.exports.memory.buffer, ptr, data.byteLength).set(new Uint8Array(data));
+    return this.exports.fragmentLoad(ptr, data.byteLength) === 0;
+  }
+
+  /** Read a typed column from a loaded fragment. */
+  readFragmentColumn(colIdx: number, dtype: string): Float64Array | Float32Array | Int32Array | BigInt64Array | null {
+    const rowCount = Number(this.exports.fragmentGetRowCount());
+    if (rowCount === 0) return null;
+
+    switch (dtype) {
+      case "float64": {
+        const outPtr = this.exports.wasmAlloc(rowCount * 8);
+        if (!outPtr) return null;
+        const read = this.exports.fragmentReadFloat64(colIdx, outPtr, rowCount);
+        return new Float64Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 8));
+      }
+      case "float32": {
+        const outPtr = this.exports.wasmAlloc(rowCount * 4);
+        if (!outPtr) return null;
+        const read = this.exports.fragmentReadFloat32(colIdx, outPtr, rowCount);
+        return new Float32Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 4));
+      }
+      case "int32": {
+        const outPtr = this.exports.wasmAlloc(rowCount * 4);
+        if (!outPtr) return null;
+        const read = this.exports.fragmentReadInt32(colIdx, outPtr, rowCount);
+        return new Int32Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 4));
+      }
+      case "int64": {
+        const outPtr = this.exports.wasmAlloc(rowCount * 8);
+        if (!outPtr) return null;
+        const read = this.exports.fragmentReadInt64(colIdx, outPtr, rowCount);
+        return new BigInt64Array(this.exports.memory.buffer.slice(outPtr, outPtr + read * 8));
+      }
+      default: return null;
+    }
   }
 
   vectorSearchBuffer(

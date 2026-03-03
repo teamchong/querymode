@@ -1,8 +1,9 @@
 import type { Env } from "./types.js";
 import { MasterDO } from "./master-do.js";
 import { QueryDO } from "./query-do.js";
+import { FragmentDO } from "./fragment-do.js";
 
-export { MasterDO, QueryDO };
+export { MasterDO, QueryDO, FragmentDO };
 
 /**
  * Cloudflare Worker entry point.
@@ -36,6 +37,7 @@ export default {
     // Read operations go to the nearest regional Query DO
     if (
       url.pathname === "/query" ||
+      url.pathname === "/query/stream" ||
       url.pathname === "/tables" ||
       url.pathname === "/meta"
     ) {

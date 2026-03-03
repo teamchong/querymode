@@ -1,11 +1,13 @@
 import { TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { ColumnMeta, Env, QueryResult } from "./types.js";
+import type { ColumnMeta, Env, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
+import { parseManifest, type ManifestInfo } from "./manifest.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
 
 export { MasterDO } from "./master-do.js";
 export { QueryDO } from "./query-do.js";
+export { FragmentDO } from "./fragment-do.js";
 export { TableQuery } from "./client.js";
 export type { QueryExecutor, QueryDescriptor } from "./client.js";
 export type {
@@ -15,6 +17,9 @@ export type {
   ColumnMeta,
   PageInfo,
   DataType,
+  DatasetMeta,
+  ManifestInfo,
+  FragmentInfo,
   FilterOp,
   AggregateOp,
   QueryResult,
@@ -95,14 +100,16 @@ class RemoteExecutor implements QueryExecutor {
     this.locationHint = locationHint;
   }
 
-  async execute(query: QueryDescriptor): Promise<QueryResult> {
-    // FIX: Use query-${region} naming to match worker.ts DO routing.
-    // Previously hardcoded "regional-query" which never matched worker.ts's "query-{datacenter}".
+  private getQueryDo() {
     const doName = `query-${this.region}`;
     const id = this.namespace.idFromName(doName);
-    const queryDo = this.locationHint
+    return this.locationHint
       ? this.namespace.get(id, { locationHint: this.locationHint as DurableObjectLocationHint })
       : this.namespace.get(id);
+  }
+
+  async execute(query: QueryDescriptor): Promise<QueryResult> {
+    const queryDo = this.getQueryDo();
 
     const response = await queryDo.fetch(new Request("http://internal/query", {
       method: "POST",
@@ -117,6 +124,48 @@ class RemoteExecutor implements QueryExecutor {
 
     return response.json() as Promise<QueryResult>;
   }
+
+  async executeStream(query: QueryDescriptor): Promise<ReadableStream<Row>> {
+    const queryDo = this.getQueryDo();
+
+    const response = await queryDo.fetch(new Request("http://internal/query/stream", {
+      method: "POST",
+      body: JSON.stringify(query, bigIntReplacer),
+      headers: { "content-type": "application/json" },
+    }));
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`EdgeQ stream failed: ${error}`);
+    }
+
+    if (!response.body) throw new Error("No response body for stream");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    return new ReadableStream<Row>({
+      async start(controller) {
+        const reader = response.body!.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop()!;
+            for (const line of lines) {
+              if (line.trim()) controller.enqueue(JSON.parse(line) as Row);
+            }
+          }
+          if (buffer.trim()) controller.enqueue(JSON.parse(buffer) as Row);
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+        }
+      },
+    });
+  }
 }
 
 /**
@@ -126,10 +175,22 @@ class RemoteExecutor implements QueryExecutor {
  */
 class LocalExecutor implements QueryExecutor {
   private metaCache: Map<string, { columns: ColumnMeta[]; fileSize: number }> = new Map();
+  private datasetCache: Map<string, DatasetMeta> = new Map();
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {
     const startTime = Date.now();
     const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
+
+    // Check if this is a Lance dataset directory (has _versions/ subdir)
+    if (!isUrl) {
+      try {
+        const fs = await import("node:fs/promises");
+        const stat = await fs.stat(query.table).catch(() => null);
+        if (stat?.isDirectory()) {
+          return this.executeDatasetQuery(query, startTime);
+        }
+      } catch { /* not a directory, fall through to single-file path */ }
+    }
 
     // Step 1: Get or cache table metadata (footer + column meta)
     let cached = this.metaCache.get(query.table);
@@ -214,6 +275,130 @@ class LocalExecutor implements QueryExecutor {
       columns: projectedColumns.map((c) => c.name),
       bytesRead,
       pagesSkipped,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  /** Execute a query against a multi-fragment Lance dataset directory. */
+  private async executeDatasetQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
+    const fs = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+
+    // Discover or reuse cached dataset metadata
+    let dataset = this.datasetCache.get(query.table);
+    if (!dataset) {
+      // Find latest manifest
+      const versionsDir = pathMod.join(query.table, "_versions");
+      const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
+      const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
+      if (manifests.length === 0) {
+        throw new Error(`No manifests found in ${versionsDir}`);
+      }
+
+      const latestManifest = manifests[manifests.length - 1];
+      const manifestBuf = await fs.readFile(pathMod.join(versionsDir, latestManifest));
+      const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
+      const manifest = parseManifest(ab);
+      if (!manifest) throw new Error(`Failed to parse manifest ${latestManifest}`);
+
+      // Read footer + column metadata for each fragment
+      const fragmentMetas = new Map<number, TableMeta>();
+      for (const frag of manifest.fragments) {
+        const fragPath = pathMod.join(query.table, frag.filePath);
+        try {
+          const cached = await this.loadMetaFromFile(fragPath);
+          // Read the actual footer from the fragment file
+          const fragStat = await fs.stat(fragPath);
+          const fragHandle = await fs.open(fragPath, "r");
+          let footer: import("./types.js").Footer;
+          try {
+            const footerBuf = Buffer.alloc(FOOTER_SIZE);
+            await fragHandle.read(footerBuf, 0, FOOTER_SIZE, fragStat.size - FOOTER_SIZE);
+            const footerAb = footerBuf.buffer.slice(footerBuf.byteOffset, footerBuf.byteOffset + footerBuf.byteLength);
+            const parsed = parseFooter(footerAb);
+            if (!parsed) continue;
+            footer = parsed;
+          } finally {
+            await fragHandle.close();
+          }
+          fragmentMetas.set(frag.id, {
+            name: frag.filePath,
+            footer,
+            columns: cached.columns,
+            totalRows: frag.physicalRows,
+            fileSize: BigInt(cached.fileSize),
+            r2Key: fragPath,
+            updatedAt: Date.now(),
+          });
+        } catch { continue; }
+      }
+
+      dataset = {
+        name: query.table,
+        r2Prefix: query.table + "/",
+        manifest,
+        fragmentMetas,
+        totalRows: manifest.totalRows,
+        updatedAt: Date.now(),
+      };
+      this.datasetCache.set(query.table, dataset);
+    }
+
+    // Execute query across all fragments
+    let allRows: import("./types.js").Row[] = [];
+    let totalBytesRead = 0;
+    let totalPagesSkipped = 0;
+
+    for (const [, meta] of dataset.fragmentMetas) {
+      const projectedColumns = query.projections.length > 0
+        ? meta.columns.filter(c => query.projections.includes(c.name))
+        : meta.columns;
+
+      const pageRanges: { column: string; offset: bigint; length: number }[] = [];
+      for (const col of projectedColumns) {
+        for (const page of col.pages) {
+          if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+            totalPagesSkipped++;
+            continue;
+          }
+          pageRanges.push({ column: col.name, offset: page.byteOffset, length: page.byteLength });
+        }
+      }
+
+      const columnData = new Map<string, ArrayBuffer[]>();
+      const fsMod = await import("node:fs/promises");
+      const handle = await fsMod.open(meta.r2Key, "r");
+      try {
+        for (const range of pageRanges) {
+          const buf = Buffer.alloc(range.length);
+          await handle.read(buf, 0, range.length, Number(range.offset));
+          totalBytesRead += range.length;
+          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+          const existing = columnData.get(range.column) ?? [];
+          existing.push(ab);
+          columnData.set(range.column, existing);
+        }
+      } finally {
+        await handle.close();
+      }
+
+      const rows = assembleRows(columnData, projectedColumns, query);
+      allRows.push(...rows);
+    }
+
+    // Apply limit if no sort (sorted results already limited per-fragment)
+    if (query.limit && !query.sortColumn && allRows.length > query.limit) {
+      allRows = allRows.slice(0, query.limit);
+    }
+
+    return {
+      rows: allRows,
+      rowCount: allRows.length,
+      columns: query.projections.length > 0
+        ? query.projections
+        : (dataset.fragmentMetas.values().next().value?.columns.map((c: ColumnMeta) => c.name) ?? []),
+      bytesRead: totalBytesRead,
+      pagesSkipped: totalPagesSkipped,
       durationMs: Date.now() - startTime,
     };
   }
