@@ -27,16 +27,7 @@ Serverless columnar query engine on Cloudflare Durable Objects. Queries Lance fi
 
 ## Architecture
 
-```
-Worker (routing)
-  ├── Master DO (single writer → R2, broadcasts footer invalidations)
-  └── Query DO (per-region reader, footer cache, WASM or TS decode)
-        ├── WASM path: load full file into Zig engine (files < 64MB)
-        └── TS path: page-streaming with parallel R2 range reads (fallback)
-
-Storage: R2 (Lance format, append-only, $0 egress)
-Cache: DO memory → DO SQLite → R2 (footer hierarchy)
-```
+<img width="1070" height="1188" alt="edgeq-architecture" src="https://github.com/user-attachments/assets/bde85c18-8ca5-4197-a43a-695617336f21" />
 
 ## Build
 
