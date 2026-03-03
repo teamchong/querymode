@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta, PARQUET_MAGIC } from "./parquet.js";
+import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta, PARQUET_MAGIC, ThriftReader } from "./parquet.js";
 import { LANCE_MAGIC } from "./footer.js";
 
 describe("detectFormat", () => {
@@ -143,5 +143,67 @@ describe("parquetMetaToTableMeta", () => {
     expect(tableMeta.columns).toHaveLength(1);
     expect(tableMeta.columns[0].pages).toHaveLength(2);
     expect(tableMeta.totalRows).toBe(200);
+  });
+});
+
+describe("ThriftReader", () => {
+  it("reads varint values", () => {
+    // varint encoding of 300: 0xAC 0x02
+    const r = new ThriftReader(new Uint8Array([0xAC, 0x02]));
+    expect(r.readVarint()).toBe(300);
+  });
+
+  it("reads zigzag i32 values", () => {
+    // Thrift compact: field 1 i32, delta=1 → (1<<4)|5 = 0x15
+    // zigzag(-1) = 1 → varint(1) = 0x01
+    const r = new ThriftReader(new Uint8Array([0x15, 0x01, 0x00]));
+    const f = r.nextField();
+    expect(f).not.toBe(null);
+    expect(f!.fieldId).toBe(1);
+    expect(r.readI32()).toBe(-1);
+  });
+
+  it("reads list headers", () => {
+    // List header: high nibble = size (3), low nibble = elem type (5=i32)
+    const r = new ThriftReader(new Uint8Array([(3 << 4) | 5]));
+    const { size, elemType } = r.readListHeader();
+    expect(size).toBe(3);
+    expect(elemType).toBe(5);
+  });
+
+  it("reads large list headers with varint size", () => {
+    // size=0xF means "read varint next", elem type=8 (binary)
+    const r = new ThriftReader(new Uint8Array([0xF8, 20])); // size=0xF, elemType=8, then varint(20)
+    const { size, elemType } = r.readListHeader();
+    expect(size).toBe(20);
+    expect(elemType).toBe(8);
+  });
+
+  it("readStruct saves/restores lastFieldId", () => {
+    const r = new ThriftReader(new Uint8Array([0x00])); // just struct end
+    r.lastFieldId = 42;
+    r.readStruct(inner => {
+      expect(inner.lastFieldId).toBe(0);
+      return null;
+    });
+    expect(r.lastFieldId).toBe(42);
+  });
+
+  it("skips unknown fields", () => {
+    // Field 1: i32 (type 5), value zigzag(0)=0x00
+    // Field 2: binary (type 8), length=2, bytes=[0xAB, 0xCD]
+    // Struct end: 0x00
+    const r = new ThriftReader(new Uint8Array([
+      0x15, 0x00,           // field 1, i32, value=0
+      0x18, 0x02, 0xAB, 0xCD, // field 2, binary, len=2
+      0x00,                 // struct end
+    ]));
+    const f1 = r.nextField()!;
+    expect(f1.fieldId).toBe(1);
+    r.skip(f1.typeId); // skip i32
+    const f2 = r.nextField()!;
+    expect(f2.fieldId).toBe(2);
+    r.skip(f2.typeId); // skip binary
+    expect(r.nextField()).toBe(null); // struct end
   });
 });

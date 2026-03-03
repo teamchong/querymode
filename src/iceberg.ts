@@ -1,49 +1,14 @@
 import type { DataType, IcebergSchema } from "./types.js";
 
-/**
- * Map Iceberg type strings to EdgeQ DataType.
- */
-export function icebergTypeToDataType(iceType: string): DataType {
-  // Handle complex types first
-  if (
-    iceType.startsWith("list") ||
-    iceType.startsWith("map") ||
-    iceType.startsWith("struct")
-  ) {
-    return "binary";
-  }
+const icebergTypeMap: Record<string, DataType> = {
+  boolean: "bool", int: "int32", long: "int64", float: "float32", double: "float64",
+  string: "utf8", binary: "binary", decimal: "float64", date: "int32",
+  time: "int64", timestamp: "int64", timestamptz: "int64", uuid: "utf8", fixed: "binary",
+};
 
-  switch (iceType) {
-    case "boolean":
-      return "bool";
-    case "int":
-      return "int32";
-    case "long":
-      return "int64";
-    case "float":
-      return "float32";
-    case "double":
-      return "float64";
-    case "string":
-      return "utf8";
-    case "binary":
-      return "binary";
-    case "decimal":
-      return "float64";
-    case "date":
-      return "int32";
-    case "time":
-      return "int64";
-    case "timestamp":
-    case "timestamptz":
-      return "int64";
-    case "uuid":
-      return "utf8";
-    case "fixed":
-      return "binary";
-    default:
-      return "binary";
-  }
+/** Map Iceberg type strings to EdgeQ DataType. */
+export function icebergTypeToDataType(iceType: string): DataType {
+  return icebergTypeMap[iceType] ?? "binary";
 }
 
 /**
@@ -165,12 +130,9 @@ export function extractParquetPathsFromManifest(
       path = s3Match[1];
     }
 
-    // Only keep paths that look like data files
-    if (path.includes("data/") || path.endsWith(".parquet")) {
-      if (!seen.has(path)) {
-        seen.add(path);
-        paths.push(path);
-      }
+    if (!seen.has(path)) {
+      seen.add(path);
+      paths.push(path);
     }
   }
 

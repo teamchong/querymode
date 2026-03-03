@@ -1,9 +1,7 @@
-import type { ColumnMeta, PageInfo, Row } from "./types.js";
+import type { ColumnMeta, PageInfo, Row, DataType } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
-import { decodeParquetColumnChunk } from "./parquet-decode.js";
-
-const textDecoder = new TextDecoder();
+import { decodeParquetColumnChunk, decodePlainValues } from "./parquet-decode.js";
 
 /** Check if a page can be skipped via min/max stats. */
 export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"], columnName: string): boolean {
@@ -82,8 +80,6 @@ function decodeAllColumns(
 
     if (col.dtype === "fixed_size_list") {
       result.set(col.name, decodeFixedSizeListPages(pages, col.listDimension ?? 0));
-    } else if (col.dtype === "bool") {
-      result.set(col.name, decodeBoolPages(pages, col.pages));
     } else {
       const values: DecodedValue[] = [];
       for (let i = 0; i < pages.length; i++) {
@@ -116,20 +112,6 @@ function decodeFixedSizeListPages(pages: ArrayBuffer[], dim: number): Float32Arr
   return result;
 }
 
-function decodeBoolPages(pages: ArrayBuffer[], pageInfos: PageInfo[]): boolean[] {
-  const result: boolean[] = [];
-  for (let i = 0; i < pages.length; i++) {
-    const bytes = new Uint8Array(pages[i]);
-    const rowCount = pageInfos[i]?.rowCount ?? (bytes.length * 8);
-    let decoded = 0;
-    for (let b = 0; b < bytes.length && decoded < rowCount; b++) {
-      for (let bit = 0; bit < 8 && decoded < rowCount; bit++, decoded++) {
-        result.push(((bytes[b] >> bit) & 1) === 1);
-      }
-    }
-  }
-  return result;
-}
 
 /** Decode a raw page buffer into typed values. Handles null bitmaps when nullCount > 0. */
 export function decodePage(
@@ -152,56 +134,9 @@ export function decodePage(
     buf = buf.slice(bitmapBytes);
   }
 
-  const view = new DataView(buf);
-  const values: (number | bigint | string | null)[] = [];
-
-  switch (dtype) {
-    case "int8":    { const a = new Int8Array(buf); for (let i = 0; i < a.length; i++) values.push(a[i]); break; }
-    case "uint8":   { const a = new Uint8Array(buf); for (let i = 0; i < a.length; i++) values.push(a[i]); break; }
-    case "int16":   { const n = buf.byteLength >> 1; for (let i = 0; i < n; i++) values.push(view.getInt16(i * 2, true)); break; }
-    case "uint16":  { const n = buf.byteLength >> 1; for (let i = 0; i < n; i++) values.push(view.getUint16(i * 2, true)); break; }
-    case "int32":   { const n = buf.byteLength >> 2; for (let i = 0; i < n; i++) values.push(view.getInt32(i * 4, true)); break; }
-    case "uint32":  { const n = buf.byteLength >> 2; for (let i = 0; i < n; i++) values.push(view.getUint32(i * 4, true)); break; }
-    case "int64":   { const n = buf.byteLength >> 3; for (let i = 0; i < n; i++) values.push(view.getBigInt64(i * 8, true)); break; }
-    case "uint64":  { const n = buf.byteLength >> 3; for (let i = 0; i < n; i++) values.push(view.getBigUint64(i * 8, true)); break; }
-    case "float32": { const n = buf.byteLength >> 2; for (let i = 0; i < n; i++) values.push(view.getFloat32(i * 4, true)); break; }
-    case "float64": { const n = buf.byteLength >> 3; for (let i = 0; i < n; i++) values.push(view.getFloat64(i * 8, true)); break; }
-    case "float16": {
-      const n = buf.byteLength >> 1;
-      for (let i = 0; i < n; i++) {
-        const h = view.getUint16(i * 2, true);
-        const s = (h >> 15) & 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
-        if (e === 0) values.push((s ? -1 : 1) * 2 ** -14 * (m / 1024));
-        else if (e === 31) values.push(m ? NaN : s ? -Infinity : Infinity);
-        else values.push((s ? -1 : 1) * 2 ** (e - 15) * (1 + m / 1024));
-      }
-      break;
-    }
-    case "utf8": {
-      const bytes = new Uint8Array(buf);
-      let pos = 0;
-      while (pos + 4 <= bytes.length) {
-        const len = view.getUint32(pos, true); pos += 4;
-        if (pos + len > bytes.length) break;
-        values.push(textDecoder.decode(bytes.subarray(pos, pos + len)));
-        pos += len;
-      }
-      break;
-    }
-    case "binary": {
-      let pos = 0;
-      while (pos + 4 <= buf.byteLength) {
-        const len = view.getUint32(pos, true); pos += 4;
-        if (pos + len > buf.byteLength) break;
-        const b = new Uint8Array(buf, pos, len);
-        let hex = "";
-        for (let i = 0; i < b.length; i++) hex += b[i].toString(16).padStart(2, "0");
-        values.push(hex);
-        pos += len;
-      }
-      break;
-    }
-  }
+  const bytes = new Uint8Array(buf);
+  const numValues = rowCount > 0 ? rowCount - (nulls?.size ?? 0) : Number.MAX_SAFE_INTEGER;
+  const values = decodePlainValues(bytes, dtype as DataType, numValues) as (number | bigint | string | null)[];
 
   if (nulls && nulls.size > 0) {
     const withNulls: (number | bigint | string | null)[] = [];
@@ -258,14 +193,14 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
     return desc ? nv > rv : nv < rv;
   };
 
-  const siftDown = (i: number): void => {
+  const siftDown = (arr: Row[], i: number): void => {
     while (true) {
       let t = i;
       const l = 2 * i + 1, r = 2 * i + 2;
-      if (l < heap.length && cmp(heap[l], heap[t]) > 0) t = l;
-      if (r < heap.length && cmp(heap[r], heap[t]) > 0) t = r;
+      if (l < arr.length && cmp(arr[l], arr[t]) > 0) t = l;
+      if (r < arr.length && cmp(arr[r], arr[t]) > 0) t = r;
       if (t === i) break;
-      [heap[i], heap[t]] = [heap[t], heap[i]];
+      [arr[i], arr[t]] = [arr[t], arr[i]];
       i = t;
     }
   };
@@ -280,7 +215,7 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
 
   for (const row of rows) {
     if (heap.length < k) { heap.push(row); siftUp(heap.length - 1); }
-    else if (shouldReplace(row)) { heap[0] = row; siftDown(0); }
+    else if (shouldReplace(row)) { heap[0] = row; siftDown(heap, 0); }
   }
 
   // Extract sorted
@@ -290,19 +225,7 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
     result.push(copy[0]);
     copy[0] = copy[copy.length - 1];
     copy.pop();
-    if (copy.length > 0) {
-      // inline siftDown on copy
-      let i = 0;
-      while (true) {
-        let t = i;
-        const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < copy.length && cmp(copy[l], copy[t]) > 0) t = l;
-        if (r < copy.length && cmp(copy[r], copy[t]) > 0) t = r;
-        if (t === i) break;
-        [copy[i], copy[t]] = [copy[t], copy[i]];
-        i = t;
-      }
-    }
+    if (copy.length > 0) siftDown(copy, 0);
   }
   result.reverse();
   return result;

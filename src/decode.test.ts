@@ -70,6 +70,20 @@ describe("decodePage", () => {
     expect(values[0]).toBeCloseTo(1.0, 3);
   });
 
+  it("decodes int32 page with null bitmap", () => {
+    // 3 rows: [100, null, 300]. Validity bitmap: 0b101 = 0x05 (bits 0,2 set = valid)
+    // Bitmap byte: 0x05, then 2 int32 values (only non-null)
+    const buf = new ArrayBuffer(1 + 8);
+    const bytes = new Uint8Array(buf);
+    bytes[0] = 0x05; // validity bitmap: row 0 valid, row 1 null, row 2 valid
+    const view = new DataView(buf);
+    view.setInt32(1, 100, true);
+    view.setInt32(5, 300, true);
+
+    const values = decodePage(buf, "int32", 1, 3); // nullCount=1, rowCount=3
+    expect(values).toEqual([100, null, 300]);
+  });
+
   it("decodes int64 page", () => {
     const buf = new ArrayBuffer(16);
     const view = new DataView(buf);
@@ -272,6 +286,11 @@ describe("matchesFilter", () => {
   it("matches eq", () => {
     expect(matchesFilter(42, { column: "x", op: "eq", value: 42 })).toBe(true);
     expect(matchesFilter(43, { column: "x", op: "eq", value: 42 })).toBe(false);
+  });
+
+  it("matches neq", () => {
+    expect(matchesFilter(42, { column: "x", op: "neq", value: 42 })).toBe(false);
+    expect(matchesFilter(43, { column: "x", op: "neq", value: 42 })).toBe(true);
   });
 
   it("matches gt/gte", () => {

@@ -120,7 +120,7 @@ export class MasterDO implements DurableObject {
 
   /** Read footer + column metadata from R2 (2 range reads, done once by Master). */
   private async readFooterAndColumns(r2Key: string): Promise<{
-    parsed: Footer; raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[];
+    parsed?: Footer; raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[];
     format: "lance" | "parquet";
   } | null> {
     const head = await this.env.DATA_BUCKET.head(r2Key);
@@ -153,13 +153,7 @@ export class MasterDO implements DurableObject {
       if (!parquetMeta) return null;
 
       const tableMeta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
-      // Return a synthetic Footer for broadcast compatibility
-      const syntheticFooter: Footer = {
-        columnMetaStart: 0n, columnMetaOffsetsStart: 0n, globalBuffOffsetsStart: 0n,
-        numGlobalBuffers: 0, numColumns: tableMeta.columns.length,
-        majorVersion: 0, minorVersion: 0,
-      };
-      return { parsed: syntheticFooter, raw, fileSize, columns: tableMeta.columns, format: "parquet" };
+      return { raw, fileSize, columns: tableMeta.columns, format: "parquet" };
     }
 
     // Lance format

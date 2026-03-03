@@ -39,25 +39,21 @@ export function getParquetFooterLength(last8: ArrayBuffer): number | null {
 
 // --- Thrift Compact Protocol Reader ---
 
-class ThriftReader {
-  private bytes: Uint8Array;
-  private offset: number;
-  private lastFieldId: number;
+export class ThriftReader {
+  bytes: Uint8Array;
+  ofs: number;
+  lastFieldId: number;
 
   constructor(bytes: Uint8Array, offset = 0) {
     this.bytes = bytes;
-    this.offset = offset;
+    this.ofs = offset;
     this.lastFieldId = 0;
-  }
-
-  get pos(): number {
-    return this.offset;
   }
 
   /** Read next field header. Returns null on struct end (0x00). */
   nextField(): { fieldId: number; typeId: number } | null {
-    if (this.offset >= this.bytes.length) return null;
-    const byte = this.bytes[this.offset++];
+    if (this.ofs >= this.bytes.length) return null;
+    const byte = this.bytes[this.ofs++];
     if (byte === 0x00) return null; // struct end
 
     const delta = (byte >> 4) & 0x0f;
@@ -88,8 +84,8 @@ class ThriftReader {
   /** Read a length-prefixed binary field */
   readBinary(): Uint8Array {
     const len = this.readVarint();
-    const result = this.bytes.subarray(this.offset, this.offset + len);
-    this.offset += len;
+    const result = this.bytes.subarray(this.ofs, this.ofs + len);
+    this.ofs += len;
     return result;
   }
 
@@ -102,14 +98,32 @@ class ThriftReader {
   readVarint(): number {
     let result = 0;
     let shift = 0;
-    while (this.offset < this.bytes.length) {
-      const byte = this.bytes[this.offset++];
+    while (this.ofs < this.bytes.length) {
+      const byte = this.bytes[this.ofs++];
       result |= (byte & 0x7f) << shift;
       if ((byte & 0x80) === 0) return result >>> 0;
       shift += 7;
       if (shift >= 35) return result >>> 0;
     }
     return result >>> 0;
+  }
+
+  /** Parse a nested struct, saving/restoring lastFieldId automatically. */
+  readStruct<T>(parseFn: (r: ThriftReader) => T): T {
+    const saved = this.lastFieldId;
+    this.lastFieldId = 0;
+    const result = parseFn(this);
+    this.lastFieldId = saved;
+    return result;
+  }
+
+  /** Read list header: returns { size, elemType } */
+  readListHeader(): { size: number; elemType: number } {
+    const header = this.bytes[this.ofs++];
+    let size = (header >> 4) & 0x0f;
+    const elemType = header & 0x0f;
+    if (size === 0x0f) size = this.readVarint();
+    return { size, elemType };
   }
 
   /** Skip a field of the given Thrift compact type */
@@ -119,7 +133,7 @@ class ThriftReader {
       case THRIFT_BOOL_FALSE:
         break;
       case THRIFT_I8:
-        this.offset += 1;
+        this.ofs += 1;
         break;
       case THRIFT_I16:
       case THRIFT_I32:
@@ -129,21 +143,14 @@ class ThriftReader {
         this.readVarint64(); // consume zigzag varint (64-bit)
         break;
       case THRIFT_DOUBLE:
-        this.offset += 8;
+        this.ofs += 8;
         break;
       case THRIFT_BINARY:
         this.readBinary(); // consume length + bytes
         break;
       case THRIFT_LIST: {
-        const header = this.bytes[this.offset++];
-        let size = (header >> 4) & 0x0f;
-        const elemType = header & 0x0f;
-        if (size === 0x0f) {
-          size = this.readVarint();
-        }
-        for (let i = 0; i < size; i++) {
-          this.skip(elemType);
-        }
+        const { size, elemType } = this.readListHeader();
+        for (let i = 0; i < size; i++) this.skip(elemType);
         break;
       }
       case THRIFT_STRUCT: {
@@ -169,8 +176,8 @@ class ThriftReader {
   private readVarint64(): bigint {
     let result = 0n;
     let shift = 0n;
-    while (this.offset < this.bytes.length) {
-      const byte = this.bytes[this.offset++];
+    while (this.ofs < this.bytes.length) {
+      const byte = this.bytes[this.ofs++];
       result |= BigInt(byte & 0x7f) << shift;
       if ((byte & 0x80) === 0) return result;
       shift += 7n;
@@ -230,166 +237,98 @@ interface ParquetFileMetaData {
 // --- Thrift struct parsers ---
 
 function parseStatistics(reader: ThriftReader): ParquetStatistics {
-  const stats: ParquetStatistics = {};
-  const savedFieldId = reader["lastFieldId"];
-  reader["lastFieldId"] = 0;
-
-  let field: { fieldId: number; typeId: number } | null;
-  while ((field = reader.nextField()) !== null) {
-    switch (field.fieldId) {
-      case 1: stats.max = reader.readBinary(); break;
-      case 2: stats.min = reader.readBinary(); break;
-      case 3: stats.nullCount = Number(reader.readI64()); break;
-      case 4: reader.readI64(); break; // distinct_count — skip
-      case 5: stats.maxValue = reader.readBinary(); break;
-      case 6: stats.minValue = reader.readBinary(); break;
-      default: reader.skip(field.typeId); break;
+  return reader.readStruct(r => {
+    const stats: ParquetStatistics = {};
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: stats.max = r.readBinary(); break;
+        case 2: stats.min = r.readBinary(); break;
+        case 3: stats.nullCount = Number(r.readI64()); break;
+        case 4: r.readI64(); break; // distinct_count — skip
+        case 5: stats.maxValue = r.readBinary(); break;
+        case 6: stats.minValue = r.readBinary(); break;
+        default: r.skip(f.typeId); break;
+      }
     }
-  }
-
-  reader["lastFieldId"] = savedFieldId;
-  return stats;
+    return stats;
+  });
 }
 
 function parseColumnMetaData(reader: ThriftReader): ParquetColumnMetaData {
-  const meta: ParquetColumnMetaData = {
-    type: 0,
-    codec: 0,
-    numValues: 0,
-    totalCompressedSize: 0,
-    totalUncompressedSize: 0,
-    dataPageOffset: 0n,
-    pathInSchema: [],
-  };
-
-  const savedFieldId = reader["lastFieldId"];
-  reader["lastFieldId"] = 0;
-
-  let field: { fieldId: number; typeId: number } | null;
-  while ((field = reader.nextField()) !== null) {
-    switch (field.fieldId) {
-      case 1: meta.type = reader.readI32(); break;
-      case 2: {
-        // list<i32> encodings — skip
-        const header = reader["bytes"][reader["offset"]++];
-        let size = (header >> 4) & 0x0f;
-        const elemType = header & 0x0f;
-        if (size === 0x0f) size = reader.readVarint();
-        for (let i = 0; i < size; i++) reader.skip(elemType);
-        break;
+  return reader.readStruct(r => {
+    const meta: ParquetColumnMetaData = {
+      type: 0, codec: 0, numValues: 0, totalCompressedSize: 0,
+      totalUncompressedSize: 0, dataPageOffset: 0n, pathInSchema: [],
+    };
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: meta.type = r.readI32(); break;
+        case 2: { const { size, elemType } = r.readListHeader(); for (let i = 0; i < size; i++) r.skip(elemType); break; }
+        case 3: { const { size } = r.readListHeader(); for (let i = 0; i < size; i++) meta.pathInSchema.push(r.readString()); break; }
+        case 4: meta.codec = r.readI32(); break;
+        case 5: meta.numValues = Number(r.readI64()); break;
+        case 6: meta.totalUncompressedSize = Number(r.readI64()); break;
+        case 7: meta.totalCompressedSize = Number(r.readI64()); break;
+        case 9: meta.dataPageOffset = r.readI64(); break;
+        case 10: r.readI64(); break;
+        case 11: meta.dictionaryPageOffset = r.readI64(); break;
+        case 12: meta.statistics = parseStatistics(r); break;
+        default: r.skip(f.typeId); break;
       }
-      case 3: {
-        // list<string> path_in_schema
-        const header = reader["bytes"][reader["offset"]++];
-        let size = (header >> 4) & 0x0f;
-        if (size === 0x0f) size = reader.readVarint();
-        for (let i = 0; i < size; i++) {
-          meta.pathInSchema.push(reader.readString());
-        }
-        break;
-      }
-      case 4: meta.codec = reader.readI32(); break;
-      case 5: meta.numValues = Number(reader.readI64()); break;
-      case 6: meta.totalUncompressedSize = Number(reader.readI64()); break;
-      case 7: meta.totalCompressedSize = Number(reader.readI64()); break;
-      case 9: meta.dataPageOffset = reader.readI64(); break;
-      case 10: {
-        const val = reader.readI64();
-        // index_page_offset — skip (not used)
-        break;
-      }
-      case 11: meta.dictionaryPageOffset = reader.readI64(); break;
-      case 12: meta.statistics = parseStatistics(reader); break;
-      default: reader.skip(field.typeId); break;
     }
-  }
-
-  reader["lastFieldId"] = savedFieldId;
-  return meta;
+    return meta;
+  });
 }
 
 function parseColumnChunk(reader: ThriftReader): ParquetColumnMetaData {
-  let colMeta: ParquetColumnMetaData | null = null;
-
-  const savedFieldId = reader["lastFieldId"];
-  reader["lastFieldId"] = 0;
-
-  let field: { fieldId: number; typeId: number } | null;
-  while ((field = reader.nextField()) !== null) {
-    switch (field.fieldId) {
-      case 3:
-        // embedded ColumnMetaData struct
-        colMeta = parseColumnMetaData(reader);
-        break;
-      default:
-        reader.skip(field.typeId);
-        break;
+  return reader.readStruct(r => {
+    let colMeta: ParquetColumnMetaData | null = null;
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      if (f.fieldId === 3) colMeta = parseColumnMetaData(r);
+      else r.skip(f.typeId);
     }
-  }
-
-  reader["lastFieldId"] = savedFieldId;
-
-  return colMeta ?? {
-    type: 0,
-    codec: 0,
-    numValues: 0,
-    totalCompressedSize: 0,
-    totalUncompressedSize: 0,
-    dataPageOffset: 0n,
-    pathInSchema: [],
-  };
+    return colMeta ?? {
+      type: 0, codec: 0, numValues: 0, totalCompressedSize: 0,
+      totalUncompressedSize: 0, dataPageOffset: 0n, pathInSchema: [],
+    };
+  });
 }
 
 function parseRowGroup(reader: ThriftReader): ParquetRowGroup {
-  const rg: ParquetRowGroup = { columns: [], numRows: 0 };
-
-  const savedFieldId = reader["lastFieldId"];
-  reader["lastFieldId"] = 0;
-
-  let field: { fieldId: number; typeId: number } | null;
-  while ((field = reader.nextField()) !== null) {
-    switch (field.fieldId) {
-      case 1: {
-        // list<ColumnChunk>
-        const header = reader["bytes"][reader["offset"]++];
-        let size = (header >> 4) & 0x0f;
-        const elemType = header & 0x0f;
-        if (size === 0x0f) size = reader.readVarint();
-        for (let i = 0; i < size; i++) {
-          rg.columns.push(parseColumnChunk(reader));
-        }
-        break;
+  return reader.readStruct(r => {
+    const rg: ParquetRowGroup = { columns: [], numRows: 0 };
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: { const { size } = r.readListHeader(); for (let i = 0; i < size; i++) rg.columns.push(parseColumnChunk(r)); break; }
+        case 2: r.readI64(); break;
+        case 3: rg.numRows = Number(r.readI64()); break;
+        default: r.skip(f.typeId); break;
       }
-      case 2: reader.readI64(); break; // total_byte_size — skip
-      case 3: rg.numRows = Number(reader.readI64()); break;
-      default: reader.skip(field.typeId); break;
     }
-  }
-
-  reader["lastFieldId"] = savedFieldId;
-  return rg;
+    return rg;
+  });
 }
 
 function parseSchemaElement(reader: ThriftReader): ParquetSchemaElement {
-  const elem: ParquetSchemaElement = { name: "" };
-
-  const savedFieldId = reader["lastFieldId"];
-  reader["lastFieldId"] = 0;
-
-  let field: { fieldId: number; typeId: number } | null;
-  while ((field = reader.nextField()) !== null) {
-    switch (field.fieldId) {
-      case 1: elem.name = reader.readString(); break;
-      case 2: elem.numChildren = reader.readI32(); break;
-      case 3: elem.type = reader.readI32(); break;
-      case 4: elem.convertedType = reader.readI32(); break;
-      case 6: elem.typeLength = reader.readI32(); break;
-      default: reader.skip(field.typeId); break;
+  return reader.readStruct(r => {
+    const elem: ParquetSchemaElement = { name: "" };
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: elem.name = r.readString(); break;
+        case 2: elem.numChildren = r.readI32(); break;
+        case 3: elem.type = r.readI32(); break;
+        case 4: elem.convertedType = r.readI32(); break;
+        case 6: elem.typeLength = r.readI32(); break;
+        default: r.skip(f.typeId); break;
+      }
     }
-  }
-
-  reader["lastFieldId"] = savedFieldId;
-  return elem;
+    return elem;
+  });
 }
 
 /**
@@ -414,25 +353,15 @@ export function parseParquetFooter(tailBuf: ArrayBuffer): ParquetFileMetaData | 
       case 1: meta.version = reader.readI32(); break;
       case 2: {
         // list<SchemaElement>
-        const header = bytes[reader.pos];
-        reader["offset"]++;
-        let size = (header >> 4) & 0x0f;
-        if (size === 0x0f) size = reader.readVarint();
-        for (let i = 0; i < size; i++) {
-          meta.schema.push(parseSchemaElement(reader));
-        }
+        const { size: sSize } = reader.readListHeader();
+        for (let i = 0; i < sSize; i++) meta.schema.push(parseSchemaElement(reader));
         break;
       }
       case 3: meta.numRows = Number(reader.readI64()); break;
       case 4: {
         // list<RowGroup>
-        const header = bytes[reader.pos];
-        reader["offset"]++;
-        let size = (header >> 4) & 0x0f;
-        if (size === 0x0f) size = reader.readVarint();
-        for (let i = 0; i < size; i++) {
-          meta.rowGroups.push(parseRowGroup(reader));
-        }
+        const { size: rgSize } = reader.readListHeader();
+        for (let i = 0; i < rgSize; i++) meta.rowGroups.push(parseRowGroup(reader));
         break;
       }
       default: reader.skip(field.typeId); break;

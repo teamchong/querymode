@@ -1,22 +1,8 @@
 import type { PageEncoding, DataType } from "./types.js";
+import { readVarint } from "./footer.js";
+import { ThriftReader } from "./parquet.js";
 
 const textDecoder = new TextDecoder();
-
-// --- Varint ---
-
-function readVarint(bytes: Uint8Array, pos: number): { value: number; bytesRead: number } {
-  let value = 0;
-  let shift = 0;
-  let bytesRead = 0;
-  while (pos + bytesRead < bytes.length) {
-    const b = bytes[pos + bytesRead];
-    value |= (b & 0x7f) << shift;
-    bytesRead++;
-    if ((b & 0x80) === 0) break;
-    shift += 7;
-  }
-  return { value, bytesRead };
-}
 
 // --- Snappy decompression ---
 
@@ -149,7 +135,7 @@ function decodeRleBitPacked(
   return { values, bytesRead: pos - offset };
 }
 
-// --- Thrift Compact Protocol (minimal inline reader for PageHeader) ---
+// --- Page Header Parsing (using shared ThriftReader) ---
 
 interface PageHeaderInfo {
   type: number;
@@ -163,207 +149,81 @@ interface PageHeaderInfo {
   isCompressed: boolean;
 }
 
-function readZigzagVarint(bytes: Uint8Array, pos: number): { value: number; bytesRead: number } {
-  const { value: raw, bytesRead } = readVarint(bytes, pos);
-  return { value: (raw >>> 1) ^ -(raw & 1), bytesRead };
+function parseDataPageHeader(r: ThriftReader): { numValues: number; encoding: number } {
+  return r.readStruct(r => {
+    let numValues = 0, encoding = 0;
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: numValues = r.readI32(); break;
+        case 2: encoding = r.readI32(); break;
+        default: r.skip(f.typeId); break;
+      }
+    }
+    return { numValues, encoding };
+  });
+}
+
+function parseDataPageHeaderV2(r: ThriftReader) {
+  return r.readStruct(r => {
+    let numValues = 0, encoding = 0, defLevelsByteLength = 0, repLevelsByteLength = 0, isCompressed = true;
+    let f: { fieldId: number; typeId: number } | null;
+    while ((f = r.nextField()) !== null) {
+      switch (f.fieldId) {
+        case 1: numValues = r.readI32(); break;
+        case 3: encoding = r.readI32(); break;
+        case 4: defLevelsByteLength = r.readI32(); break;
+        case 5: repLevelsByteLength = r.readI32(); break;
+        case 6: isCompressed = r.bytes[r.ofs++] !== 0; break;
+        default: r.skip(f.typeId); break;
+      }
+    }
+    return { numValues, encoding, defLevelsByteLength, repLevelsByteLength, isCompressed };
+  });
 }
 
 function parsePageHeader(bytes: Uint8Array, offset: number): PageHeaderInfo | null {
-  let pos = offset;
-  let pageType = 0;
-  let uncompressedSize = 0;
-  let compressedSize = 0;
-  let numValues = 0;
-  let encoding = 0;
-  let defLevelsByteLength = 0;
-  let repLevelsByteLength = 0;
-  let isCompressed = true;
-  let lastFieldId = 0;
+  const r = new ThriftReader(bytes, offset);
+  let pageType = 0, uncompressedSize = 0, compressedSize = 0;
+  let numValues = 0, encoding = 0, defLevelsByteLength = 0, repLevelsByteLength = 0, isCompressed = true;
 
-  // Read top-level PageHeader struct fields
-  const result = readThriftStruct(bytes, pos, (fieldId, fieldType, data, dataPos) => {
-    switch (fieldId) {
-      case 1: // type (i32)
-        { const r = readZigzagVarint(data, dataPos); pageType = r.value; return r.bytesRead; }
-      case 2: // uncompressed_page_size
-        { const r = readZigzagVarint(data, dataPos); uncompressedSize = r.value; return r.bytesRead; }
-      case 3: // compressed_page_size
-        { const r = readZigzagVarint(data, dataPos); compressedSize = r.value; return r.bytesRead; }
-      case 5: // DataPageHeader (struct)
-        {
-          const sr = readThriftStruct(data, dataPos, (sfid, sft, sd, sdp) => {
-            switch (sfid) {
-              case 1: { const r = readZigzagVarint(sd, sdp); numValues = r.value; return r.bytesRead; }
-              case 2: { const r = readZigzagVarint(sd, sdp); encoding = r.value; return r.bytesRead; }
-              case 3: { const r = readZigzagVarint(sd, sdp); return r.bytesRead; } // def encoding
-              case 4: { const r = readZigzagVarint(sd, sdp); return r.bytesRead; } // rep encoding
-              default: return skipThriftField(sd, sdp, sft);
-            }
-          });
-          return sr;
-        }
-      case 7: // DictionaryPageHeader (struct)
-        {
-          const sr = readThriftStruct(data, dataPos, (sfid, sft, sd, sdp) => {
-            switch (sfid) {
-              case 1: { const r = readZigzagVarint(sd, sdp); numValues = r.value; return r.bytesRead; }
-              case 2: { const r = readZigzagVarint(sd, sdp); encoding = r.value; return r.bytesRead; }
-              default: return skipThriftField(sd, sdp, sft);
-            }
-          });
-          return sr;
-        }
-      case 8: // DataPageHeaderV2 (struct)
-        {
-          const sr = readThriftStruct(data, dataPos, (sfid, sft, sd, sdp) => {
-            switch (sfid) {
-              case 1: { const r = readZigzagVarint(sd, sdp); numValues = r.value; return r.bytesRead; }
-              case 3: { const r = readZigzagVarint(sd, sdp); encoding = r.value; return r.bytesRead; }
-              case 4: { const r = readZigzagVarint(sd, sdp); defLevelsByteLength = r.value; return r.bytesRead; }
-              case 5: { const r = readZigzagVarint(sd, sdp); repLevelsByteLength = r.value; return r.bytesRead; }
-              case 6: { isCompressed = sd[sdp] !== 0; return 1; } // bool
-              default: return skipThriftField(sd, sdp, sft);
-            }
-          });
-          return sr;
-        }
-      default:
-        return skipThriftField(data, dataPos, fieldType);
+  let f: { fieldId: number; typeId: number } | null;
+  while ((f = r.nextField()) !== null) {
+    switch (f.fieldId) {
+      case 1: pageType = r.readI32(); break;
+      case 2: uncompressedSize = r.readI32(); break;
+      case 3: compressedSize = r.readI32(); break;
+      case 5: { // DataPageHeader
+        const dph = parseDataPageHeader(r);
+        numValues = dph.numValues; encoding = dph.encoding;
+        break;
+      }
+      case 7: { // DictionaryPageHeader
+        const dph = parseDataPageHeader(r);
+        numValues = dph.numValues; encoding = dph.encoding;
+        break;
+      }
+      case 8: { // DataPageHeaderV2
+        const v2 = parseDataPageHeaderV2(r);
+        numValues = v2.numValues; encoding = v2.encoding;
+        defLevelsByteLength = v2.defLevelsByteLength;
+        repLevelsByteLength = v2.repLevelsByteLength;
+        isCompressed = v2.isCompressed;
+        break;
+      }
+      default: r.skip(f.typeId); break;
     }
-  });
-
-  if (result < 0) return null;
+  }
 
   return {
-    type: pageType,
-    uncompressedSize,
-    compressedSize,
-    numValues,
-    encoding,
-    headerSize: offset + result - offset,
-    defLevelsByteLength,
-    repLevelsByteLength,
-    isCompressed,
+    type: pageType, uncompressedSize, compressedSize, numValues, encoding,
+    headerSize: r.ofs - offset, defLevelsByteLength, repLevelsByteLength, isCompressed,
   };
-}
-
-type FieldHandler = (fieldId: number, fieldType: number, data: Uint8Array, pos: number) => number;
-
-function readThriftStruct(bytes: Uint8Array, offset: number, handler: FieldHandler): number {
-  let pos = offset;
-  let lastFieldId = 0;
-
-  while (pos < bytes.length) {
-    const b = bytes[pos++];
-    if (b === 0x00) break; // stop field
-
-    const deltaFieldId = (b >> 4) & 0x0f;
-    const fieldType = b & 0x0f;
-
-    let fieldId: number;
-    if (deltaFieldId !== 0) {
-      fieldId = lastFieldId + deltaFieldId;
-    } else {
-      // Full field ID follows as i16
-      const { value, bytesRead } = readZigzagVarint(bytes, pos);
-      fieldId = value;
-      pos += bytesRead;
-    }
-    lastFieldId = fieldId;
-
-    const consumed = handler(fieldId, fieldType, bytes, pos);
-    if (consumed < 0) return -1;
-    pos += consumed;
-  }
-
-  return pos - offset;
-}
-
-function skipThriftField(bytes: Uint8Array, pos: number, fieldType: number): number {
-  let p = pos;
-  switch (fieldType) {
-    case 1: // bool true
-    case 2: // bool false
-      return 0;
-    case 3: // i8
-      return 1;
-    case 4: // i16 (zigzag varint)
-    case 5: // i32 (zigzag varint)
-    case 6: // i64 (zigzag varint)
-      { const r = readVarint(bytes, p); return r.bytesRead; }
-    case 7: // double
-      return 8;
-    case 8: // binary (length-prefixed)
-      {
-        const { value: len, bytesRead } = readVarint(bytes, p);
-        return bytesRead + len;
-      }
-    case 9: // list
-      {
-        const header = bytes[p++];
-        let size = (header >> 4) & 0x0f;
-        const elemType = header & 0x0f;
-        if (size === 0x0f) {
-          const { value, bytesRead } = readVarint(bytes, p);
-          size = value;
-          p += bytesRead;
-        }
-        for (let i = 0; i < size; i++) {
-          const skipped = skipThriftField(bytes, p, elemType);
-          if (skipped < 0) return -1;
-          p += skipped;
-        }
-        return p - pos;
-      }
-    case 10: // set (same as list)
-      {
-        const header = bytes[p++];
-        let size = (header >> 4) & 0x0f;
-        const elemType = header & 0x0f;
-        if (size === 0x0f) {
-          const { value, bytesRead } = readVarint(bytes, p);
-          size = value;
-          p += bytesRead;
-        }
-        for (let i = 0; i < size; i++) {
-          const skipped = skipThriftField(bytes, p, elemType);
-          if (skipped < 0) return -1;
-          p += skipped;
-        }
-        return p - pos;
-      }
-    case 11: // map
-      {
-        const { value: size, bytesRead } = readVarint(bytes, p);
-        p += bytesRead;
-        if (size > 0) {
-          const types = bytes[p++];
-          const keyType = (types >> 4) & 0x0f;
-          const valType = types & 0x0f;
-          for (let i = 0; i < size; i++) {
-            const ks = skipThriftField(bytes, p, keyType);
-            if (ks < 0) return -1;
-            p += ks;
-            const vs = skipThriftField(bytes, p, valType);
-            if (vs < 0) return -1;
-            p += vs;
-          }
-        }
-        return p - pos;
-      }
-    case 12: // struct
-      {
-        const sr = readThriftStruct(bytes, p, (_fid, ftype, data, dpos) => skipThriftField(data, dpos, ftype));
-        return sr;
-      }
-    default:
-      return -1;
-  }
 }
 
 // --- PLAIN Decoding ---
 
-function decodePlainValues(
+export function decodePlainValues(
   bytes: Uint8Array,
   dtype: DataType,
   numValues: number,
