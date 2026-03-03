@@ -302,10 +302,12 @@ export class QueryDO implements DurableObject {
 
     // IVF-PQ index-aware path: if a vector search is requested, check for an index
     if (query.vectorSearch) {
+      const wasmIvfStart = Date.now();
       const indexResult = await this.tryIvfPqSearch(query, meta);
       if (indexResult) {
         indexResult.durationMs = Date.now() - t0;
         indexResult.r2ReadMs = Date.now() - r2Start;
+        indexResult.wasmExecMs = Date.now() - wasmIvfStart;
         indexResult.pagesSkipped = pagesSkipped;
         indexResult.cacheHits = cacheHits;
         indexResult.cacheMisses = cacheMisses;

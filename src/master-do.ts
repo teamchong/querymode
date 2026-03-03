@@ -254,13 +254,12 @@ export class MasterDO implements DurableObject {
           name: tableName, r2Prefix, totalRows, updatedAt: Date.now(),
         });
 
-        const result2: AppendResult = {
+        return this.json({
           version: newVersion,
           dataFilePath,
           retries: attempt,
           rowsWritten: rows.length,
-        };
-        return this.json(result2);
+        } satisfies AppendResult);
       } catch {
         // R2 conditional put failure — retry
         continue;
