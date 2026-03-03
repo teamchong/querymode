@@ -19,13 +19,13 @@ def generate_feature_data(rows: int, output_path: str):
     print(f"Generated {output_path}: {rows:,} rows")
 
 def main():
-    os.makedirs("/tmp/edgeq_bench", exist_ok=True)
+    os.makedirs("/tmp/querymode_bench", exist_ok=True)
 
     # Feature engineering benchmark data
-    generate_feature_data(100_000, "/tmp/edgeq_bench/features_100k.parquet")
-    generate_feature_data(1_000_000, "/tmp/edgeq_bench/features_1m.parquet")
+    generate_feature_data(100_000, "/tmp/querymode_bench/features_100k.parquet")
+    generate_feature_data(1_000_000, "/tmp/querymode_bench/features_1m.parquet")
 
-    print("\nBenchmark data generated in /tmp/edgeq_bench/")
+    print("\nBenchmark data generated in /tmp/querymode_bench/")
 
 if __name__ == "__main__":
     main()

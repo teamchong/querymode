@@ -1,5 +1,5 @@
 .{
-    .name = .edgeq,
+    .name = .querymode,
     .version = "0.1.0",
     .dependencies = .{
         .zstd = .{

@@ -2,7 +2,7 @@
 """
 Vector algorithm conformance tests.
 
-Validates that EdgeQ's vector operations (distance metrics, IVF-PQ recall)
+Validates that QueryMode's vector operations (distance metrics, IVF-PQ recall)
 match reference implementations.
 
 Usage:

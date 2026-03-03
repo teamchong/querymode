@@ -1,5 +1,5 @@
 #!/bin/bash
-# bench-sql.sh - SQL Clause Benchmark (EdgeQ vs DuckDB vs Polars)
+# bench-sql.sh - SQL Clause Benchmark (QueryMode vs DuckDB vs Polars)
 #
 # Benchmarks: SELECT *, WHERE, GROUP BY, ORDER BY LIMIT, DISTINCT, VECTOR SEARCH, HASH JOIN
 # Dataset: 200M rows
@@ -13,7 +13,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "================================================================================"
-echo "SQL Clause Benchmark (EdgeQ vs DuckDB vs Polars)"
+echo "SQL Clause Benchmark (QueryMode vs DuckDB vs Polars)"
 echo "================================================================================"
 echo "Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "Platform: $(uname -s) $(uname -m)"
@@ -21,7 +21,7 @@ echo ""
 
 # Check engines
 echo "Engines:"
-echo "  - EdgeQ: native Zig + Metal GPU"
+echo "  - QueryMode: native Zig + Metal GPU"
 
 if python3 -c "import duckdb" 2>/dev/null; then
     echo "  - DuckDB: $(python3 -c 'import duckdb; print(duckdb.__version__)')"

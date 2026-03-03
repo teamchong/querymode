@@ -1,7 +1,7 @@
 /**
- * EdgeQ WASM Loader and Initialization
+ * QueryMode WASM Loader and Initialization
  *
- * Core module for loading the EdgeQ WebAssembly module and managing
+ * Core module for loading the QueryMode WebAssembly module and managing
  * the WASM runtime environment.
  */
 
@@ -56,7 +56,7 @@ export const wasmUtils = {
     getExports: () => _w,
 };
 
-// EdgeQ high-level methods factory (needs proxy reference)
+// QueryMode high-level methods factory (needs proxy reference)
 const _createEdgeqMethods = (proxy) => ({
     /**
      * Get the library version.
@@ -150,19 +150,19 @@ const _createEdgeqMethods = (proxy) => ({
 });
 
 /**
- * EdgeQ WASM loader class
+ * QueryMode WASM loader class
  *
- * Provides an Immer-style proxy interface to the EdgeQ WebAssembly module
+ * Provides an Immer-style proxy interface to the QueryMode WebAssembly module
  * with automatic marshalling of strings and byte arrays.
  */
-export class EdgeQWasm {
+export class QueryModeWasm {
     /**
-     * Load EdgeQ from a WASM file path or URL.
+     * Load QueryMode from a WASM file path or URL.
      * Returns Immer-style proxy with auto string/bytes marshalling.
-     * @param {string} wasmPath - Path to the edgeq.wasm file
-     * @returns {Promise<EdgeQWasm>}
+     * @param {string} wasmPath - Path to the querymode.wasm file
+     * @returns {Promise<QueryModeWasm>}
      */
-    static async load(wasmPath = './edgeq.wasm') {
+    static async load(wasmPath = './querymode.wasm') {
         const response = await fetch(wasmPath);
         const wasmBytes = await response.arrayBuffer();
         const wasmModule = await WebAssembly.instantiate(wasmBytes, {});
@@ -171,13 +171,13 @@ export class EdgeQWasm {
         _m = _w.memory;
 
         // Create Immer-style proxy that auto-marshals string/bytes arguments
-        // Also includes high-level EdgeQ methods
+        // Also includes high-level QueryMode methods
         let _methods = null;
         const proxy = new Proxy({}, {
             get(_, n) {
                 // Lazy init methods with proxy reference
                 if (!_methods) _methods = _createEdgeqMethods(proxy);
-                // High-level EdgeQ methods
+                // High-level QueryMode methods
                 if (n in _methods) return _methods[n];
                 // Special properties
                 if (n === 'memory') return _m;
@@ -196,4 +196,4 @@ export class EdgeQWasm {
 }
 
 // Export default
-export default EdgeQWasm;
+export default QueryModeWasm;

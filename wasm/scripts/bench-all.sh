@@ -1,10 +1,10 @@
 #!/bin/bash
-# bench-all.sh - Run all EdgeQ benchmarks
+# bench-all.sh - Run all QueryMode benchmarks
 #
 # Runs all benchmarks in sequence:
 #   1. bench-vector.sh   - GPU vs CPU vector operations
-#   2. bench-sql.sh      - SQL clauses (EdgeQ vs DuckDB vs Polars)
-#   3. bench-logic-table.sh - ML workflows (EdgeQ vs DuckDB vs Polars)
+#   2. bench-sql.sh      - SQL clauses (QueryMode vs DuckDB vs Polars)
+#   3. bench-logic-table.sh - ML workflows (QueryMode vs DuckDB vs Polars)
 #
 # Each individual benchmark runs 30+ seconds per operation.
 # Total runtime: ~10-15 minutes
@@ -25,7 +25,7 @@ fi
 OUTPUT_FILE="${OUTPUT_FILE:-/tmp/benchmark-results.txt}"
 
 echo "================================================================================"
-echo "EdgeQ Benchmark Suite"
+echo "QueryMode Benchmark Suite"
 echo "================================================================================"
 echo "Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "Platform: $(uname -s) $(uname -m)"
@@ -57,14 +57,14 @@ run_benchmark() {
 }
 
 # Build first
-echo "Building EdgeQ..."
+echo "Building QueryMode..."
 zig build lib 2>&1 | tee -a "$OUTPUT_FILE"
 echo ""
 
 # Run all benchmarks
 run_benchmark "Vector Operations (GPU vs CPU)" "bench-vector.sh"
-run_benchmark "SQL Clauses (EdgeQ vs DuckDB vs Polars)" "bench-sql.sh"
-run_benchmark "ML Workflows (EdgeQ vs DuckDB vs Polars)" "bench-logic-table.sh"
+run_benchmark "SQL Clauses (QueryMode vs DuckDB vs Polars)" "bench-sql.sh"
+run_benchmark "ML Workflows (QueryMode vs DuckDB vs Polars)" "bench-logic-table.sh"
 
 echo ""
 echo "================================================================================"
@@ -78,5 +78,5 @@ if [[ "$SUMMARY_ONLY" == "true" ]] || [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
     echo "## Benchmark Summary"
     echo ""
-    grep -E "(EdgeQ|DuckDB|Polars|Winner|Throughput|M/sec|rows/s)" "$OUTPUT_FILE" | head -50
+    grep -E "(QueryMode|DuckDB|Polars|Winner|Throughput|M/sec|rows/s)" "$OUTPUT_FILE" | head -50
 fi

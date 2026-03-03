@@ -3,7 +3,7 @@
 Differential fuzzing for SQL conformance.
 
 Generates random valid SQL filter expressions and compares results
-between PyLance and EdgeQ.
+between PyLance and QueryMode.
 
 Usage:
     pip install pylance pyarrow
