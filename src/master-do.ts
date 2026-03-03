@@ -1,6 +1,7 @@
 import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
+import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
 export class MasterDO implements DurableObject {
@@ -56,9 +57,9 @@ export class MasterDO implements DurableObject {
     const result = await this.readFooterAndColumns(r2Key);
     if (!result) return this.json({ error: "Failed to read footer" }, 500);
 
-    const tableName = r2Key.replace(/\.lance$/, "").split("/").pop() ?? r2Key;
+    const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     const meta: TableMeta = {
-      name: tableName, footer: result.parsed, columns: result.columns,
+      name: tableName, footer: result.parsed, format: result.format, columns: result.columns,
       totalRows: result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
       fileSize: result.fileSize, r2Key, updatedAt: Date.now(),
     };
@@ -120,21 +121,51 @@ export class MasterDO implements DurableObject {
   /** Read footer + column metadata from R2 (2 range reads, done once by Master). */
   private async readFooterAndColumns(r2Key: string): Promise<{
     parsed: Footer; raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[];
+    format: "lance" | "parquet";
   } | null> {
     const head = await this.env.DATA_BUCKET.head(r2Key);
     if (!head) return null;
 
     const fileSize = BigInt(head.size);
+    // Read last 40 bytes — enough for Lance footer or Parquet tail detection
+    const tailSize = Math.min(Number(fileSize), FOOTER_SIZE);
     const obj = await this.env.DATA_BUCKET.get(r2Key, {
-      range: { offset: Number(fileSize) - FOOTER_SIZE, length: FOOTER_SIZE },
+      range: { offset: Number(fileSize) - tailSize, length: tailSize },
     });
     if (!obj) return null;
 
     const raw = await obj.arrayBuffer();
+    const format = detectFormat(raw);
+
+    if (format === "parquet") {
+      const footerLen = getParquetFooterLength(raw);
+      if (!footerLen) return null;
+
+      // Fetch full Parquet Thrift footer
+      const footerOffset = Number(fileSize) - footerLen - 8;
+      const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+        range: { offset: footerOffset, length: footerLen },
+      });
+      if (!footerObj) return null;
+
+      const footerBuf = await footerObj.arrayBuffer();
+      const parquetMeta = parseParquetFooter(footerBuf);
+      if (!parquetMeta) return null;
+
+      const tableMeta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
+      // Return a synthetic Footer for broadcast compatibility
+      const syntheticFooter: Footer = {
+        columnMetaStart: 0n, columnMetaOffsetsStart: 0n, globalBuffOffsetsStart: 0n,
+        numGlobalBuffers: 0, numColumns: tableMeta.columns.length,
+        majorVersion: 0, minorVersion: 0,
+      };
+      return { parsed: syntheticFooter, raw, fileSize, columns: tableMeta.columns, format: "parquet" };
+    }
+
+    // Lance format
     const parsed = parseFooter(raw);
     if (!parsed) return null;
 
-    // Read column metadata once — saves N redundant R2 reads from Query DOs
     let columns: ColumnMeta[] = [];
     const metaLen = Number(parsed.columnMetaOffsetsStart) - Number(parsed.columnMetaStart);
     if (metaLen > 0) {
@@ -144,17 +175,17 @@ export class MasterDO implements DurableObject {
       if (metaObj) columns = parseColumnMetaFromProtobuf(await metaObj.arrayBuffer(), parsed.numColumns);
     }
 
-    return { parsed, raw, fileSize, columns };
+    return { parsed, raw, fileSize, columns, format: "lance" };
   }
 
   /** Broadcast invalidation with pre-parsed columns to all Query DOs. */
   private async broadcast(
     table: string, r2Key: string,
-    footer: { raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[] },
+    footer: { raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[]; format?: "lance" | "parquet" },
   ): Promise<void> {
     const regions = (await this.state.storage.get<Record<string, string>>("regions")) ?? {};
     const payload = JSON.stringify({
-      table, r2Key, columns: footer.columns,
+      table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
       footerBytes: Array.from(new Uint8Array(footer.raw)),
       fileSize: footer.fileSize.toString(), timestamp: Date.now(),
     });

@@ -3,6 +3,7 @@ import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { ColumnMeta, Env, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest, type ManifestInfo } from "./manifest.js";
+import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
 
 export { MasterDO } from "./master-do.js";
@@ -16,6 +17,7 @@ export type {
   TableMeta,
   ColumnMeta,
   PageInfo,
+  PageEncoding,
   DataType,
   DatasetMeta,
   ManifestInfo,
@@ -26,6 +28,8 @@ export type {
   Row,
   VectorSearchParams,
   FooterInvalidation,
+  IcebergSchema,
+  IcebergDatasetMeta,
 } from "./types.js";
 
 /**
@@ -411,13 +415,34 @@ class LocalExecutor implements QueryExecutor {
 
     const handle = await fs.open(path, "r");
     try {
-      // Read footer (last 40 bytes)
-      const footerBuf = Buffer.alloc(FOOTER_SIZE);
-      await handle.read(footerBuf, 0, FOOTER_SIZE, fileSize - FOOTER_SIZE);
-      const footerAb = footerBuf.buffer.slice(footerBuf.byteOffset, footerBuf.byteOffset + footerBuf.byteLength);
+      // Read last 40 bytes for format detection
+      const tailSize = Math.min(fileSize, FOOTER_SIZE);
+      const tailBuf = Buffer.alloc(tailSize);
+      await handle.read(tailBuf, 0, tailSize, fileSize - tailSize);
+      const tailAb = tailBuf.buffer.slice(tailBuf.byteOffset, tailBuf.byteOffset + tailBuf.byteLength);
 
-      const footer = parseFooter(footerAb);
-      if (!footer) throw new Error(`Invalid Lance file: bad magic number in ${path}`);
+      const fmt = detectFormat(tailAb);
+
+      if (fmt === "parquet") {
+        const footerLen = getParquetFooterLength(tailAb);
+        if (!footerLen) throw new Error(`Invalid Parquet file: cannot read footer length in ${path}`);
+
+        const parquetFooterBuf = Buffer.alloc(footerLen);
+        await handle.read(parquetFooterBuf, 0, footerLen, fileSize - footerLen - 8);
+        const parquetFooterAb = parquetFooterBuf.buffer.slice(
+          parquetFooterBuf.byteOffset, parquetFooterBuf.byteOffset + parquetFooterBuf.byteLength,
+        );
+
+        const parquetMeta = parseParquetFooter(parquetFooterAb);
+        if (!parquetMeta) throw new Error(`Failed to parse Parquet footer in ${path}`);
+
+        const tableMeta = parquetMetaToTableMeta(parquetMeta, path, BigInt(fileSize));
+        return { columns: tableMeta.columns, fileSize };
+      }
+
+      // Lance format (default)
+      const footer = parseFooter(tailAb);
+      if (!footer) throw new Error(`Invalid file format: unrecognized magic in ${path}`);
 
       // Read column metadata (protobuf region)
       const metaStart = Number(footer.columnMetaStart);
@@ -442,18 +467,37 @@ class LocalExecutor implements QueryExecutor {
     // Get file size
     const headResp = await fetch(url, { method: "HEAD" });
     const fileSize = Number(headResp.headers.get("content-length") ?? 0);
-    if (fileSize < FOOTER_SIZE) throw new Error(`File too small: ${url}`);
+    if (fileSize < 8) throw new Error(`File too small: ${url}`);
 
-    // Read footer
-    const footerStart = fileSize - FOOTER_SIZE;
-    const footerResp = await fetch(url, {
-      headers: { Range: `bytes=${footerStart}-${fileSize - 1}` },
+    // Read tail for format detection (last 40 bytes)
+    const tailSize = Math.min(fileSize, FOOTER_SIZE);
+    const tailStart = fileSize - tailSize;
+    const tailResp = await fetch(url, {
+      headers: { Range: `bytes=${tailStart}-${fileSize - 1}` },
     });
-    const footerAb = await footerResp.arrayBuffer();
-    const footer = parseFooter(footerAb);
-    if (!footer) throw new Error(`Invalid Lance file: bad magic number in ${url}`);
+    const tailAb = await tailResp.arrayBuffer();
+    const fmt = detectFormat(tailAb);
 
-    // Read column metadata
+    if (fmt === "parquet") {
+      const footerLen = getParquetFooterLength(tailAb);
+      if (!footerLen) throw new Error(`Invalid Parquet file: cannot read footer length in ${url}`);
+
+      const footerStart = fileSize - footerLen - 8;
+      const footerResp = await fetch(url, {
+        headers: { Range: `bytes=${footerStart}-${footerStart + footerLen - 1}` },
+      });
+      const footerBuf = await footerResp.arrayBuffer();
+      const parquetMeta = parseParquetFooter(footerBuf);
+      if (!parquetMeta) throw new Error(`Failed to parse Parquet footer in ${url}`);
+
+      const tableMeta = parquetMetaToTableMeta(parquetMeta, url, BigInt(fileSize));
+      return { columns: tableMeta.columns, fileSize };
+    }
+
+    // Lance format
+    const footer = parseFooter(tailAb);
+    if (!footer) throw new Error(`Invalid file format: unrecognized magic in ${url}`);
+
     const metaStart = Number(footer.columnMetaStart);
     const metaEnd = Number(footer.columnMetaOffsetsStart);
     const metaLength = metaEnd - metaStart;

@@ -1,6 +1,7 @@
 import type { ColumnMeta, PageInfo, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
+import { decodeParquetColumnChunk } from "./parquet-decode.js";
 
 const textDecoder = new TextDecoder();
 
@@ -87,7 +88,10 @@ function decodeAllColumns(
       const values: DecodedValue[] = [];
       for (let i = 0; i < pages.length; i++) {
         const pi = col.pages[i];
-        for (const v of decodePage(pages[i], col.dtype, pi?.nullCount ?? 0, pi?.rowCount ?? 0)) {
+        const decoded = pi?.encoding
+          ? decodeParquetColumnChunk(pages[i], pi.encoding, col.dtype, pi.rowCount)
+          : decodePage(pages[i], col.dtype, pi?.nullCount ?? 0, pi?.rowCount ?? 0);
+        for (const v of decoded) {
           values.push(v);
         }
       }
