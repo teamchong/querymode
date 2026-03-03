@@ -5,7 +5,6 @@
 
 const std = @import("std");
 const Table = @import("lanceql.table").Table;
-pub const logic_table_dispatch = @import("logic_table_dispatch.zig");
 
 /// Lance column types - unified type detection for Lance table logical types
 pub const LanceColumnType = enum {
@@ -183,23 +182,15 @@ pub const JoinedData = struct {
 };
 
 /// Active table source for query execution
-/// Tracks whether we're using a direct table or a logic_table
 pub const TableSource = union(enum) {
-    /// Direct table (existing behavior - table injected at init)
+    /// Direct table
     direct: *Table,
-    /// Logic table with loaded data from Python file
-    logic_table: struct {
-        executor: *logic_table_dispatch.LogicTableExecutor,
-        primary_table: *Table,
-        alias: ?[]const u8,
-    },
     /// Joined table with materialized data
     joined: *JoinedData,
 
     pub fn getTable(self: TableSource) *Table {
         return switch (self) {
             .direct => |t| t,
-            .logic_table => |lt| lt.primary_table,
             .joined => |jd| jd.left_table,
         };
     }

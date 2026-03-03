@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, 'fixtures');
-const WASM_PATH = path.join(__dirname, '..', 'zig-out', 'bin', 'lanceql.wasm');
+const WASM_PATH = path.join(__dirname, '..', 'zig-out', 'bin', 'edgeq.wasm');
 
 // Test results tracking
 let passed = 0;

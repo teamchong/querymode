@@ -24,19 +24,18 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
   return false;
 }
 
-/** Assemble rows from column page buffers. WASM required for vector search. */
+/** Assemble rows from column page buffers. WASM required. */
 export function assembleRows(
   columnData: Map<string, ArrayBuffer[]>,
   projectedColumns: ColumnMeta[],
   query: QueryDescriptor,
-  wasmEngine?: WasmEngine,
+  wasmEngine: WasmEngine,
 ): Row[] {
   if (query.vectorSearch) {
-    if (!wasmEngine) throw new Error("WASM engine required for vector search");
     return vectorSearch(columnData, projectedColumns, query, wasmEngine);
   }
 
-  const decoded = decodeAllColumns(columnData, projectedColumns);
+  const decoded = decodeAllColumns(columnData, projectedColumns, undefined, wasmEngine);
   const firstCol = decoded.values().next().value;
   if (!firstCol) return [];
   const rowCount = firstCol.length;
@@ -70,7 +69,8 @@ type DecodedValue = number | bigint | string | boolean | Float32Array | null;
 function decodeAllColumns(
   columnData: Map<string, ArrayBuffer[]>,
   columns: ColumnMeta[],
-  exclude?: string,
+  exclude: string | undefined,
+  wasm: WasmEngine,
 ): Map<string, DecodedValue[]> {
   const result = new Map<string, DecodedValue[]>();
   for (const col of columns) {
@@ -85,7 +85,7 @@ function decodeAllColumns(
       for (let i = 0; i < pages.length; i++) {
         const pi = col.pages[i];
         const decoded = pi?.encoding
-          ? decodeParquetColumnChunk(pages[i], pi.encoding, col.dtype, pi.rowCount)
+          ? decodeParquetColumnChunk(pages[i], pi.encoding, col.dtype, pi.rowCount, wasm)
           : decodePage(pages[i], col.dtype, pi?.nullCount ?? 0, pi?.rowCount ?? 0);
         for (const v of decoded) {
           values.push(v);
@@ -262,7 +262,7 @@ function vectorSearch(
   for (let r = 0; r < numRows; r++) embeddings.push(flat.subarray(r * dim, (r + 1) * dim));
 
   // Decode non-embedding columns
-  const otherCols = decodeAllColumns(columnData, projectedColumns, vs.column);
+  const otherCols = decodeAllColumns(columnData, projectedColumns, vs.column, wasmEngine);
 
   wasmEngine.reset();
   const { indices, scores } = wasmEngine.vectorSearchBuffer(flat, numRows, dim, vs.queryVector, vs.topK);

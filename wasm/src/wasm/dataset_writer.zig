@@ -5,7 +5,7 @@
 //!
 //! ## JavaScript Usage (Cloudflare Worker)
 //! ```javascript
-//! import { DatasetWriter } from './lanceql.wasm';
+//! import { DatasetWriter } from './edgeq.wasm';
 //!
 //! export default {
 //!   async fetch(request) {

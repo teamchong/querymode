@@ -5,7 +5,7 @@ dist/
 *.log
 .DS_Store
 .claude/
-src/wasm/lanceql.wasm
+src/wasm/edgeq.wasm
 wasm/.zig-cache/
 wasm/zig-out/
 wasm/.build/

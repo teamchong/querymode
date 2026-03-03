@@ -14,7 +14,6 @@ pub const parser = @import("parser.zig");
 pub const ast = @import("ast.zig");
 pub const executor = @import("executor.zig");
 pub const aggregates = @import("aggregates.zig");
-pub const logic_table = @import("logic_table.zig");
 pub const gpu_group_by = @import("gpu_group_by.zig");
 pub const gpu_hash_join = @import("gpu_hash_join.zig");
 
@@ -33,11 +32,6 @@ pub const Executor = executor.Executor;
 pub const ResultSet = executor.ResultSet;
 pub const Aggregate = aggregates.Aggregate;
 pub const GroupKey = aggregates.GroupKey;
-pub const LogicTableContext = logic_table.LogicTableContext;
-pub const LogicTableError = logic_table.LogicTableError;
-pub const ColumnDep = logic_table.ColumnDep;
-pub const MethodMeta = logic_table.MethodMeta;
-
 // GPU-accelerated GROUP BY
 pub const GPUGroupBy = gpu_group_by.GPUGroupBy;
 pub const GPUGroupByF64 = gpu_group_by.GPUGroupByF64;
@@ -50,11 +44,6 @@ pub const hashJoinI64 = gpu_hash_join.hashJoinI64;
 pub const JoinResult = gpu_hash_join.JoinResult;
 pub const LeftJoinResult = gpu_hash_join.LeftJoinResult;
 pub const JOIN_THRESHOLD = gpu_hash_join.JOIN_THRESHOLD;
-
-// Batch vector operations for @logic_table
-pub const batchCosineSimilarity = logic_table.batchCosineSimilarity;
-pub const batchL2Distance = logic_table.batchL2Distance;
-pub const batchDotProduct = logic_table.batchDotProduct;
 
 test {
     std.testing.refAllDecls(@This());

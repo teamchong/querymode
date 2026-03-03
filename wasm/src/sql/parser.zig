@@ -1030,9 +1030,8 @@ pub const Parser = struct {
         };
     }
 
-    /// Parse method call on a table alias (e.g., t.risk_score())
-    /// Used for @logic_table computed columns
-    /// Supports optional OVER clause for window functions: t.risk_score() OVER (PARTITION BY x)
+    /// Parse method call on a table alias (e.g., t.method())
+    /// Supports optional OVER clause for window functions
     fn parseMethodCall(self: *Self, object: []const u8, method: []const u8) anyerror!Expr {
         _ = try self.expect(.LPAREN);
 
@@ -1425,7 +1424,7 @@ pub const Parser = struct {
 
         const name_tok = try self.expect(.IDENTIFIER);
 
-        // Check if this is a table-valued function (e.g., logic_table('path'))
+        // Check if this is a table-valued function
         if (self.check(.LPAREN)) {
             self.advance();
 
@@ -1703,7 +1702,7 @@ test "parse window function with multiple PARTITION BY columns" {
 }
 
 test "parse method call expression" {
-    const sql = "SELECT t.risk_score() FROM logic_table('fraud.py') AS t";
+    const sql = "SELECT t.risk_score() FROM table_fn('data.lance') AS t";
     const allocator = std.testing.allocator;
 
     const stmt = try parseSQL(sql, allocator);

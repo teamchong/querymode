@@ -601,7 +601,7 @@ const HttpReader = io.HttpReader;
 test "HTTP reader can read remote Lance file footer" {
     const allocator = std.testing.allocator;
 
-    const url = "https://data.metal0.dev/laion-1m/images.lance/data/000101100010001011100000b1ce374b378e37ffcb3d50279e.lance";
+    const url = "https://huggingface.co/api/datasets/lancedb/laion-1m/resolve/main/images.lance/data/000101100010001011100000b1ce374b378e37ffcb3d50279e.lance";
 
     std.debug.print("\nHTTP Reader test:\n", .{});
     std.debug.print("  URL: {s}\n", .{url});

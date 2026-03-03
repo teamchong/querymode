@@ -1,6 +1,6 @@
 import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
-import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
+import { canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 
@@ -165,26 +165,19 @@ export class FragmentDO implements DurableObject {
       const wasmStart = Date.now();
       const fragTable = `__frag_${r2Key}`;
       this.wasmEngine.exports.resetHeap();
-      let wasmOom = false;
       for (const col of cols) {
         const pages = columnData.get(col.name);
         if (!pages?.length) continue;
         if (!this.wasmEngine.registerColumn(fragTable, col.name, col.dtype, pages, col.pages, col.listDimension)) {
-          wasmOom = true;
-          break;
+          throw new Error(`WASM OOM: failed to register column "${col.name}" for fragment "${r2Key}"`);
         }
       }
 
-      if (!wasmOom) {
-        const fragQuery = { ...query, table: fragTable };
-        const rows = this.wasmEngine.executeQuery(fragQuery) ?? [];
-        this.wasmEngine.clearTable(fragTable);
-        allRows.push(...rows);
-      } else {
-        this.log("warn", "wasm_oom_fallback", { r2Key });
-        const rows = assembleRows(columnData, cols, query, this.wasmEngine);
-        allRows.push(...rows);
-      }
+      const fragQuery = { ...query, table: fragTable };
+      const rows = this.wasmEngine.executeQuery(fragQuery);
+      if (!rows) throw new Error(`WASM query execution failed for fragment "${r2Key}"`);
+      this.wasmEngine.clearTable(fragTable);
+      allRows.push(...rows);
       totalWasmExecMs += Date.now() - wasmStart;
     }
 

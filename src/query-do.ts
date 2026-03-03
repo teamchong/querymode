@@ -303,25 +303,17 @@ export class QueryDO implements DurableObject {
     // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
     const wasmStart = Date.now();
     this.wasmEngine.exports.resetHeap();
-    let wasmOom = false;
     for (const col of cols) {
       const pages = columnData.get(col.name);
       if (!pages?.length) continue;
       if (!this.wasmEngine.registerColumn(query.table, col.name, col.dtype, pages, col.pages, col.listDimension)) {
-        wasmOom = true;
-        break;
+        throw new Error(`WASM OOM: failed to register column "${col.name}" for table "${query.table}"`);
       }
     }
 
-    let rows: Row[];
-    if (!wasmOom) {
-      rows = this.wasmEngine.executeQuery(query) ?? [];
-      this.wasmEngine.clearTable(query.table);
-    } else {
-      // WASM OOM fallback — decode in JS
-      this.log("warn", "wasm_oom_fallback", { table: query.table });
-      rows = assembleRows(columnData, cols, query, this.wasmEngine);
-    }
+    const rows = this.wasmEngine.executeQuery(query);
+    if (!rows) throw new Error(`WASM query execution failed for table "${query.table}"`);
+    this.wasmEngine.clearTable(query.table);
     const wasmExecMs = Date.now() - wasmStart;
 
     return {

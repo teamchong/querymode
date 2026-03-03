@@ -5,6 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.
 import { parseManifest, type ManifestInfo } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
+import { instantiateWasm, WasmEngine } from "./wasm-engine.js";
 
 export { MasterDO } from "./master-do.js";
 export { QueryDO } from "./query-do.js";
@@ -27,7 +28,6 @@ export type {
   QueryResult,
   Row,
   VectorSearchParams,
-  FooterInvalidation,
   IcebergSchema,
   IcebergDatasetMeta,
 } from "./types.js";
@@ -70,8 +70,8 @@ export class EdgeQ {
   }
 
   /** Create an EdgeQ client for local use (Node/Bun, reads files from disk or URLs). */
-  static local(): EdgeQ {
-    const executor = new LocalExecutor();
+  static local(wasmModule?: WebAssembly.Module): EdgeQ {
+    const executor = new LocalExecutor(wasmModule);
     return new EdgeQ(executor);
   }
 
@@ -180,6 +180,27 @@ class RemoteExecutor implements QueryExecutor {
 class LocalExecutor implements QueryExecutor {
   private metaCache: Map<string, { columns: ColumnMeta[]; fileSize: number }> = new Map();
   private datasetCache: Map<string, DatasetMeta> = new Map();
+  private wasmModule?: WebAssembly.Module;
+  private wasmEngine?: WasmEngine;
+
+  constructor(wasmModule?: WebAssembly.Module) {
+    this.wasmModule = wasmModule;
+  }
+
+  private async getWasm(): Promise<WasmEngine> {
+    if (this.wasmEngine) return this.wasmEngine;
+    if (!this.wasmModule) {
+      // Load WASM from file system (Node/Bun)
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "edgeq.wasm");
+      const wasmBytes = await fs.readFile(wasmPath);
+      // WebAssembly.compile not in Cloudflare types but available in Node/Bun
+      this.wasmModule = await (WebAssembly as unknown as { compile(b: BufferSource): Promise<WebAssembly.Module> }).compile(wasmBytes);
+    }
+    this.wasmEngine = await instantiateWasm(this.wasmModule!);
+    return this.wasmEngine;
+  }
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {
     const startTime = Date.now();
@@ -193,7 +214,7 @@ class LocalExecutor implements QueryExecutor {
         if (stat?.isDirectory()) {
           return this.executeDatasetQuery(query, startTime);
         }
-      } catch { /* not a directory, fall through to single-file path */ }
+      } catch { /* stat failed — not a directory, fall through to single-file path */ }
     }
 
     // Step 1: Get or cache table metadata (footer + column meta)
@@ -271,7 +292,8 @@ class LocalExecutor implements QueryExecutor {
     }
 
     // Step 5: Decode and assemble rows
-    const rows = assembleRows(columnData, projectedColumns, query);
+    const wasm = await this.getWasm();
+    const rows = assembleRows(columnData, projectedColumns, query, wasm);
 
     return {
       rows,
@@ -334,7 +356,9 @@ class LocalExecutor implements QueryExecutor {
             r2Key: fragPath,
             updatedAt: Date.now(),
           });
-        } catch { continue; }
+        } catch (err) {
+          throw new Error(`Failed to load fragment ${frag.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       dataset = {
@@ -386,7 +410,8 @@ class LocalExecutor implements QueryExecutor {
         await handle.close();
       }
 
-      const rows = assembleRows(columnData, projectedColumns, query);
+      const wasm = await this.getWasm();
+      const rows = assembleRows(columnData, projectedColumns, query, wasm);
       allRows.push(...rows);
     }
 

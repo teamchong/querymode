@@ -96,7 +96,7 @@ pub const DatasetWriter = struct {
 
     /// Create a new dataset writer.
     ///
-    /// base_url: Full URL to the dataset (e.g., "https://data.metal0.dev/my-dataset.lance")
+    /// base_url: Full URL to the dataset (e.g., "https://data.example.com/my-dataset.lance")
     pub fn init(allocator: std.mem.Allocator, base_url: []const u8) Self {
         return Self{
             .allocator = allocator,

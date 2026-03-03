@@ -138,7 +138,7 @@ pub const Expr = union(enum) {
         target_type: []const u8,
     },
 
-    /// Method call on table alias (e.g., t.risk_score() for @logic_table methods)
+    /// Method call on table alias (e.g., t.method())
     method_call: struct {
         /// Table alias (e.g., "t")
         object: []const u8,
@@ -199,9 +199,9 @@ pub const SelectItem = struct {
     alias: ?[]const u8,
 };
 
-/// Table-valued function call (e.g., logic_table('path'))
+/// Table-valued function call
 pub const TableFunction = struct {
-    /// Function name (e.g., "logic_table")
+    /// Function name
     name: []const u8,
 
     /// Function arguments
@@ -262,7 +262,7 @@ pub const TableRef = union(enum) {
         alias: ?[]const u8,
     },
 
-    /// Table-valued function (e.g., logic_table('fraud.py'))
+    /// Table-valued function
     function: struct {
         /// Function details
         func: TableFunction,

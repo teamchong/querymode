@@ -98,23 +98,8 @@ export interface VectorSearchParams {
   column: string;
   queryVector: Float32Array;
   topK: number;
-  /** Number of IVF partitions to probe (default: sqrt(numPartitions)) */
-  nprobe?: number;
 }
 
-/** Footer invalidation message from Master DO to regional Query DOs */
-export interface FooterInvalidation {
-  type: "footer_invalidation";
-  table: string;
-  r2Key: string;
-  format?: "lance" | "parquet" | "iceberg";
-  /** New footer bytes — Query DO doesn't need to re-read from R2 */
-  footerBytes: ArrayBuffer;
-  /** File size in bytes — needed by Query DO for cache metadata */
-  fileSize: bigint;
-  /** Timestamp of the write that triggered this invalidation */
-  timestamp: number;
-}
 
 /** Query result row — typed at runtime from footer schema */
 export type Row = Record<string, number | bigint | string | boolean | Float32Array | null>;

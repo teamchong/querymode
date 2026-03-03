@@ -25,7 +25,7 @@ pub const MethodCallFn = *const fn (ctx: *anyopaque, expr: *const Expr, row_idx:
 pub const ExprContext = struct {
     allocator: std.mem.Allocator,
     column_cache: *std.StringHashMap(CachedColumn),
-    /// Optional method call handler (for @logic_table methods)
+    /// Optional method call handler
     method_ctx: ?*anyopaque = null,
     method_call_fn: ?MethodCallFn = null,
 };

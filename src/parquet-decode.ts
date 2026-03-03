@@ -1,8 +1,20 @@
 import type { PageEncoding, DataType } from "./types.js";
+import type { WasmEngine } from "./wasm-engine.js";
 import { readVarint } from "./footer.js";
 import { ThriftReader } from "./parquet.js";
 
 const textDecoder = new TextDecoder();
+
+function decompressPage(data: Uint8Array, compression: string | undefined, uncompressedSize: number, wasm: WasmEngine): Uint8Array {
+  if (!compression || compression === "UNCOMPRESSED") return data;
+  switch (compression) {
+    case "SNAPPY": return decompressSnappy(data);
+    case "ZSTD": return wasm.decompressZstd(data);
+    case "GZIP": return wasm.decompressGzip(data);
+    case "LZ4": case "LZ4_RAW": return wasm.decompressLz4(data, uncompressedSize || data.length * 4);
+    default: throw new Error(`Unknown Parquet compression codec: ${compression}`);
+  }
+}
 
 // --- Snappy decompression ---
 
@@ -338,6 +350,7 @@ export function decodeParquetColumnChunk(
   pageEncoding: PageEncoding,
   dtype: DataType,
   numValues: number,
+  wasm: WasmEngine,
 ): (number | bigint | string | boolean | null)[] {
   const bytes = new Uint8Array(chunkBuf);
   const values: (number | bigint | string | boolean | null)[] = [];
@@ -354,9 +367,7 @@ export function decodeParquetColumnChunk(
 
     if (header.type === 2) {
       // DICTIONARY_PAGE
-      if (pageEncoding.compression === "SNAPPY") {
-        pageData = decompressSnappy(pageData);
-      }
+      pageData = decompressPage(pageData, pageEncoding.compression, header.uncompressedSize, wasm);
       dictionary = decodePlainValues(pageData, dtype, header.numValues);
       pos = pageDataEnd;
       continue;
@@ -364,9 +375,7 @@ export function decodeParquetColumnChunk(
 
     if (header.type === 0) {
       // DATA_PAGE (v1)
-      if (pageEncoding.compression === "SNAPPY") {
-        pageData = decompressSnappy(pageData);
-      }
+      pageData = decompressPage(pageData, pageEncoding.compression, header.uncompressedSize, wasm);
 
       let dataOffset = 0;
 
@@ -425,8 +434,8 @@ export function decodeParquetColumnChunk(
 
       // Actual data (may be compressed)
       let dataPayload: Uint8Array = pageData.subarray(dataStart);
-      if (header.isCompressed && pageEncoding.compression === "SNAPPY") {
-        dataPayload = decompressSnappy(dataPayload);
+      if (header.isCompressed) {
+        dataPayload = decompressPage(dataPayload, pageEncoding.compression, header.uncompressedSize, wasm);
       }
 
       // Decode def levels to find nulls

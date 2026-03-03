@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [[r2_buckets]]
 binding = "DATA_BUCKET"
-bucket_name = "metal0-data"
+bucket_name = "edgeq-data"
 
 [durable_objects]
 bindings = [
@@ -23,4 +23,4 @@ tag = "v2"
 new_classes = ["FragmentDO"]
 
 [wasm_modules]
-LANCEQL_WASM = "src/wasm/lanceql.wasm"
+LANCEQL_WASM = "src/wasm/edgeq.wasm"

@@ -74,7 +74,7 @@ pub const S3Client = struct {
 
     /// Create a new S3 client.
     ///
-    /// base_url: Base URL for the dataset (e.g., "https://data.metal0.dev/my-dataset.lance")
+    /// base_url: Base URL for the dataset (e.g., "https://data.example.com/my-dataset.lance")
     pub fn init(allocator: std.mem.Allocator, base_url: []const u8) Self {
         return Self{
             .allocator = allocator,

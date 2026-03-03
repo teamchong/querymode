@@ -7,14 +7,13 @@
 //! to fused native code by the FusedCodeGen.
 //!
 //! Example plan for:
-//!   SELECT t.risk_score(), amount FROM logic_table('fraud.py') AS t
-//!   WHERE amount > 1000 AND t.risk_score() > 0.7 LIMIT 100
+//!   SELECT amount, category FROM transactions
+//!   WHERE amount > 1000 LIMIT 100
 //!
 //! Limit(100)
-//!   └── Project([risk_score, amount])
-//!         └── Filter(amount > 1000 AND risk_score > 0.7)
-//!               └── Compute(risk_score = FraudDetector.risk_score())
-//!                     └── Scan(transactions, [amount, days_since])
+//!   └── Project([amount, category])
+//!         └── Filter(amount > 1000)
+//!               └── Scan(transactions, [amount, category])
 
 const std = @import("std");
 const ast = @import("ast");
@@ -139,32 +138,7 @@ pub const TableSourceType = enum {
     orc,
     xlsx,
     csv,
-    logic_table, // Virtual table from @logic_table Python
     subquery,
-};
-
-/// @logic_table method information
-pub const LogicTableMethodInfo = struct {
-    /// Method name (e.g., "risk_score")
-    name: []const u8,
-    /// Python class name (e.g., "FraudDetector")
-    class_name: []const u8,
-    /// Column dependencies
-    column_deps: []const ColumnRef,
-    /// Return type
-    return_type: ColumnType,
-    /// Inlined Zig source (from metal0 compilation)
-    inlined_body: ?[]const u8 = null,
-};
-
-/// @logic_table information
-pub const LogicTableInfo = struct {
-    /// Path to Python file
-    python_file: []const u8,
-    /// Class name (extracted from Python)
-    class_name: []const u8,
-    /// Available methods
-    methods: []const LogicTableMethodInfo,
 };
 
 /// Table source information
@@ -177,8 +151,6 @@ pub const TableSourceInfo = struct {
     path: ?[]const u8,
     /// Schema columns
     schema: []const ColumnDef,
-    /// For @logic_table: Python class info
-    logic_table_info: ?LogicTableInfo = null,
 };
 
 // ============================================================================
@@ -264,7 +236,7 @@ pub const JoinType = enum {
     cross,
 };
 
-/// Computed expression (for @logic_table methods or derived columns)
+/// Computed expression for derived columns
 pub const ComputeExpr = struct {
     /// Output column name
     name: []const u8,
@@ -274,14 +246,8 @@ pub const ComputeExpr = struct {
     deps: []const ColumnRef,
     /// Return type (resolved)
     return_type: ColumnType = .unknown,
-    /// Inlined Zig source (from metal0 compilation, for @logic_table methods)
+    /// Inlined Zig source (from compilation)
     inlined_body: ?[]const u8 = null,
-    /// Is this a @logic_table method call?
-    is_logic_table_method: bool = false,
-    /// Class name (for @logic_table methods)
-    class_name: ?[]const u8 = null,
-    /// Method name (for @logic_table methods)
-    method_name: ?[]const u8 = null,
 };
 
 // ============================================================================
@@ -299,7 +265,7 @@ pub const PlanNode = union(enum) {
     /// Project columns (SELECT list, final output)
     project: ProjectNode,
 
-    /// Compute expressions (computed columns, @logic_table methods)
+    /// Compute expressions (derived columns)
     compute: ComputeNode,
 
     /// Group by with aggregations
@@ -396,7 +362,7 @@ pub const ProjectNode = struct {
     distinct: bool = false,
 };
 
-/// Compute node - evaluate expressions (including @logic_table methods)
+/// Compute node - evaluate expressions (derived columns)
 pub const ComputeNode = struct {
     /// Input plan node
     input: *const PlanNode,
@@ -488,9 +454,6 @@ pub const QueryPlan = struct {
 
     /// All table sources referenced
     sources: []const TableSourceInfo,
-
-    /// All @logic_table methods to compile
-    logic_table_methods: []const LogicTableMethodInfo,
 
     /// Estimated total cost (for query optimization)
     estimated_cost: ?f64 = null,

@@ -5,8 +5,8 @@
   "description": "Zig WASM engine for EdgeQ — column decoding, SIMD ops, SQL execution, vector search",
   "type": "module",
   "scripts": {
-    "build": "zig build wasm && cp zig-out/bin/lanceql.wasm dist/",
-    "build:js": "cp examples/wasm/lanceql.js dist/"
+    "build": "zig build wasm && cp zig-out/bin/edgeq.wasm dist/",
+    "build:js": "cp examples/wasm/edgeq.js dist/"
   },
   "author": "Steven Chong",
   "license": "MIT",

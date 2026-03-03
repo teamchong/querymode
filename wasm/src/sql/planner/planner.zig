@@ -5,20 +5,18 @@
 //!
 //! Main responsibilities:
 //! 1. Resolve table sources and column references
-//! 2. Extract @logic_table method calls for inlining
-//! 3. Build plan tree (Scan -> Filter -> Compute -> Project -> ...)
-//! 4. Analyze predicate pushdown opportunities
+//! 2. Build plan tree (Scan -> Filter -> Compute -> Project -> ...)
+//! 3. Analyze predicate pushdown opportunities
 //!
 //! Example:
-//!   SELECT t.risk_score(), amount
-//!   FROM logic_table('fraud.py') AS t
+//!   SELECT amount, category
+//!   FROM transactions
 //!   WHERE amount > 1000
 //!
 //! Produces:
-//!   Project([risk_score, amount])
+//!   Project([amount, category])
 //!     └── Filter(amount > 1000)
-//!           └── Compute(risk_score = FraudDetector.risk_score())
-//!                 └── Scan(transactions, [amount, days_since])
+//!           └── Scan(transactions, [amount, category])
 
 const std = @import("std");
 const plan_nodes = @import("plan_nodes.zig");
@@ -34,8 +32,6 @@ const ColumnDef = plan_nodes.ColumnDef;
 const TableSourceInfo = plan_nodes.TableSourceInfo;
 const TableSourceType = plan_nodes.TableSourceType;
 const ComputeExpr = plan_nodes.ComputeExpr;
-const LogicTableInfo = plan_nodes.LogicTableInfo;
-const LogicTableMethodInfo = plan_nodes.LogicTableMethodInfo;
 const AggregateSpec = plan_nodes.AggregateSpec;
 const AggregateType = plan_nodes.AggregateType;
 const OrderBySpec = plan_nodes.OrderBySpec;
@@ -48,20 +44,8 @@ pub const PlannerError = error{
     UnresolvedColumn,
     UnsupportedExpression,
     UnsupportedTableFunction,
-    LogicTableNotFound,
-    MethodNotFound,
     AmbiguousColumn,
     InvalidJoin,
-};
-
-/// Method call reference (for @logic_table extraction)
-const MethodCallRef = struct {
-    /// Table alias (e.g., "t")
-    object: []const u8,
-    /// Method name (e.g., "risk_score")
-    method: []const u8,
-    /// Original AST expression
-    expr: *const ast.Expr,
 };
 
 /// Query Planner
@@ -70,9 +54,6 @@ pub const Planner = struct {
 
     /// Table alias -> source mapping
     table_sources: std.StringHashMap(TableSourceInfo),
-
-    /// @logic_table method references found in query
-    method_calls: std.ArrayList(MethodCallRef),
 
     /// Column binding context (alias.column -> resolved ColumnRef)
     column_bindings: std.StringHashMap(ColumnRef),
@@ -83,16 +64,12 @@ pub const Planner = struct {
     /// Plan sources slice (for cleanup)
     plan_sources: ?[]const TableSourceInfo = null,
 
-    /// Plan methods slice (for cleanup)
-    plan_methods: ?[]const LogicTableMethodInfo = null,
-
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
             .table_sources = std.StringHashMap(TableSourceInfo).init(allocator),
-            .method_calls = .{},
             .column_bindings = std.StringHashMap(ColumnRef).init(allocator),
             .arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -101,10 +78,8 @@ pub const Planner = struct {
     pub fn deinit(self: *Self) void {
         // Free plan slices if allocated
         if (self.plan_sources) |s| self.allocator.free(s);
-        if (self.plan_methods) |m| self.allocator.free(m);
 
         self.table_sources.deinit();
-        self.method_calls.deinit(self.allocator);
         self.column_bindings.deinit();
         self.arena.deinit();
     }
@@ -114,40 +89,24 @@ pub const Planner = struct {
         // 1. Resolve table sources from FROM clause
         try self.resolveTableSources(&stmt.from);
 
-        // 2. Extract @logic_table method calls from SELECT and WHERE
-        try self.extractMethodCalls(stmt);
-
-        // 3. Build plan tree
+        // 2. Build plan tree
         const root = try self.buildPlanTree(stmt);
 
-        // 4. Collect all sources and methods
+        // 3. Collect all sources
         var sources: std.ArrayList(TableSourceInfo) = .{};
         var iter = self.table_sources.valueIterator();
         while (iter.next()) |source| {
             sources.append(self.allocator, source.*) catch return PlannerError.OutOfMemory;
         }
 
-        // Build logic table method list
-        var methods: std.ArrayList(LogicTableMethodInfo) = .{};
-        for (self.method_calls.items) |mc| {
-            methods.append(self.allocator, .{
-                .name = mc.method,
-                .class_name = mc.object, // Will be resolved later
-                .column_deps = &.{},
-                .return_type = .f64, // Default, will be resolved
-            }) catch return PlannerError.OutOfMemory;
-        }
-
         // GROUP BY queries are now compilable (codegen for aggregates implemented)
         _ = stmt.group_by; // Used in plan building
 
-        // Convert to owned slices and free the ArrayList buffers
+        // Convert to owned slice and free the ArrayList buffer
         const sources_slice = sources.toOwnedSlice(self.allocator) catch return PlannerError.OutOfMemory;
-        const methods_slice = methods.toOwnedSlice(self.allocator) catch return PlannerError.OutOfMemory;
 
-        // Store slices for cleanup in deinit
+        // Store slice for cleanup in deinit
         self.plan_sources = sources_slice;
-        self.plan_methods = methods_slice;
 
         // Check if plan contains hash_join (not yet supported in compiled path)
         const has_join = self.planContainsHashJoin(root);
@@ -155,8 +114,7 @@ pub const Planner = struct {
         return QueryPlan{
             .root = root,
             .sources = sources_slice,
-            .logic_table_methods = methods_slice,
-            .compilable = !has_join, // JOINs use interpreted path for now
+            .compilable = !has_join, // JOINs use interpreted path
             .non_compilable_reason = if (has_join) "hash_join not yet compiled" else null,
         };
     }
@@ -189,35 +147,8 @@ pub const Planner = struct {
                 };
                 self.table_sources.put(alias, source) catch return PlannerError.OutOfMemory;
             },
-            .function => |func| {
-                // Handle logic_table('path') or other table functions
-                if (std.mem.eql(u8, func.func.name, "logic_table")) {
-                    if (func.func.args.len == 0) return PlannerError.UnsupportedTableFunction;
-
-                    const path = switch (func.func.args[0]) {
-                        .value => |v| switch (v) {
-                            .string => |s| s,
-                            else => return PlannerError.UnsupportedTableFunction,
-                        },
-                        else => return PlannerError.UnsupportedTableFunction,
-                    };
-
-                    const alias = func.alias orelse "logic_table";
-                    const source = TableSourceInfo{
-                        .source_type = .logic_table,
-                        .name = alias,
-                        .path = path,
-                        .schema = &.{}, // Will be resolved from Python
-                        .logic_table_info = .{
-                            .python_file = path,
-                            .class_name = "", // Will be extracted
-                            .methods = &.{},
-                        },
-                    };
-                    self.table_sources.put(alias, source) catch return PlannerError.OutOfMemory;
-                } else {
-                    return PlannerError.UnsupportedTableFunction;
-                }
+            .function => {
+                return PlannerError.UnsupportedTableFunction;
             },
             .join => |join| {
                 // Resolve both sides of join
@@ -240,85 +171,6 @@ pub const Planner = struct {
         return .lance; // Default
     }
 
-    /// Extract @logic_table method calls from statement
-    fn extractMethodCalls(self: *Self, stmt: *const ast.SelectStmt) PlannerError!void {
-        // Extract from SELECT columns
-        for (stmt.columns) |col| {
-            try self.extractMethodCallsFromExpr(&col.expr);
-        }
-
-        // Extract from WHERE clause
-        if (stmt.where) |*where| {
-            try self.extractMethodCallsFromExpr(where);
-        }
-
-        // Extract from HAVING clause
-        if (stmt.group_by) |group_by| {
-            if (group_by.having) |*having| {
-                try self.extractMethodCallsFromExpr(having);
-            }
-        }
-    }
-
-    /// Extract method calls from expression recursively
-    fn extractMethodCallsFromExpr(self: *Self, expr: *const ast.Expr) PlannerError!void {
-        switch (expr.*) {
-            .method_call => |mc| {
-                // Check if object is a known logic_table alias
-                if (self.table_sources.get(mc.object)) |source| {
-                    if (source.source_type == .logic_table) {
-                        self.method_calls.append(self.allocator, .{
-                            .object = mc.object,
-                            .method = mc.method,
-                            .expr = expr,
-                        }) catch return PlannerError.OutOfMemory;
-                    }
-                }
-
-                // Also check method arguments
-                for (mc.args) |*arg| {
-                    try self.extractMethodCallsFromExpr(arg);
-                }
-            },
-            .binary => |bin| {
-                try self.extractMethodCallsFromExpr(bin.left);
-                try self.extractMethodCallsFromExpr(bin.right);
-            },
-            .unary => |un| {
-                try self.extractMethodCallsFromExpr(un.operand);
-            },
-            .call => |call| {
-                for (call.args) |*arg| {
-                    try self.extractMethodCallsFromExpr(arg);
-                }
-            },
-            .in_list => |in| {
-                try self.extractMethodCallsFromExpr(in.expr);
-                for (in.values) |*val| {
-                    try self.extractMethodCallsFromExpr(val);
-                }
-            },
-            .between => |bet| {
-                try self.extractMethodCallsFromExpr(bet.expr);
-                try self.extractMethodCallsFromExpr(bet.low);
-                try self.extractMethodCallsFromExpr(bet.high);
-            },
-            .case_expr => |case| {
-                if (case.operand) |operand| {
-                    try self.extractMethodCallsFromExpr(operand);
-                }
-                for (case.when_clauses) |*clause| {
-                    try self.extractMethodCallsFromExpr(&clause.condition);
-                    try self.extractMethodCallsFromExpr(&clause.result);
-                }
-                if (case.else_result) |else_result| {
-                    try self.extractMethodCallsFromExpr(else_result);
-                }
-            },
-            else => {},
-        }
-    }
-
     /// Build the plan tree from statement
     fn buildPlanTree(self: *Self, stmt: *const ast.SelectStmt) PlannerError!*const PlanNode {
         const aa = self.arena.allocator();
@@ -326,30 +178,25 @@ pub const Planner = struct {
         // 1. Start with Scan node
         var current = try self.buildScanNode(&stmt.from);
 
-        // 2. Add Compute node for @logic_table methods (if any)
-        if (self.method_calls.items.len > 0) {
-            current = try self.buildComputeNode(current, stmt);
-        }
-
-        // 3. Add Filter node (WHERE clause)
+        // 2. Add Filter node (WHERE clause)
         if (stmt.where) |*where| {
             current = try self.buildFilterNode(current, where);
         }
 
-        // 4. Add GroupBy node (if needed)
+        // 3. Add GroupBy node (if needed)
         if (stmt.group_by != null or self.hasAggregates(stmt.columns)) {
             current = try self.buildGroupByNode(current, stmt);
         }
 
-        // 5. Add Project node (SELECT columns)
+        // 4. Add Project node (SELECT columns)
         current = try self.buildProjectNode(current, stmt.columns, aa);
 
-        // 6. Add Sort node (ORDER BY)
+        // 5. Add Sort node (ORDER BY)
         if (stmt.order_by) |order_by| {
             current = try self.buildSortNode(current, order_by);
         }
 
-        // 7. Add Limit node (LIMIT/OFFSET)
+        // 6. Add Limit node (LIMIT/OFFSET)
         if (stmt.limit != null or stmt.offset != null) {
             current = try self.buildLimitNode(current, stmt.limit, stmt.offset);
         }
@@ -376,19 +223,8 @@ pub const Planner = struct {
                 };
                 return node;
             },
-            .function => |func| {
-                const alias = func.alias orelse "logic_table";
-                const source = self.table_sources.get(alias) orelse return PlannerError.InvalidTableReference;
-
-                const node = aa.create(PlanNode) catch return PlannerError.OutOfMemory;
-                node.* = .{
-                    .scan = .{
-                        .source = source,
-                        .columns = &.{},
-                        .output_columns = &.{},
-                    },
-                };
-                return node;
+            .function => {
+                return PlannerError.UnsupportedTableFunction;
             },
             .join => |join| {
                 // For joins, build both sides and create HashJoinNode
@@ -438,36 +274,6 @@ pub const Planner = struct {
                 return node;
             },
         }
-    }
-
-    /// Build Compute node for @logic_table methods
-    fn buildComputeNode(self: *Self, input: *const PlanNode, stmt: *const ast.SelectStmt) PlannerError!*const PlanNode {
-        _ = stmt;
-        const aa = self.arena.allocator();
-
-        var compute_exprs: std.ArrayList(ComputeExpr) = .{};
-
-        for (self.method_calls.items) |mc| {
-            compute_exprs.append(aa, .{
-                .name = mc.method,
-                .expr = mc.expr,
-                .deps = &.{}, // Will be resolved
-                .return_type = .f64, // Default
-                .is_logic_table_method = true,
-                .class_name = mc.object,
-                .method_name = mc.method,
-            }) catch return PlannerError.OutOfMemory;
-        }
-
-        const node = aa.create(PlanNode) catch return PlannerError.OutOfMemory;
-        node.* = .{
-            .compute = .{
-                .input = input,
-                .expressions = compute_exprs.toOwnedSlice(aa) catch return PlannerError.OutOfMemory,
-                .output_columns = input.getOutputColumns(),
-            },
-        };
-        return node;
     }
 
     /// Build Filter node from WHERE clause

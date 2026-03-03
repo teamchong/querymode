@@ -27,7 +27,6 @@ pub const table = @import("lanceql.table");
 pub const dataframe = @import("lanceql.dataframe");
 pub const dataset = @import("lanceql.dataset");
 pub const dataset_writer = @import("lanceql.dataset_writer");
-pub const logic_table = @import("lanceql.logic_table");
 
 // Re-export commonly used types
 pub const Footer = format.Footer;

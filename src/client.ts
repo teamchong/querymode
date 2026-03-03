@@ -77,9 +77,9 @@ export class TableQuery {
     return this;
   }
 
-  /** IVF-PQ vector similarity search on a fixed_size_list column. */
-  vector(column: string, queryVector: Float32Array, topK: number, nprobe?: number): this {
-    this._vectorSearch = { column, queryVector, topK, nprobe };
+  /** SIMD vector similarity search on a fixed_size_list column. */
+  vector(column: string, queryVector: Float32Array, topK: number): this {
+    this._vectorSearch = { column, queryVector, topK };
     return this;
   }
 

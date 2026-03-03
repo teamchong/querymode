@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { decodePage, assembleRows, canSkipPage, matchesFilter, bigIntReplacer } from "./decode.js";
 import type { ColumnMeta, PageInfo } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
+import type { WasmEngine } from "./wasm-engine.js";
+
+// Minimal mock — Lance pages don't hit WASM decompression
+const mockWasm = {} as WasmEngine;
 
 describe("decodePage", () => {
   it("decodes int32 page", () => {
@@ -163,7 +167,7 @@ describe("assembleRows", () => {
       projections: [],
     };
 
-    const rows = assembleRows(columnData, cols, query);
+    const rows = assembleRows(columnData, cols, query, mockWasm);
     expect(rows).toHaveLength(3);
     expect(rows[0]).toEqual({ id: 1, score: 90 });
     expect(rows[2]).toEqual({ id: 3, score: 70 });
@@ -181,7 +185,7 @@ describe("assembleRows", () => {
       projections: [],
     };
 
-    const rows = assembleRows(columnData, cols, query);
+    const rows = assembleRows(columnData, cols, query, mockWasm);
     expect(rows).toHaveLength(2);
     expect(rows[0].score).toBe(90);
     expect(rows[1].score).toBe(80);
@@ -200,7 +204,7 @@ describe("assembleRows", () => {
       limit: 2,
     };
 
-    const rows = assembleRows(columnData, cols, query);
+    const rows = assembleRows(columnData, cols, query, mockWasm);
     expect(rows).toHaveLength(2);
     expect(rows[0].id).toBe(1);
     expect(rows[1].id).toBe(2);
@@ -228,7 +232,7 @@ describe("assembleRows", () => {
       limit: 3,
     };
 
-    const rows = assembleRows(columnData, bigCols, query);
+    const rows = assembleRows(columnData, bigCols, query, mockWasm);
     expect(rows).toHaveLength(3);
     expect(rows[0].score).toBe(50); // highest
     expect(rows[1].score).toBe(40);
@@ -266,7 +270,7 @@ describe("assembleRows", () => {
       projections: [],
     };
 
-    const rows = assembleRows(columnData, embCols, query);
+    const rows = assembleRows(columnData, embCols, query, mockWasm);
     expect(rows).toHaveLength(2);
 
     // FIX: Each row should have its own Float32Array, not flattened floats
@@ -320,7 +324,7 @@ describe("bigIntReplacer", () => {
 });
 
 describe("vector search", () => {
-  it("throws without WASM engine", () => {
+  it("returns empty for missing embedding column", () => {
     const query: QueryDescriptor = {
       table: "test",
       filters: [],
@@ -331,6 +335,7 @@ describe("vector search", () => {
         topK: 2,
       },
     };
-    expect(() => assembleRows(new Map(), [], query)).toThrow("WASM engine required");
+    const rows = assembleRows(new Map(), [], query, mockWasm);
+    expect(rows).toEqual([]);
   });
 });

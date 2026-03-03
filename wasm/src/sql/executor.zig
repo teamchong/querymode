@@ -19,7 +19,6 @@ const AnyTable = @import("lanceql.any_table").AnyTable;
 const hash = @import("lanceql.hash");
 const vector_engine = @import("lanceql.vector_engine");
 const gpu_hash_join = @import("lanceql.query").gpu_hash_join;
-pub const logic_table_dispatch = @import("logic_table_dispatch.zig");
 pub const scalar_functions = @import("scalar_functions.zig");
 pub const aggregate_functions = @import("aggregate_functions.zig");
 pub const window_functions = @import("window_functions.zig");
@@ -38,7 +37,6 @@ pub const late_materialization = @import("late_materialization.zig");
 pub const planner = @import("planner/planner.zig");
 pub const plan_nodes = @import("planner/plan_nodes.zig");
 pub const fused_codegen = @import("codegen/fused_codegen.zig");
-const metal0_jit = @import("lanceql.codegen");
 const runtime_columns = @import("runtime_columns.zig");
 const RuntimeColumns = runtime_columns.RuntimeColumns;
 const ColumnDataPtr = runtime_columns.ColumnDataPtr;
@@ -60,16 +58,14 @@ pub const JoinedData = result_types.JoinedData;
 pub const TableSource = result_types.TableSource;
 pub const LanceColumnType = result_types.LanceColumnType;
 
-/// Cached compiled query - holds JIT context and compiled function
+/// Cached compiled query - holds compiled function
 const CompiledQuery = struct {
-    jit_ctx: metal0_jit.JitContext,
     compiled_ptr: ?*const anyopaque,
     input_columns: []fused_codegen.ColumnInfo,
     output_columns: []fused_codegen.ColumnInfo,
     needs_string_arena: bool,
 
     fn deinit(self: *CompiledQuery, allocator: std.mem.Allocator) void {
-        self.jit_ctx.deinit();
         allocator.free(self.input_columns);
         allocator.free(self.output_columns);
     }
@@ -95,17 +91,10 @@ pub const Executor = struct {
     xlsx_table: ?*XlsxTable = null,
     allocator: std.mem.Allocator,
     column_cache: std.StringHashMap(CachedColumn),
-    /// Optional dispatcher for @logic_table method calls
-    dispatcher: ?*logic_table_dispatch.Dispatcher = null,
-    /// Maps table alias to class name for @logic_table instances
-    logic_table_aliases: std.StringHashMap([]const u8),
     /// Currently active table source (set during execute)
     active_source: ?TableSource = null,
     /// Registered tables by name (for JOINs and multi-table queries)
     tables: std.StringHashMap(*Table),
-    /// Cache for @logic_table method batch results
-    /// Key: "ClassName.methodName", Value: results array
-    method_results_cache: std.StringHashMap([]const f64),
     /// Cache for compiled queries - key is query hash
     compiled_query_cache: std.AutoHashMap(u64, CompiledQuery),
 
@@ -151,11 +140,8 @@ pub const Executor = struct {
             .xlsx_table = null,
             .allocator = allocator,
             .column_cache = std.StringHashMap(CachedColumn).init(allocator),
-            .dispatcher = null,
-            .logic_table_aliases = std.StringHashMap([]const u8).init(allocator),
             .active_source = null,
             .tables = std.StringHashMap(*Table).init(allocator),
-            .method_results_cache = std.StringHashMap([]const f64).init(allocator),
             .compiled_query_cache = std.AutoHashMap(u64, CompiledQuery).init(allocator),
             .vector_indexes = std.StringHashMap(VectorIndexInfo).init(allocator),
         };
@@ -256,33 +242,6 @@ pub const Executor = struct {
     fn shouldCompile(self: *Self, stmt: *const SelectStmt) bool {
         _ = stmt;
         return self.compiled_execution_enabled;
-    }
-
-    /// Check if expression contains @logic_table method call
-    fn hasLogicTableMethodCall(self: *Self, expr: *const Expr) bool {
-        switch (expr.*) {
-            .method_call => |mc| {
-                // Check if object is a logic_table alias
-                if (self.logic_table_aliases.get(mc.object)) |_| {
-                    return true;
-                }
-                return false;
-            },
-            .binary => |bin| {
-                return self.hasLogicTableMethodCall(bin.left) or
-                    self.hasLogicTableMethodCall(bin.right);
-            },
-            .unary => |un| {
-                return self.hasLogicTableMethodCall(un.operand);
-            },
-            .call => |call| {
-                for (call.args) |*arg| {
-                    if (self.hasLogicTableMethodCall(arg)) return true;
-                }
-                return false;
-            },
-            else => return false,
-        }
     }
 
     /// Execute a query using fused compilation
@@ -395,31 +354,9 @@ pub const Executor = struct {
             gen_result.layout.deinit();
             break :blk cached.compiled_ptr orelse return error.CompiledFunctionNull;
         } else blk: {
-            // Cache miss - compile and store
-            var jit_ctx = metal0_jit.JitContext.init(self.allocator);
-            errdefer jit_ctx.deinit();
-
-            const compiled = try jit_ctx.compileZigSource(gen_result.source, "fused_query");
-
-            // Copy layout info for cache (gen_result.layout will be freed after this function)
-            const input_cols = try self.allocator.dupe(fused_codegen.ColumnInfo, gen_result.layout.input_columns);
-            errdefer self.allocator.free(input_cols);
-            const output_cols = try self.allocator.dupe(fused_codegen.ColumnInfo, gen_result.layout.output_columns);
-            errdefer self.allocator.free(output_cols);
-
-            // Store in cache
-            try self.compiled_query_cache.put(query_hash, .{
-                .jit_ctx = jit_ctx,
-                .compiled_ptr = compiled.ptr,
-                .input_columns = input_cols,
-                .output_columns = output_cols,
-                .needs_string_arena = needs_string_arena,
-            });
-
-            // Free gen_result layout since we copied it
+            // Cache miss - JIT compilation not available
             gen_result.layout.deinit();
-
-            break :blk compiled.ptr orelse return error.CompiledFunctionNull;
+            return error.NotImplemented;
         };
 
         // Get layout from cache (guaranteed to exist now)
@@ -1049,13 +986,11 @@ pub const Executor = struct {
     }
 
     /// Method call wrapper conforming to MethodCallFn signature
-    /// Bridges expr_eval to executor's evaluateMethodCall
     fn methodCallWrapper(ctx: *anyopaque, expr: *const Expr, row_idx: u32) anyerror!Value {
-        const self: *Self = @ptrCast(@alignCast(ctx));
-        return switch (expr.*) {
-            .method_call => |mc| self.evaluateMethodCall(mc, row_idx),
-            else => error.NotAMethodCall,
-        };
+        _ = ctx;
+        _ = expr;
+        _ = row_idx;
+        return error.NotImplemented;
     }
 
     /// Build ExprContext for expr_eval module
@@ -1076,26 +1011,6 @@ pub const Executor = struct {
         };
     }
 
-    /// Set the dispatcher for @logic_table method calls
-    pub fn setDispatcher(self: *Self, dispatcher: *logic_table_dispatch.Dispatcher) void {
-        self.dispatcher = dispatcher;
-    }
-
-    /// Register a @logic_table alias with its class name
-    /// Returns error.DuplicateAlias if alias already registered
-    pub fn registerLogicTableAlias(self: *Self, alias: []const u8, class_name: []const u8) !void {
-        // Check for existing alias first - we don't support overwriting
-        if (self.logic_table_aliases.contains(alias)) {
-            return error.DuplicateAlias;
-        }
-
-        const alias_copy = try self.allocator.dupe(u8, alias);
-        errdefer self.allocator.free(alias_copy);
-        const class_copy = try self.allocator.dupe(u8, class_name);
-        errdefer self.allocator.free(class_copy);
-        try self.logic_table_aliases.put(alias_copy, class_copy);
-    }
-
     pub fn deinit(self: *Self) void {
         // Free cached columns
         var iter = self.column_cache.valueIterator();
@@ -1103,22 +1018,6 @@ pub const Executor = struct {
             col.free(self.allocator);
         }
         self.column_cache.deinit();
-
-        // Free logic_table alias keys and values
-        var alias_iter = self.logic_table_aliases.iterator();
-        while (alias_iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.logic_table_aliases.deinit();
-
-        // Free method results cache
-        var results_iter = self.method_results_cache.iterator();
-        while (results_iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.method_results_cache.deinit();
 
         // Free compiled query cache
         var cache_iter = self.compiled_query_cache.valueIterator();
@@ -1270,50 +1169,7 @@ pub const Executor = struct {
                 const direct_table = self.table orelse return error.NoTableConfigured;
                 return .{ .direct = direct_table };
             },
-            .function => |func| {
-                // Table-valued function (e.g., logic_table('fraud.py'))
-                if (std.mem.eql(u8, func.func.name, "logic_table")) {
-                    // Extract file path from first argument
-                    if (func.func.args.len == 0) {
-                        return error.LogicTableRequiresPath;
-                    }
-
-                    const path_arg = func.func.args[0];
-                    const path = switch (path_arg) {
-                        .value => |val| switch (val) {
-                            .string => |s| s,
-                            else => return error.LogicTablePathMustBeString,
-                        },
-                        else => return error.LogicTablePathMustBeString,
-                    };
-
-                    // Create LogicTableExecutor from file path (heap allocated)
-                    const executor = try self.allocator.create(logic_table_dispatch.LogicTableExecutor);
-                    errdefer self.allocator.destroy(executor);
-                    executor.* = try logic_table_dispatch.LogicTableExecutor.init(self.allocator, path);
-                    errdefer executor.deinit();
-
-                    // Load tables referenced in the Python file
-                    try executor.loadTables();
-
-                    // Get primary table (first loaded table)
-                    const primary_table = executor.getPrimaryTable() orelse {
-                        executor.deinit();
-                        self.allocator.destroy(executor);
-                        return error.NoTablesInLogicTable;
-                    };
-
-                    // Register alias for method dispatch
-                    if (func.alias) |alias| {
-                        try self.registerLogicTableAlias(alias, executor.class_name);
-                    }
-
-                    return .{ .logic_table = .{
-                        .executor = executor,
-                        .primary_table = primary_table,
-                        .alias = func.alias,
-                    } };
-                }
+            .function => |_| {
                 return error.UnsupportedTableFunction;
             },
             .join => |join| {
@@ -1610,10 +1466,6 @@ pub const Executor = struct {
         // (we keep left_table pointer in joined_data.left_table)
         switch (left_source) {
             .direct => {}, // Nothing to release
-            .logic_table => |*lt| {
-                lt.executor.deinit();
-                self.allocator.destroy(lt.executor);
-            },
             .joined => |jd| {
                 jd.deinit();
                 self.allocator.destroy(jd);
@@ -1907,11 +1759,6 @@ pub const Executor = struct {
         switch (source.*) {
             .direct => {
                 // Nothing to release - table is managed externally
-            },
-            .logic_table => |*lt| {
-                // Clean up executor and free heap allocation
-                lt.executor.deinit();
-                self.allocator.destroy(lt.executor);
             },
             .joined => |jd| {
                 // Clean up joined data
@@ -3088,105 +2935,6 @@ pub const Executor = struct {
         return expr_eval.evaluateExprToValue(ctx, expr, row_idx);
     }
 
-
-    // ========================================================================
-    // Method Call Evaluation (for @logic_table)
-    // ========================================================================
-
-    /// Evaluate a @logic_table method call (e.g., t.risk_score())
-    ///
-    /// This uses batch dispatch to compute all method results at once, then caches them.
-    /// On subsequent calls with different row indices, the cached results are returned.
-    ///
-    /// For methods that require column data (Phase 3/4), the inputs need to be populated
-    /// with ColumnBinding data from the Lance table.
-    ///
-    fn evaluateMethodCall(self: *Self, mc: anytype, row_idx: u32) !Value {
-        // Get class name from alias
-        const class_name = self.logic_table_aliases.get(mc.object) orelse
-            return error.TableAliasNotFound;
-
-        // Get dispatcher
-        var dispatcher = self.dispatcher orelse
-            return error.NoDispatcherConfigured;
-
-        // For now, we only support methods with no runtime arguments
-        // The compiled method operates on batch data loaded in the LogicTableContext
-        if (mc.args.len > 0) {
-            return error.MethodArgsNotSupported;
-        }
-
-        // Build cache key: "ClassName.methodName"
-        var cache_key_buf: [256]u8 = undefined;
-        const cache_key = std.fmt.bufPrint(&cache_key_buf, "{s}.{s}", .{ class_name, mc.method }) catch
-            return error.CacheKeyTooLong;
-
-        // Check if we have cached results
-        if (self.method_results_cache.get(cache_key)) |cached_results| {
-            if (row_idx < cached_results.len) {
-                return Value{ .float = cached_results[row_idx] };
-            }
-            return error.RowIndexOutOfBounds;
-        }
-
-        // No cached results - compute batch results
-
-        // Determine row count from the current table
-        const row_count: usize = blk: {
-            if (self.table) |t| {
-                // Get row count from column 0
-                const count = t.rowCount(0) catch 1000;
-                break :blk @intCast(count);
-            }
-            // No table - use a default batch size
-            break :blk 1000;
-        };
-
-        // Check if this is a batch method
-        if (dispatcher.isBatchMethod(class_name, mc.method)) {
-            // Allocate output buffer
-            var output = logic_table_dispatch.ColumnBuffer.initFloat64(self.allocator, row_count) catch
-                return error.OutOfMemory;
-            errdefer output.deinit(self.allocator);
-
-            const inputs = &[_]logic_table_dispatch.ColumnBinding{};
-
-            // Call batch dispatch
-            dispatcher.callMethodBatch(class_name, mc.method, inputs, null, &output, null) catch |err| {
-                return switch (err) {
-                    logic_table_dispatch.DispatchError.MethodNotFound => error.MethodNotFound,
-                    logic_table_dispatch.DispatchError.ArgumentCountMismatch => error.ArgumentCountMismatch,
-                    else => error.ExecutionFailed,
-                };
-            };
-
-            // Cache the results
-            const results = output.f64 orelse return error.NoResults;
-            const cache_key_copy = self.allocator.dupe(u8, cache_key) catch
-                return error.OutOfMemory;
-            self.method_results_cache.put(cache_key_copy, results) catch {
-                self.allocator.free(cache_key_copy);
-                return error.CachePutFailed;
-            };
-
-            // Return the result for this row
-            if (row_idx < results.len) {
-                return Value{ .float = results[row_idx] };
-            }
-            return error.RowIndexOutOfBounds;
-        }
-
-        // Fallback to scalar dispatch for non-batch methods
-        const result = dispatcher.callMethod0(class_name, mc.method) catch |err| {
-            return switch (err) {
-                logic_table_dispatch.DispatchError.MethodNotFound => error.MethodNotFound,
-                logic_table_dispatch.DispatchError.ArgumentCountMismatch => error.ArgumentCountMismatch,
-                else => error.ExecutionFailed,
-            };
-        };
-
-        return Value{ .float = result };
-    }
 
     /// Evaluate an expression column for all filtered indices (delegates to expr_eval)
     fn evaluateExpressionColumn(

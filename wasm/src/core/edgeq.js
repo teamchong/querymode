@@ -1,7 +1,7 @@
 /**
- * LanceQL WASM Loader and Initialization
+ * EdgeQ WASM Loader and Initialization
  *
- * Core module for loading the LanceQL WebAssembly module and managing
+ * Core module for loading the EdgeQ WebAssembly module and managing
  * the WASM runtime environment.
  */
 
@@ -56,8 +56,8 @@ export const wasmUtils = {
     getExports: () => _w,
 };
 
-// LanceQL high-level methods factory (needs proxy reference)
-const _createLanceqlMethods = (proxy) => ({
+// EdgeQ high-level methods factory (needs proxy reference)
+const _createEdgeqMethods = (proxy) => ({
     /**
      * Get the library version.
      * @returns {string} Version string like "0.1.0"
@@ -150,19 +150,19 @@ const _createLanceqlMethods = (proxy) => ({
 });
 
 /**
- * LanceQL WASM loader class
+ * EdgeQ WASM loader class
  *
- * Provides an Immer-style proxy interface to the LanceQL WebAssembly module
+ * Provides an Immer-style proxy interface to the EdgeQ WebAssembly module
  * with automatic marshalling of strings and byte arrays.
  */
-export class LanceQL {
+export class EdgeQWasm {
     /**
-     * Load LanceQL from a WASM file path or URL.
+     * Load EdgeQ from a WASM file path or URL.
      * Returns Immer-style proxy with auto string/bytes marshalling.
-     * @param {string} wasmPath - Path to the lanceql.wasm file
-     * @returns {Promise<LanceQL>}
+     * @param {string} wasmPath - Path to the edgeq.wasm file
+     * @returns {Promise<EdgeQWasm>}
      */
-    static async load(wasmPath = './lanceql.wasm') {
+    static async load(wasmPath = './edgeq.wasm') {
         const response = await fetch(wasmPath);
         const wasmBytes = await response.arrayBuffer();
         const wasmModule = await WebAssembly.instantiate(wasmBytes, {});
@@ -171,13 +171,13 @@ export class LanceQL {
         _m = _w.memory;
 
         // Create Immer-style proxy that auto-marshals string/bytes arguments
-        // Also includes high-level LanceQL methods
+        // Also includes high-level EdgeQ methods
         let _methods = null;
         const proxy = new Proxy({}, {
             get(_, n) {
                 // Lazy init methods with proxy reference
-                if (!_methods) _methods = _createLanceqlMethods(proxy);
-                // High-level LanceQL methods
+                if (!_methods) _methods = _createEdgeqMethods(proxy);
+                // High-level EdgeQ methods
                 if (n in _methods) return _methods[n];
                 // Special properties
                 if (n === 'memory') return _m;
@@ -196,4 +196,4 @@ export class LanceQL {
 }
 
 // Export default
-export default LanceQL;
+export default EdgeQWasm;

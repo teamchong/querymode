@@ -78,6 +78,12 @@ export interface WasmExports {
   minInt64Buffer(ptr: number, len: number): bigint;
   maxInt64Buffer(ptr: number, len: number): bigint;
 
+  // Compression (compression.zig)
+  zstd_decompress(compressedPtr: number, compressedLen: number, decompressedPtr: number, decompressedCapacity: number): number;
+  zstd_get_decompressed_size(compressedPtr: number, compressedLen: number): number;
+  gzip_decompress(compressedPtr: number, compressedLen: number, decompressedPtr: number, decompressedCapacity: number): number;
+  lz4_block_decompress(compressedPtr: number, compressedLen: number, decompressedPtr: number, decompressedCapacity: number): number;
+
   // Fragment reader (fragment_reader.zig)
   fragmentLoad(dataPtr: number, len: number): number;
   fragmentGetColumnCount(): number;
@@ -108,6 +114,51 @@ export class WasmEngine {
   constructor(exports: WasmExports) { this.exports = exports; }
 
   reset(): void { this.exports.resetResult(); }
+
+  /** Decompress ZSTD data using the Zig std.compress.zstd implementation. */
+  decompressZstd(compressed: Uint8Array): Uint8Array {
+    const inPtr = this.exports.wasmAlloc(compressed.length);
+    if (!inPtr) throw new Error("WASM OOM allocating zstd input");
+    new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
+
+    const decompressedSize = this.exports.zstd_get_decompressed_size(inPtr, compressed.length);
+    const capacity = decompressedSize || compressed.length * 4; // estimate if unknown
+    const outPtr = this.exports.wasmAlloc(capacity);
+    if (!outPtr) throw new Error("WASM OOM allocating zstd output");
+
+    const written = this.exports.zstd_decompress(inPtr, compressed.length, outPtr, capacity);
+    if (written === 0 && compressed.length > 0) throw new Error("zstd decompression failed");
+    return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
+  }
+
+  /** Decompress GZIP data using the Zig std.compress.gzip implementation. */
+  decompressGzip(compressed: Uint8Array): Uint8Array {
+    const inPtr = this.exports.wasmAlloc(compressed.length);
+    if (!inPtr) throw new Error("WASM OOM allocating gzip input");
+    new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
+
+    const capacity = compressed.length * 4;
+    const outPtr = this.exports.wasmAlloc(capacity);
+    if (!outPtr) throw new Error("WASM OOM allocating gzip output");
+
+    const written = this.exports.gzip_decompress(inPtr, compressed.length, outPtr, capacity);
+    if (written === 0 && compressed.length > 0) throw new Error("gzip decompression failed");
+    return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
+  }
+
+  /** Decompress LZ4 block data (Parquet hadoop codec). */
+  decompressLz4(compressed: Uint8Array, uncompressedSize: number): Uint8Array {
+    const inPtr = this.exports.wasmAlloc(compressed.length);
+    if (!inPtr) throw new Error("WASM OOM allocating lz4 input");
+    new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
+
+    const outPtr = this.exports.wasmAlloc(uncompressedSize);
+    if (!outPtr) throw new Error("WASM OOM allocating lz4 output");
+
+    const written = this.exports.lz4_block_decompress(inPtr, compressed.length, outPtr, uncompressedSize);
+    if (written === 0 && compressed.length > 0) throw new Error("lz4 decompression failed");
+    return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
+  }
 
   private writeString(str: string): { ptr: number; len: number } {
     const bytes = textEncoder.encode(str);
@@ -334,7 +385,7 @@ export class WasmEngine {
       }
 
       default:
-        return true; // Unsupported dtype — skip silently
+        throw new Error(`Unsupported dtype for WASM registration: ${dtype}`);
     }
 
     // fixed_size_list when reached via float32 break

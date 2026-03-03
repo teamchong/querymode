@@ -6,7 +6,7 @@
 //!
 //! Key optimizations:
 //! - Single pass over data (fused scan + filter + compute)
-//! - @logic_table methods inlined directly
+//! - Computed expressions inlined directly
 //! - Vectorized loops with SIMD opportunities
 //! - GPU dispatch for vector similarity operations
 //!
@@ -19,10 +19,8 @@
 //!     var count: usize = 0;
 //!     var i: usize = 0;
 //!     while (i < columns.len) : (i += 1) {
-//!         // Inlined @logic_table method
-//!         const risk_score = blk: { ... };
 //!         // Fused filter
-//!         if (columns.amount[i] > 1000 and risk_score > 0.7) {
+//!         if (columns.amount[i] > 1000) {
 //!             output.amount[count] = columns.amount[i];
 //!             output.risk_score[count] = risk_score;
 //!             count += 1;
@@ -161,7 +159,7 @@ pub const FusedCodeGen = struct {
     /// Input columns in declaration order (for layout)
     input_column_order: std.ArrayList(ColumnInfo),
 
-    /// Computed columns (from @logic_table methods)
+    /// Computed columns (derived expressions)
     computed_columns: std.StringHashMap([]const u8),
 
     /// Computed columns in declaration order (for layout)
@@ -2921,7 +2919,7 @@ pub const FusedCodeGen = struct {
                     self.indent += 1;
 
                     if (expr.inlined_body) |body| {
-                        // Use inlined body from metal0
+                        // Use inlined body
                         try self.writeIndent();
                         try self.write(body);
                         try self.write("\n");
