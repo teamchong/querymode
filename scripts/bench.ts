@@ -6,7 +6,8 @@
  *
  * Prerequisites:
  *   1. `pnpm dev` running on localhost:8787
- *   2. `npx tsx scripts/seed-local-r2.ts` to populate local R2
+ *   2. `npx tsx scripts/generate-bench-data.ts` to generate large fixtures
+ *   3. `npx tsx scripts/seed-local-r2.ts` to populate local R2
  *
  * Usage: npx tsx scripts/bench.ts
  */
@@ -24,7 +25,6 @@ interface BenchResult {
   min: number;
   max: number;
   avg: number;
-  /** Server-side metrics from last run */
   serverMs?: number;
   r2ReadMs?: number;
   wasmExecMs?: number;
@@ -48,14 +48,13 @@ async function runQuery(body: unknown): Promise<{ latencyMs: number; result: Rec
   const latencyMs = performance.now() - start;
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Query failed (${resp.status}): ${text}`);
+    throw new Error(`Query failed (${resp.status}): ${text.slice(0, 200)}`);
   }
   const result = await resp.json() as Record<string, unknown>;
   return { latencyMs, result };
 }
 
 async function bench(name: string, query: unknown): Promise<BenchResult> {
-  // Warmup
   for (let i = 0; i < WARMUP_RUNS; i++) {
     try { await runQuery(query); } catch { /* table may not exist */ }
   }
@@ -69,7 +68,7 @@ async function bench(name: string, query: unknown): Promise<BenchResult> {
       latencies.push(latencyMs);
       lastResult = result;
     } catch (err) {
-      console.error(`  ${name} run ${i} failed:`, err);
+      if (i === 0) console.error(`  ${name}: ${err}`);
     }
   }
 
@@ -103,61 +102,50 @@ function formatMs(ms: number): string {
 }
 
 function printResults(results: BenchResult[]): void {
-  console.log("\n" + "=".repeat(100));
+  console.log("\n" + "=".repeat(120));
   console.log("QueryMode Benchmark Results (wrangler dev — full DO stack)");
-  console.log("=".repeat(100));
+  console.log("=".repeat(120));
 
   const header = [
-    "Benchmark".padEnd(35),
+    "Benchmark".padEnd(40),
     "p50".padStart(8),
     "p95".padStart(8),
-    "p99".padStart(8),
     "min".padStart(8),
     "max".padStart(8),
     "avg".padStart(8),
-    "rows".padStart(8),
-    "bytes".padStart(10),
-    "skip".padStart(5),
+    "rows".padStart(10),
+    "server".padStart(8),
+    "r2".padStart(8),
+    "wasm".padStart(8),
   ].join(" | ");
 
   console.log(header);
-  console.log("-".repeat(100));
+  console.log("-".repeat(120));
 
   for (const r of results) {
     if (r.runs === 0) {
-      console.log(`${r.name.padEnd(35)} | SKIPPED (table not found)`);
+      console.log(`${r.name.padEnd(40)} | SKIPPED`);
       continue;
     }
     const row = [
-      r.name.padEnd(35),
+      r.name.padEnd(40),
       formatMs(r.p50).padStart(8),
       formatMs(r.p95).padStart(8),
-      formatMs(r.p99).padStart(8),
       formatMs(r.min).padStart(8),
       formatMs(r.max).padStart(8),
       formatMs(r.avg).padStart(8),
-      String(r.rowCount ?? "-").padStart(8),
-      r.bytesRead != null ? `${(r.bytesRead / 1024).toFixed(1)}KB` : "-".padStart(10),
-      String(r.pagesSkipped ?? "-").padStart(5),
+      String(r.rowCount ?? "-").padStart(10),
+      formatMs(r.serverMs ?? 0).padStart(8),
+      formatMs(r.r2ReadMs ?? 0).padStart(8),
+      formatMs(r.wasmExecMs ?? 0).padStart(8),
     ].join(" | ");
     console.log(row);
   }
 
-  console.log("-".repeat(100));
-
-  // Server-side breakdown for last run of each
-  console.log("\nServer-side breakdown (last run):");
-  for (const r of results) {
-    if (r.runs === 0) continue;
-    console.log(
-      `  ${r.name}: total=${formatMs(r.serverMs ?? 0)} ` +
-      `r2=${formatMs(r.r2ReadMs ?? 0)} wasm=${formatMs(r.wasmExecMs ?? 0)}`,
-    );
-  }
+  console.log("-".repeat(120));
 }
 
 async function main(): Promise<void> {
-  // Check Worker is running
   try {
     const health = await fetch(`${BASE_URL}/health`);
     if (!health.ok) throw new Error(`${health.status}`);
@@ -167,25 +155,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Force Query DO to register with Master by hitting /tables first
-  console.log("Registering Query DO with Master...");
+  // Force Query DO to register
+  console.log("Registering Query DO...");
   await fetch(`${BASE_URL}/tables`);
-  // Small delay for registration to complete
   await new Promise(r => setTimeout(r, 500));
 
-  // Refresh all known tables so Query DO gets the footer data
+  // Refresh tables
   const knownTables = [
-    // Lance datasets
     "simple_int64.lance/", "simple_float64.lance/", "mixed_types.lance/",
-    "large.lance/", "multiple_batches.lance/", "strings_various.lance/",
-    "with_nulls.lance/", "basic_types.lance/", "vectors.lance/",
-    "vector_search.lance/",
-    // Parquet files
+    "large.lance/", "multiple_batches.lance/",
     "simple.parquet", "simple_plain.parquet", "simple_snappy.parquet",
     "benchmark_100k.parquet", "benchmark_100k_uncompressed.parquet",
+    "bench_100k_3col.parquet", "bench_100k_numeric.parquet", "bench_1m_numeric.parquet",
   ];
 
-  console.log("Refreshing tables via Master DO...");
+  console.log("Refreshing tables...");
   for (const r2Key of knownTables) {
     try {
       const resp = await fetch(`${BASE_URL}/refresh`, {
@@ -194,144 +178,116 @@ async function main(): Promise<void> {
         body: JSON.stringify({ r2Key }),
       });
       if (resp.ok) {
-        const result = await resp.json() as Record<string, unknown>;
-        console.log(`  ${result.refreshed ? "Refreshed" : "Skip"}: ${r2Key}`);
+        const r = await resp.json() as Record<string, unknown>;
+        console.log(`  ${r.refreshed ? "OK" : "Skip"}: ${r2Key}`);
       } else {
         console.log(`  Skip: ${r2Key} (${resp.status})`);
       }
     } catch {
-      console.log(`  Skip: ${r2Key} (error)`);
+      console.log(`  Skip: ${r2Key}`);
     }
   }
-
-  // Wait for broadcasts to propagate
   await new Promise(r => setTimeout(r, 500));
 
   const tablesResp = await fetch(`${BASE_URL}/tables`);
-  const { tables } = await tablesResp.json() as { tables: string[] };
-  console.log("\nAvailable tables:", tables);
-
-  if (tables.length === 0) {
-    console.error("No tables found. Run `npx tsx scripts/seed-local-r2.ts` first.");
-    process.exit(1);
-  }
+  const { tables } = await tablesResp.json() as { tables: { name: string; totalRows: number }[] };
+  console.log("\nAvailable tables:", tables.map(t => `${t.name}(${t.totalRows})`).join(", "));
 
   const results: BenchResult[] = [];
 
-  // --- Lance benchmarks ---
+  // ============================================================
+  // PARQUET BENCHMARKS (the main event)
+  // ============================================================
 
-  // 1. Full scan (small table)
-  results.push(await bench("lance: full scan int64", {
-    table: "simple_int64",
-    filters: [],
+  // 100K rows, 3 columns (id int64, value float64, category utf8)
+  results.push(await bench("pq: 100k×3col full scan", {
+    table: "bench_100k_3col", filters: [], projections: [],
+  }));
+
+  results.push(await bench("pq: 100k×3col select 2 cols", {
+    table: "bench_100k_3col", filters: [], projections: ["id", "value"],
+  }));
+
+  results.push(await bench("pq: 100k×3col filter id>50000", {
+    table: "bench_100k_3col",
+    filters: [{ column: "id", op: "gt", value: 50000 }],
     projections: [],
   }));
 
-  // 2. Full scan float64
-  results.push(await bench("lance: full scan float64", {
-    table: "simple_float64",
-    filters: [],
+  // 100K rows, 2 numeric columns
+  results.push(await bench("pq: 100k×2col numeric scan", {
+    table: "bench_100k_numeric", filters: [], projections: [],
+  }));
+
+  results.push(await bench("pq: 100k×2col filter id>90000", {
+    table: "bench_100k_numeric",
+    filters: [{ column: "id", op: "gt", value: 90000 }],
     projections: [],
   }));
 
-  // 3. Mixed types scan
-  results.push(await bench("lance: mixed types scan", {
-    table: "mixed_types",
-    filters: [],
+  // 1M rows, 2 numeric columns
+  results.push(await bench("pq: 1M×2col numeric scan", {
+    table: "bench_1m_numeric", filters: [], projections: [],
+  }));
+
+  results.push(await bench("pq: 1M×2col filter id>900000", {
+    table: "bench_1m_numeric",
+    filters: [{ column: "id", op: "gt", value: 900000 }],
     projections: [],
   }));
 
-  // 4. Filter pushdown (gt)
-  results.push(await bench("lance: filter int64 > value", {
-    table: "simple_int64",
-    filters: [{ column: "value", op: "gt", value: 50 }],
-    projections: [],
+  // Legacy fixture parquets
+  results.push(await bench("pq: 100k fixture (compressed)", {
+    table: "benchmark_100k", filters: [], projections: [],
   }));
 
-  // 5. Column projection
-  results.push(await bench("lance: select 1 col from mixed", {
-    table: "mixed_types",
-    filters: [],
-    projections: ["int_col"],
+  results.push(await bench("pq: 100k fixture (uncompressed)", {
+    table: "benchmark_100k_uncompressed", filters: [], projections: [],
   }));
 
-  // 6. Large dataset scan
-  results.push(await bench("lance: large dataset scan", {
-    table: "large",
-    filters: [],
-    projections: [],
+  results.push(await bench("pq: snappy 5 rows", {
+    table: "simple_snappy", filters: [], projections: [],
   }));
 
-  // 7. Large dataset with filter
-  results.push(await bench("lance: large + filter", {
+  // ============================================================
+  // LANCE BENCHMARKS
+  // ============================================================
+
+  results.push(await bench("lance: 1000 rows full scan", {
+    table: "large", filters: [], projections: [],
+  }));
+
+  results.push(await bench("lance: 1000 rows filter >500", {
     table: "large",
     filters: [{ column: "value", op: "gt", value: 500 }],
     projections: [],
   }));
 
-  // 8. Multiple batches (multi-fragment)
-  results.push(await bench("lance: multi-batch scan", {
-    table: "multiple_batches",
-    filters: [],
-    projections: [],
+  results.push(await bench("lance: multi-batch (3 frags)", {
+    table: "multiple_batches", filters: [], projections: [],
   }));
 
-  // 9. Strings
-  results.push(await bench("lance: string scan", {
-    table: "strings_various",
-    filters: [],
-    projections: [],
+  results.push(await bench("lance: mixed types scan", {
+    table: "mixed_types", filters: [], projections: [],
   }));
 
-  // 10. Nulls
-  results.push(await bench("lance: nulls scan", {
-    table: "with_nulls",
-    filters: [],
-    projections: [],
+  // ============================================================
+  // ICEBERG BENCHMARKS
+  // ============================================================
+
+  results.push(await bench("iceberg: 100k×2col scan", {
+    table: "bench_iceberg_100k", filters: [], projections: [],
   }));
 
-  // --- Parquet benchmarks ---
-
-  // 11. Simple Parquet (plain encoding)
-  results.push(await bench("parquet: plain encoding", {
-    table: "simple_plain",
-    filters: [],
-    projections: [],
-  }));
-
-  // 12. Parquet with Snappy
-  results.push(await bench("parquet: snappy compressed", {
-    table: "simple_snappy",
-    filters: [],
-    projections: [],
-  }));
-
-  // 13. Parquet 100K rows
-  results.push(await bench("parquet: 100k rows", {
-    table: "benchmark_100k",
-    filters: [],
-    projections: [],
-  }));
-
-  // 14. Parquet 100K uncompressed
-  results.push(await bench("parquet: 100k uncompressed", {
-    table: "benchmark_100k_uncompressed",
-    filters: [],
-    projections: [],
-  }));
-
-  // 15. Parquet 100K with filter
-  results.push(await bench("parquet: 100k + filter", {
-    table: "benchmark_100k",
+  results.push(await bench("iceberg: 100k×2col filter >50000", {
+    table: "bench_iceberg_100k",
     filters: [{ column: "id", op: "gt", value: 50000 }],
     projections: [],
   }));
 
-  // --- Health/diagnostics ---
-  console.log("\n--- Query DO Diagnostics ---");
-  const diag = await fetch(`${BASE_URL}/health?deep=true`);
-  const diagResult = await diag.json();
-  console.log(JSON.stringify(diagResult, null, 2));
+  // ============================================================
+  // RESULTS
+  // ============================================================
 
   printResults(results);
 }

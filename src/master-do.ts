@@ -2,6 +2,7 @@ import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult } fr
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
+import { bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import wasmModule from "./wasm-module.js";
 
@@ -346,7 +347,7 @@ export class MasterDO implements DurableObject {
     const result = await this.readFooterAndColumns(r2Key);
     if (!result) return this.json({ error: "Failed to read footer" }, 500);
 
-    const tableName = r2Key.replace(/\.lance$/, "").split("/").pop() ?? r2Key;
+    const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     await this.broadcast(tableName, r2Key, result);
     return this.json({ refreshed: true, table: tableName });
   }
@@ -420,7 +421,7 @@ export class MasterDO implements DurableObject {
       table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
       footerBytes: Array.from(new Uint8Array(footer.raw)),
       fileSize: footer.fileSize.toString(), timestamp: Date.now(),
-    });
+    }, bigIntReplacer);
 
     const deadRegions: string[] = [];
     await Promise.allSettled(Object.entries(regions).map(async ([region, doId]) => {
