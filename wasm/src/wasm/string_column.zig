@@ -8,8 +8,8 @@
 const std = @import("std");
 const format = @import("format.zig");
 const memory = @import("memory.zig");
+const column_meta = @import("column_meta.zig");
 
-const readU64LE = format.readU64LE;
 const readU32LE = format.readU32LE;
 const readVarint = format.readVarint;
 const wasmAlloc = memory.wasmAlloc;
@@ -22,23 +22,6 @@ const wasmAlloc = memory.wasmAlloc;
 pub var file_data: ?[]const u8 = null;
 pub var num_columns: u32 = 0;
 pub var column_meta_offsets_start: u64 = 0;
-
-// ============================================================================
-// Column Offset Entry
-// ============================================================================
-
-fn getColumnOffsetEntry(col_idx: u32) struct { pos: u64, len: u64 } {
-    const data = file_data orelse return .{ .pos = 0, .len = 0 };
-    if (col_idx >= num_columns) return .{ .pos = 0, .len = 0 };
-
-    const entry_offset: usize = @intCast(column_meta_offsets_start + col_idx * 16);
-    if (entry_offset + 16 > data.len) return .{ .pos = 0, .len = 0 };
-
-    return .{
-        .pos = readU64LE(data, entry_offset),
-        .len = readU64LE(data, entry_offset + 8),
-    };
-}
 
 // ============================================================================
 // String Buffer Info Parsing
@@ -181,7 +164,7 @@ pub const StringBuffer = struct {
 
 pub fn getStringBuffer(col_idx: u32) ?StringBuffer {
     const data = file_data orelse return null;
-    const entry = getColumnOffsetEntry(col_idx);
+    const entry = column_meta.getColumnOffsetEntry(data, num_columns, column_meta_offsets_start, col_idx);
     if (entry.len == 0) return null;
 
     const col_meta_start: usize = @intCast(entry.pos);

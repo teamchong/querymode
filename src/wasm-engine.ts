@@ -284,11 +284,7 @@ export class WasmEngine {
       }
 
       case "float32": {
-        if (dtype === "float32" && listDim && listDim > 0) {
-          // fixed_size_list path handled below
-          break;
-        }
-        // Promote float32 → float64
+        // Promote float32 → float64 (fixed_size_list vectors use dtype "fixed_size_list")
         const src = new Float32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
         const f64Bytes = totalRows * 8;
         const dataPtr = this.exports.wasmAlloc(f64Bytes);
@@ -418,18 +414,6 @@ export class WasmEngine {
       default:
         throw new Error(`Unsupported dtype for WASM registration: ${dtype}`);
     }
-
-    // fixed_size_list when reached via float32 break
-    if (dtype === "float32" && listDim && listDim > 0) {
-      const dim = listDim;
-      const dataPtr = this.exports.wasmAlloc(flat.byteLength);
-      if (!dataPtr) return false;
-      new Uint8Array(this.exports.memory.buffer, dataPtr, flat.byteLength).set(flat);
-      this.exports.registerTableFloat32Vector(tPtr, tLen, cPtr, cLen, dataPtr, totalRows, dim);
-      return true;
-    }
-
-    return true;
   }
 
   /** Check if a key exists in the WASM buffer pool cache. */

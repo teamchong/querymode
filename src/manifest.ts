@@ -1,18 +1,9 @@
 import { readVarint, LANCE_MAGIC } from "./footer.js";
+import type { FragmentInfo, ManifestInfo } from "./types.js";
+
+export type { FragmentInfo, ManifestInfo };
 
 const decoder = new TextDecoder();
-
-export interface FragmentInfo {
-  id: number;
-  filePath: string;
-  physicalRows: number;
-}
-
-export interface ManifestInfo {
-  version: number;
-  fragments: FragmentInfo[];
-  totalRows: number;
-}
 
 /**
  * Parse a Lance manifest file (_versions/N.manifest).

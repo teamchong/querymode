@@ -86,11 +86,10 @@ export class TableQuery {
 
   /** Append rows to this table. Uses CAS coordination for safe concurrent writes. */
   async append(rows: Record<string, unknown>[]): Promise<AppendResult> {
-    if (!("append" in this._executor)) {
+    if (!this._executor.append) {
       throw new Error("append() requires an executor with write support");
     }
-    return (this._executor as QueryExecutor & { append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> })
-      .append(this._table, rows);
+    return this._executor.append(this._table, rows);
   }
 
   /** Execute the query. Resolves page ranges from cached footer, issues parallel Range reads. */
@@ -100,11 +99,10 @@ export class TableQuery {
 
   /** Execute and return an NDJSON stream of rows. Only works with RemoteExecutor. */
   async execStream(): Promise<ReadableStream<Row>> {
-    if (!("executeStream" in this._executor)) {
+    if (!this._executor.executeStream) {
       throw new Error("execStream() requires a remote executor with streaming support");
     }
-    return (this._executor as QueryExecutor & { executeStream(q: QueryDescriptor): Promise<ReadableStream<Row>> })
-      .executeStream(this.toDescriptor());
+    return this._executor.executeStream(this.toDescriptor());
   }
 
   private toDescriptor(): QueryDescriptor {
@@ -138,4 +136,8 @@ export interface QueryDescriptor {
 /** Interface for query execution backends (local, DO, browser) */
 export interface QueryExecutor {
   execute(query: QueryDescriptor): Promise<QueryResult>;
+  /** Optional: append rows (available on local and remote executors with write support) */
+  append?(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
+  /** Optional: streaming execution (available on remote executors) */
+  executeStream?(query: QueryDescriptor): Promise<ReadableStream<Row>>;
 }

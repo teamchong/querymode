@@ -6,10 +6,9 @@
 const std = @import("std");
 const format = @import("format.zig");
 const memory = @import("memory.zig");
+const column_meta = @import("column_meta.zig");
 
-const readU64LE = format.readU64LE;
 const readF32LE = format.readF32LE;
-const readVarint = format.readVarint;
 const wasmAlloc = memory.wasmAlloc;
 
 // ============================================================================
@@ -33,138 +32,20 @@ pub const ColumnBuffer = struct {
 };
 
 // ============================================================================
-// Column Offset Entry
-// ============================================================================
-
-fn getColumnOffsetEntry(col_idx: u32) struct { pos: u64, len: u64 } {
-    const data = file_data orelse return .{ .pos = 0, .len = 0 };
-    if (col_idx >= num_columns) return .{ .pos = 0, .len = 0 };
-
-    const entry_offset: usize = @intCast(column_meta_offsets_start + col_idx * 16);
-    if (entry_offset + 16 > data.len) return .{ .pos = 0, .len = 0 };
-
-    return .{
-        .pos = readU64LE(data, entry_offset),
-        .len = readU64LE(data, entry_offset + 8),
-    };
-}
-
-// ============================================================================
-// Page Buffer Info Parsing
-// ============================================================================
-
-/// Get page buffer info from column metadata protobuf
-fn getPageBufferInfo(col_meta: []const u8) struct { offset: u64, size: u64, rows: u64 } {
-    var pos: usize = 0;
-    var page_offset: u64 = 0;
-    var page_size: u64 = 0;
-    var page_rows: u64 = 0;
-
-    while (pos < col_meta.len) {
-        const tag = readVarint(col_meta, &pos);
-        const field_num = tag >> 3;
-        const wire_type: u3 = @truncate(tag);
-
-        switch (field_num) {
-            1 => { // encoding (length-delimited) - skip it
-                if (wire_type == 2) {
-                    const skip_len = readVarint(col_meta, &pos);
-                    pos += @as(usize, @intCast(skip_len));
-                }
-            },
-            2 => { // pages (length-delimited)
-                if (wire_type != 2) break;
-                const page_len = readVarint(col_meta, &pos);
-                const page_end = pos + @as(usize, @intCast(page_len));
-
-                // Parse page message
-                while (pos < page_end and pos < col_meta.len) {
-                    const page_tag = readVarint(col_meta, &pos);
-                    const page_field = page_tag >> 3;
-                    const page_wire: u3 = @truncate(page_tag);
-
-                    switch (page_field) {
-                        1 => { // buffer_offsets (packed repeated uint64)
-                            if (page_wire == 2) {
-                                const packed_len = readVarint(col_meta, &pos);
-                                const packed_end = pos + @as(usize, @intCast(packed_len));
-                                // Read first offset only
-                                if (pos < packed_end) {
-                                    page_offset = readVarint(col_meta, &pos);
-                                }
-                                // Skip rest
-                                pos = packed_end;
-                            } else {
-                                page_offset = readVarint(col_meta, &pos);
-                            }
-                        },
-                        2 => { // buffer_sizes (packed repeated uint64)
-                            if (page_wire == 2) {
-                                const packed_len = readVarint(col_meta, &pos);
-                                const packed_end = pos + @as(usize, @intCast(packed_len));
-                                // Read first size only
-                                if (pos < packed_end) {
-                                    page_size = readVarint(col_meta, &pos);
-                                }
-                                // Skip rest
-                                pos = packed_end;
-                            } else {
-                                page_size = readVarint(col_meta, &pos);
-                            }
-                        },
-                        3 => { // length (rows)
-                            page_rows = readVarint(col_meta, &pos);
-                        },
-                        else => {
-                            // Skip field
-                            if (page_wire == 0) {
-                                _ = readVarint(col_meta, &pos);
-                            } else if (page_wire == 2) {
-                                const skip_len = readVarint(col_meta, &pos);
-                                pos += @as(usize, @intCast(skip_len));
-                            } else if (page_wire == 5) {
-                                pos += 4; // 32-bit fixed
-                            } else if (page_wire == 1) {
-                                pos += 8; // 64-bit fixed
-                            }
-                        },
-                    }
-                }
-                return .{ .offset = page_offset, .size = page_size, .rows = page_rows };
-            },
-            else => {
-                // Skip other fields
-                if (wire_type == 0) {
-                    _ = readVarint(col_meta, &pos);
-                } else if (wire_type == 2) {
-                    const skip_len = readVarint(col_meta, &pos);
-                    pos += @as(usize, @intCast(skip_len));
-                } else if (wire_type == 5) {
-                    pos += 4;
-                } else if (wire_type == 1) {
-                    pos += 8;
-                }
-            },
-        }
-    }
-    return .{ .offset = 0, .size = 0, .rows = 0 };
-}
-
-// ============================================================================
 // Column Buffer Access
 // ============================================================================
 
 pub fn getColumnBuffer(col_idx: u32) ?ColumnBuffer {
     const data = file_data orelse return null;
-    const entry = getColumnOffsetEntry(col_idx);
+    const entry = column_meta.getColumnOffsetEntry(data, num_columns, column_meta_offsets_start, col_idx);
     if (entry.len == 0) return null;
 
     const col_meta_start: usize = @intCast(entry.pos);
     const col_meta_len: usize = @intCast(entry.len);
     if (col_meta_start + col_meta_len > data.len) return null;
 
-    const col_meta = data[col_meta_start..][0..col_meta_len];
-    const buf_info = getPageBufferInfo(col_meta);
+    const col_meta_slice = data[col_meta_start..][0..col_meta_len];
+    const buf_info = column_meta.getPageBufferInfo(col_meta_slice);
 
     return .{
         .data = data,

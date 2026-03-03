@@ -77,8 +77,7 @@ pub fn readVarint(data: []const u8, offset: *usize) u64 {
         result |= @as(u64, byte & 0x7F) << shift;
         if (byte & 0x80 == 0) break;
 
-        shift += 7;
-        if (shift >= 64) break;
+        shift +|= 7;
     }
 
     return result;
