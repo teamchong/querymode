@@ -1,4 +1,4 @@
-//! CSV Parser for LanceQL
+//! CSV Parser for EdgeQ
 //!
 //! Streaming CSV/TSV parser with:
 //! - Auto-detect delimiter (comma, tab, pipe, semicolon)

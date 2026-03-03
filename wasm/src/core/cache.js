@@ -3,7 +3,7 @@
  * Caches schema, column types, and fragment info to speed up repeat visits.
  */
 export class MetadataCache {
-    constructor(dbName = 'lanceql-cache', version = 1) {
+    constructor(dbName = 'edgeq-cache', version = 1) {
         this.dbName = dbName;
         this.version = version;
         this.db = null;

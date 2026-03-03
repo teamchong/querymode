@@ -3,9 +3,9 @@
 //! Delta Lake and Apache Iceberg ingestion to Lance format.
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const delta = lanceql.encoding.delta;
-const iceberg = lanceql.encoding.iceberg;
+const edgeq = @import("edgeq");
+const delta = edgeq.encoding.delta;
+const iceberg = edgeq.encoding.iceberg;
 
 pub fn ingestDelta(
     allocator: std.mem.Allocator,
@@ -26,7 +26,7 @@ pub fn ingestDelta(
         reader.columnCount(),
         reader.fileCount(),
     });
-    std.debug.print("Use: lanceql ingest {s}/*.parquet -o output.lance\n", .{path});
+    std.debug.print("Use: edgeq ingest {s}/*.parquet -o output.lance\n", .{path});
 }
 
 pub fn ingestIceberg(
@@ -48,5 +48,5 @@ pub fn ingestIceberg(
         reader.columnCount(),
         reader.snapshotId(),
     });
-    std.debug.print("Use: lanceql ingest {s}/data/*.parquet -o output.lance\n", .{path});
+    std.debug.print("Use: edgeq ingest {s}/data/*.parquet -o output.lance\n", .{path});
 }

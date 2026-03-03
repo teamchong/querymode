@@ -1,10 +1,10 @@
-//! LanceQL Enrich Command
+//! EdgeQ Enrich Command
 //!
 //! Adds embeddings and vector indexes to Lance files.
 //!
 //! Usage:
-//!   lanceql enrich input.lance --embed text_column --model minilm -o output.lance
-//!   lanceql enrich input.parquet --embed description --model clip -o output.lance
+//!   edgeq enrich input.lance --embed text_column --model minilm -o output.lance
+//!   edgeq enrich input.parquet --embed description --model clip -o output.lance
 
 const std = @import("std");
 const args = @import("args.zig");
@@ -18,9 +18,9 @@ const index_builder = @import("enrich/index_builder.zig");
 const embedding = @import("../embedding/embedding.zig");
 
 // Table and format modules
-const lanceql = @import("lanceql");
-const writer = lanceql.encoding.writer;
-const Result = @import("lanceql.sql.executor").Result;
+const edgeq = @import("edgeq");
+const writer = edgeq.encoding.writer;
+const Result = @import("edgeq.sql.executor").Result;
 
 pub const EnrichError = error{
     NoInputFile,

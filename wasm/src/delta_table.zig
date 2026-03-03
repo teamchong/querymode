@@ -6,9 +6,9 @@
 //! 3. Exposing unified column read interface
 
 const std = @import("std");
-const DeltaReader = @import("lanceql.encoding").DeltaReader;
-const ParquetTable = @import("lanceql.parquet_table").ParquetTable;
-const format = @import("lanceql.format");
+const DeltaReader = @import("edgeq.encoding").DeltaReader;
+const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
+const format = @import("edgeq.format");
 const Type = format.parquet_metadata.Type;
 
 pub const DeltaTableError = error{

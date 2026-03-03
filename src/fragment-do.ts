@@ -52,7 +52,7 @@ export class FragmentDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "frag:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("frag:", ""), meta);
 
-    this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM);
+    this.wasmEngine = await instantiateWasm(this.env.EDGEQ_WASM);
   }
 
   private json(body: unknown, status = 200): Response {

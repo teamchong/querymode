@@ -23,4 +23,4 @@ tag = "v2"
 new_classes = ["FragmentDO"]
 
 [wasm_modules]
-LANCEQL_WASM = "src/wasm/edgeq.wasm"
+EDGEQ_WASM = "src/wasm/edgeq.wasm"

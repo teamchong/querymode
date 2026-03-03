@@ -5,7 +5,7 @@
 //! See: https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift
 
 const std = @import("std");
-const proto = @import("lanceql.proto");
+const proto = @import("edgeq.proto");
 const ThriftDecoder = proto.ThriftDecoder;
 const CompactType = proto.CompactType;
 const ThriftError = proto.ThriftError;

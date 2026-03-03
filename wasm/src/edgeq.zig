@@ -1,14 +1,14 @@
-//! LanceQL - A Zig implementation of the Lance columnar file format reader.
+//! EdgeQ - A Zig implementation of the Lance columnar file format reader.
 //!
 //! This library provides read-only access to Lance files, supporting both
 //! native execution and WebAssembly (browser) targets.
 //!
 //! ## Example
 //! ```zig
-//! const lanceql = @import("lanceql");
+//! const edgeq = @import("edgeq");
 //!
 //! pub fn main() !void {
-//!     var file = try lanceql.LanceFile.open("data.lance");
+//!     var file = try edgeq.LanceFile.open("data.lance");
 //!     defer file.close();
 //!
 //!     const footer = file.footer();
@@ -18,15 +18,15 @@
 
 const std = @import("std");
 
-pub const format = @import("lanceql.format");
-pub const io = @import("lanceql.io");
-pub const proto = @import("lanceql.proto");
-pub const encoding = @import("lanceql.encoding");
-pub const writer = @import("lanceql.writer");
-pub const table = @import("lanceql.table");
-pub const dataframe = @import("lanceql.dataframe");
-pub const dataset = @import("lanceql.dataset");
-pub const dataset_writer = @import("lanceql.dataset_writer");
+pub const format = @import("edgeq.format");
+pub const io = @import("edgeq.io");
+pub const proto = @import("edgeq.proto");
+pub const encoding = @import("edgeq.encoding");
+pub const writer = @import("edgeq.writer");
+pub const table = @import("edgeq.table");
+pub const dataframe = @import("edgeq.dataframe");
+pub const dataset = @import("edgeq.dataset");
+pub const dataset_writer = @import("edgeq.dataset_writer");
 
 // Re-export commonly used types
 pub const Footer = format.Footer;

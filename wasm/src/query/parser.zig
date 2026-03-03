@@ -28,11 +28,11 @@ const ast = @import("ast.zig");
 const SelectStmt = ast.SelectStmt;
 const SelectItem = ast.SelectItem;
 const OrderBy = ast.OrderBy;
-const expr_mod = @import("lanceql.query.expr");
+const expr_mod = @import("edgeq.query.expr");
 const Expr = expr_mod.Expr;
 const BinaryOp = expr_mod.BinaryOp;
 const UnaryOp = expr_mod.UnaryOp;
-const Value = @import("lanceql.value").Value;
+const Value = @import("edgeq.value").Value;
 
 pub const ParseError = error{
     UnexpectedToken,

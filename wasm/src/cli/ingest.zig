@@ -1,19 +1,19 @@
-//! LanceQL Ingest Command
+//! EdgeQ Ingest Command
 //!
 //! Converts data files to Lance format.
 //! Supports: CSV, TSV, JSON, JSONL, Parquet, Arrow, Avro, ORC, XLSX, Delta, Iceberg
 //!
 //! Usage:
-//!   lanceql ingest data.csv -o output.lance
-//!   lanceql ingest data.json --format jsonl -o output.lance
-//!   lanceql ingest data.arrow -o output.lance
-//!   lanceql ingest ./delta_table/ --format delta -o output.lance
+//!   edgeq ingest data.csv -o output.lance
+//!   edgeq ingest data.json --format jsonl -o output.lance
+//!   edgeq ingest data.arrow -o output.lance
+//!   edgeq ingest ./delta_table/ --format delta -o output.lance
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const csv = lanceql.encoding.csv;
-const delta = lanceql.encoding.delta;
-const iceberg = lanceql.encoding.iceberg;
+const edgeq = @import("edgeq");
+const csv = edgeq.encoding.csv;
+const delta = edgeq.encoding.delta;
+const iceberg = edgeq.encoding.iceberg;
 const args = @import("args.zig");
 
 // Ingest modules

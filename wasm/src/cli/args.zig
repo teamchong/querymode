@@ -1,12 +1,12 @@
-//! LanceQL CLI Argument Parser
+//! EdgeQ CLI Argument Parser
 //!
 //! Supports subcommand-based architecture:
-//!   lanceql query "SELECT ..."
-//!   lanceql ingest data.csv -o out.lance
-//!   lanceql transform data.lance --select "a,b"
-//!   lanceql enrich data.lance --embed text
-//!   lanceql serve data.lance
-//!   lanceql (no args) - auto-detect config or serve
+//!   edgeq query "SELECT ..."
+//!   edgeq ingest data.csv -o out.lance
+//!   edgeq transform data.lance --select "a,b"
+//!   edgeq enrich data.lance --embed text
+//!   edgeq serve data.lance
+//!   edgeq (no args) - auto-detect config or serve
 
 const std = @import("std");
 const help = @import("help.zig");

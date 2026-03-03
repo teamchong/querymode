@@ -6,7 +6,7 @@ pub const plain = @import("plain.zig");
 pub const rle = @import("rle.zig");
 pub const dictionary = @import("dictionary.zig");
 pub const page = @import("page.zig");
-pub const snappy = @import("lanceql.encoding.snappy");
+pub const snappy = @import("edgeq.encoding.snappy");
 
 pub const PlainDecoder = plain.PlainDecoder;
 pub const PlainError = plain.PlainError;

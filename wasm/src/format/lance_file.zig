@@ -9,8 +9,8 @@
 
 const std = @import("std");
 const footer_mod = @import("footer.zig");
-const io = @import("lanceql.io");
-const proto = @import("lanceql.proto");
+const io = @import("edgeq.io");
+const proto = @import("edgeq.proto");
 
 const Footer = footer_mod.Footer;
 const FOOTER_SIZE = footer_mod.FOOTER_SIZE;

@@ -27,7 +27,7 @@
 //! | writer_version | 13 | WriterVersion |
 
 const std = @import("std");
-const proto_mod = @import("lanceql.proto");
+const proto_mod = @import("edgeq.proto");
 
 const ProtoDecoder = proto_mod.ProtoDecoder;
 const DecodeError = proto_mod.DecodeError;

@@ -21,7 +21,7 @@ const rle = @import("orc/rle.zig");
 const streams = @import("orc/streams.zig");
 
 // Snappy decompressor (shared with Parquet)
-const snappy = @import("lanceql.encoding.snappy");
+const snappy = @import("edgeq.encoding.snappy");
 
 // Re-export types
 pub const StreamKind = streams.StreamKind;

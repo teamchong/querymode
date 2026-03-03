@@ -1,4 +1,4 @@
-//! Simple YAML Parser for LanceQL Config Files
+//! Simple YAML Parser for EdgeQ Config Files
 //!
 //! Parses config format:
 //!   command: ingest

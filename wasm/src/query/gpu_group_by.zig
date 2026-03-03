@@ -20,7 +20,7 @@
 //! ```
 
 const std = @import("std");
-const gpu = @import("lanceql.gpu");
+const gpu = @import("edgeq.gpu");
 
 /// Aggregation type for GROUP BY
 pub const AggType = enum {

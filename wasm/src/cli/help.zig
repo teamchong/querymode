@@ -1,4 +1,4 @@
-//! LanceQL CLI Help Messages
+//! EdgeQ CLI Help Messages
 //!
 //! All command help output functions.
 
@@ -7,9 +7,9 @@ const std = @import("std");
 /// Print main help
 pub fn printHelp() void {
     std.debug.print(
-        \\LanceQL - High-performance data pipeline for Lance files
+        \\EdgeQ - High-performance data pipeline for Lance files
         \\
-        \\Usage: lanceql [command] [options]
+        \\Usage: edgeq [command] [options]
         \\
         \\Commands:
         \\  query, q      Execute SQL query on Lance/Parquet files
@@ -29,13 +29,13 @@ pub fn printHelp() void {
         \\  -V, --version        Show version
         \\
         \\Examples:
-        \\  lanceql query "SELECT * FROM 'data.lance' LIMIT 10"
-        \\  lanceql ingest data.csv -o dataset.lance
-        \\  lanceql enrich dataset.lance --embed text --model minilm
-        \\  lanceql serve dataset.lance
-        \\  lanceql                    # Auto-detect: config or serve
+        \\  edgeq query "SELECT * FROM 'data.lance' LIMIT 10"
+        \\  edgeq ingest data.csv -o dataset.lance
+        \\  edgeq enrich dataset.lance --embed text --model minilm
+        \\  edgeq serve dataset.lance
+        \\  edgeq                    # Auto-detect: config or serve
         \\
-        \\Run 'lanceql <command> --help' for command-specific help.
+        \\Run 'edgeq <command> --help' for command-specific help.
         \\
     , .{});
 }
@@ -43,7 +43,7 @@ pub fn printHelp() void {
 /// Print query command help
 pub fn printQueryHelp() void {
     std.debug.print(
-        \\Usage: lanceql query [options] "SQL QUERY"
+        \\Usage: edgeq query [options] "SQL QUERY"
         \\
         \\Execute SQL queries on Lance and Parquet files.
         \\
@@ -58,9 +58,9 @@ pub fn printQueryHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  lanceql query "SELECT * FROM 'users.lance' WHERE age > 25"
-        \\  lanceql query -b "SELECT COUNT(*) FROM 'data.parquet'"
-        \\  lanceql query -f query.sql --json
+        \\  edgeq query "SELECT * FROM 'users.lance' WHERE age > 25"
+        \\  edgeq query -b "SELECT COUNT(*) FROM 'data.parquet'"
+        \\  edgeq query -f query.sql --json
         \\
     , .{});
 }
@@ -68,7 +68,7 @@ pub fn printQueryHelp() void {
 /// Print ingest command help
 pub fn printIngestHelp() void {
     std.debug.print(
-        \\Usage: lanceql ingest <input> -o <output.lance> [options]
+        \\Usage: edgeq ingest <input> -o <output.lance> [options]
         \\
         \\Convert data files to Lance format.
         \\
@@ -93,11 +93,11 @@ pub fn printIngestHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  lanceql ingest data.csv -o dataset.lance
-        \\  lanceql ingest data.json --format jsonl -o dataset.lance
-        \\  lanceql ingest data.parquet -o dataset.lance
-        \\  lanceql ingest data.arrow -o dataset.lance
-        \\  lanceql ingest ./my_delta_table/ --format delta -o dataset.lance
+        \\  edgeq ingest data.csv -o dataset.lance
+        \\  edgeq ingest data.json --format jsonl -o dataset.lance
+        \\  edgeq ingest data.parquet -o dataset.lance
+        \\  edgeq ingest data.arrow -o dataset.lance
+        \\  edgeq ingest ./my_delta_table/ --format delta -o dataset.lance
         \\
     , .{});
 }
@@ -105,7 +105,7 @@ pub fn printIngestHelp() void {
 /// Print serve command help
 pub fn printServeHelp() void {
     std.debug.print(
-        \\Usage: lanceql serve [input] [options]
+        \\Usage: edgeq serve [input] [options]
         \\
         \\Start interactive web server with WebGPU-powered UI.
         \\
@@ -123,19 +123,19 @@ pub fn printServeHelp() void {
         \\  - Timeline/version navigation
         \\
         \\Examples:
-        \\  lanceql serve dataset.lance
-        \\  lanceql serve ./datasets/ --port 8080
-        \\  lanceql serve                          # Serve current directory
+        \\  edgeq serve dataset.lance
+        \\  edgeq serve ./datasets/ --port 8080
+        \\  edgeq serve                          # Serve current directory
         \\
     , .{});
 }
 
 pub fn printTransformHelp() void {
     std.debug.print(
-        \\Usage: lanceql transform <input> -o <output> [options]
+        \\Usage: edgeq transform <input> -o <output> [options]
         \\
         \\Apply transformations to Lance data.
-        \\Use 'lanceql query' with SQL for transformations.
+        \\Use 'edgeq query' with SQL for transformations.
         \\
         \\Options:
         \\  -o, --output <PATH>    Output file (required)
@@ -148,7 +148,7 @@ pub fn printTransformHelp() void {
 
 pub fn printEnrichHelp() void {
     std.debug.print(
-        \\Usage: lanceql enrich <input> -o <output> [options]
+        \\Usage: edgeq enrich <input> -o <output> [options]
         \\
         \\Add embeddings and vector indexes to Lance data.
         \\
@@ -161,8 +161,8 @@ pub fn printEnrichHelp() void {
         \\  -h, --help             Show this help
         \\
         \\Examples:
-        \\  lanceql enrich data.lance --embed text -o enriched.lance
-        \\  lanceql enrich data.parquet --embed desc --model clip -o out.lance
+        \\  edgeq enrich data.lance --embed text -o enriched.lance
+        \\  edgeq enrich data.parquet --embed desc --model clip -o out.lance
         \\
     , .{});
 }
@@ -170,7 +170,7 @@ pub fn printEnrichHelp() void {
 /// Print history command help
 pub fn printHistoryHelp() void {
     std.debug.print(
-        \\Usage: lanceql history <table.lance> [options]
+        \\Usage: edgeq history <table.lance> [options]
         \\
         \\Show version history for a Lance table.
         \\
@@ -187,9 +187,9 @@ pub fn printHistoryHelp() void {
         \\  delta      Change in row count (+N or -N)
         \\
         \\Examples:
-        \\  lanceql history users.lance
-        \\  lanceql history users.lance --limit 5
-        \\  lanceql history users.lance --json
+        \\  edgeq history users.lance
+        \\  edgeq history users.lance --limit 5
+        \\  edgeq history users.lance --json
         \\
     , .{});
 }
@@ -197,7 +197,7 @@ pub fn printHistoryHelp() void {
 /// Print diff command help
 pub fn printDiffHelp() void {
     std.debug.print(
-        \\Usage: lanceql diff <table.lance> --from <N> [--to <M>] [options]
+        \\Usage: edgeq diff <table.lance> --from <N> [--to <M>] [options]
         \\
         \\Show differences between two versions of a Lance table.
         \\
@@ -217,10 +217,10 @@ pub fn printDiffHelp() void {
         \\  ...        All columns from the table
         \\
         \\Examples:
-        \\  lanceql diff users.lance --from 2 --to 3
-        \\  lanceql diff users.lance --from -1          # What changed last?
-        \\  lanceql diff users.lance -f 1               # Changes since version 1
-        \\  lanceql diff users.lance -f 2 --limit 1000
+        \\  edgeq diff users.lance --from 2 --to 3
+        \\  edgeq diff users.lance --from -1          # What changed last?
+        \\  edgeq diff users.lance -f 1               # Changes since version 1
+        \\  edgeq diff users.lance -f 2 --limit 1000
         \\
     , .{});
 }

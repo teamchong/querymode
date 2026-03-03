@@ -23,7 +23,7 @@
 //! ```
 
 const std = @import("std");
-const gpu = @import("lanceql.gpu");
+const gpu = @import("edgeq.gpu");
 
 /// Threshold for using optimized hash table (uses parallel probe for large data)
 pub const JOIN_THRESHOLD: usize = gpu.JOIN_GPU_THRESHOLD;

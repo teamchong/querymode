@@ -175,5 +175,5 @@ export interface Env {
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
   FRAGMENT_DO: DurableObjectNamespace;
-  LANCEQL_WASM: WebAssembly.Module;
+  EDGEQ_WASM: WebAssembly.Module;
 }

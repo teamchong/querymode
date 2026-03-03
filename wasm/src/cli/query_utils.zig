@@ -3,17 +3,17 @@
 //! Provides common SQL query execution logic used across transform, enrich, and other CLI commands.
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const Table = lanceql.Table;
-const ParquetTable = @import("lanceql.parquet_table").ParquetTable;
-const ArrowTable = @import("lanceql.arrow_table").ArrowTable;
-const AvroTable = @import("lanceql.avro_table").AvroTable;
-const OrcTable = @import("lanceql.orc_table").OrcTable;
-const XlsxTable = @import("lanceql.xlsx_table").XlsxTable;
-const lexer = @import("lanceql.sql.lexer");
-const parser = @import("lanceql.sql.parser");
-const executor = @import("lanceql.sql.executor");
-const ast = @import("lanceql.sql.ast");
+const edgeq = @import("edgeq");
+const Table = edgeq.Table;
+const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
+const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
+const AvroTable = @import("edgeq.avro_table").AvroTable;
+const OrcTable = @import("edgeq.orc_table").OrcTable;
+const XlsxTable = @import("edgeq.xlsx_table").XlsxTable;
+const lexer = @import("edgeq.sql.lexer");
+const parser = @import("edgeq.sql.parser");
+const executor = @import("edgeq.sql.executor");
+const ast = @import("edgeq.sql.ast");
 const file_detect = @import("file_detect.zig");
 
 pub const Result = executor.Result;

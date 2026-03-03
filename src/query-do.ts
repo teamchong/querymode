@@ -71,7 +71,7 @@ export class QueryDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 
-    this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM);
+    this.wasmEngine = await instantiateWasm(this.env.EDGEQ_WASM);
 
     // Register with Master for invalidation broadcasts
     this.registerWithMaster();

@@ -3,7 +3,7 @@
 //! These tests validate the Lance file footer parsing against known values.
 
 const std = @import("std");
-const format = @import("lanceql.format");
+const format = @import("edgeq.format");
 
 const Footer = format.Footer;
 const Version = format.Version;

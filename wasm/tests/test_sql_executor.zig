@@ -3,10 +3,10 @@
 //! Tests the SQL executor against real Lance files
 
 const std = @import("std");
-const Table = @import("lanceql.table").Table;
-const ast = @import("lanceql.sql.ast");
-const parser = @import("lanceql.sql.parser");
-const executor_mod = @import("lanceql.sql.executor");
+const Table = @import("edgeq.table").Table;
+const ast = @import("edgeq.sql.ast");
+const parser = @import("edgeq.sql.parser");
+const executor_mod = @import("edgeq.sql.executor");
 const Executor = executor_mod.Executor;
 const Result = executor_mod.Result;
 const Value = ast.Value;

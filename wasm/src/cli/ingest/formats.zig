@@ -3,12 +3,12 @@
 //! CSV, JSON/JSONL, and Parquet ingestion to Lance format.
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const csv = lanceql.encoding.csv;
-const json = lanceql.encoding.json;
-const writer = lanceql.encoding.writer;
-const ParquetTable = @import("lanceql.parquet_table").ParquetTable;
-const parquet_meta = lanceql.format.parquet_metadata;
+const edgeq = @import("edgeq");
+const csv = edgeq.encoding.csv;
+const json = edgeq.encoding.json;
+const writer = edgeq.encoding.writer;
+const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
+const parquet_meta = edgeq.format.parquet_metadata;
 
 /// Convert CSV column type to Lance data type
 pub fn csvTypeToLanceType(csv_type: csv.ColumnType) writer.DataType {

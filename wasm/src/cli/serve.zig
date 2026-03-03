@@ -1,10 +1,10 @@
-//! LanceQL Serve Command
+//! EdgeQ Serve Command
 //!
 //! HTTP server for SQL queries and vector search.
 //!
 //! Usage:
-//!   lanceql serve data.lance --port 3000
-//!   lanceql serve data.parquet --host 0.0.0.0 --no-open
+//!   edgeq serve data.lance --port 3000
+//!   edgeq serve data.parquet --host 0.0.0.0 --no-open
 
 const std = @import("std");
 const args = @import("args.zig");
@@ -14,15 +14,15 @@ const transform = @import("transform.zig");
 const enrich = @import("enrich.zig");
 
 // SQL execution
-const lanceql = @import("lanceql");
-const Table = lanceql.Table;
-const ParquetTable = @import("lanceql.parquet_table").ParquetTable;
-const ArrowTable = @import("lanceql.arrow_table").ArrowTable;
+const edgeq = @import("edgeq");
+const Table = edgeq.Table;
+const ParquetTable = @import("edgeq.parquet_table").ParquetTable;
+const ArrowTable = @import("edgeq.arrow_table").ArrowTable;
 
-const lexer = @import("lanceql.sql.lexer");
-const parser = @import("lanceql.sql.parser");
-const executor = @import("lanceql.sql.executor");
-const ast = @import("lanceql.sql.ast");
+const lexer = @import("edgeq.sql.lexer");
+const parser = @import("edgeq.sql.parser");
+const executor = @import("edgeq.sql.executor");
+const ast = @import("edgeq.sql.ast");
 
 pub const ServeError = error{
     BindFailed,
@@ -128,7 +128,7 @@ pub const Server = struct {
 
     /// Run the server loop
     pub fn run(self: *Self) !void {
-        std.debug.print("\nLanceQL Server running at http://{s}:{}\n", .{ self.host, self.port });
+        std.debug.print("\nEdgeQ Server running at http://{s}:{}\n", .{ self.host, self.port });
         switch (self.mode) {
             .folder => {
                 std.debug.print("Mode: folder browser\n", .{});
@@ -746,7 +746,7 @@ pub fn runConfigMode(allocator: std.mem.Allocator, command: []const u8) !void {
     const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{}", .{port});
     defer allocator.free(url);
 
-    std.debug.print("\nLanceQL Config Builder\n", .{});
+    std.debug.print("\nEdgeQ Config Builder\n", .{});
     std.debug.print("Command: {s}\n", .{command});
     std.debug.print("Opening: {s}\n", .{url});
     std.debug.print("Press Ctrl+C to cancel\n\n", .{});

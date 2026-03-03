@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const gpu_mod = b.addModule("lanceql.gpu", .{
+    const gpu_mod = b.addModule("edgeq.gpu", .{
         .root_source_file = b.path("src/gpu/gpu.zig"),
         .imports = &.{
             .{ .name = "wgpu", .module = wgpu_dep.module("wgpu") },
@@ -34,86 +34,86 @@ pub fn build(b: *std.Build) void {
     const enable_ai = b.option(bool, "enable_ai", "Enable AI/ML features in WASM (MiniLM + TinyBERT for Workers)") orelse false;
 
     // === Core Modules ===
-    const proto_mod = b.addModule("lanceql.proto", .{
+    const proto_mod = b.addModule("edgeq.proto", .{
         .root_source_file = b.path("src/proto/proto.zig"),
     });
 
-    const io_mod = b.addModule("lanceql.io", .{
+    const io_mod = b.addModule("edgeq.io", .{
         .root_source_file = b.path("src/io/io.zig"),
     });
 
-    const snappy_mod = b.addModule("lanceql.encoding.snappy", .{
+    const snappy_mod = b.addModule("edgeq.encoding.snappy", .{
         .root_source_file = b.path("src/encoding/snappy.zig"),
     });
 
-    const table_utils_mod = b.addModule("lanceql.table_utils", .{
+    const table_utils_mod = b.addModule("edgeq.table_utils", .{
         .root_source_file = b.path("src/table_utils.zig"),
     });
 
-    const encoding_mod = b.addModule("lanceql.encoding", .{
+    const encoding_mod = b.addModule("edgeq.encoding", .{
         .root_source_file = b.path("src/encoding/encoding.zig"),
         .imports = &.{
-            .{ .name = "lanceql.encoding.snappy", .module = snappy_mod },
+            .{ .name = "edgeq.encoding.snappy", .module = snappy_mod },
         },
     });
 
-    const writer_mod = b.addModule("lanceql.writer", .{
+    const writer_mod = b.addModule("edgeq.writer", .{
         .root_source_file = b.path("src/writer/writer.zig"),
         .imports = &.{
-            .{ .name = "lanceql.proto", .module = proto_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
         },
     });
 
-    const value_mod = b.addModule("lanceql.value", .{
+    const value_mod = b.addModule("edgeq.value", .{
         .root_source_file = b.path("src/value.zig"),
     });
 
     // Query expression module - for predicate fusion in codegen
     // Defined here before query_mod to avoid circular dependency
-    const query_expr_mod = b.addModule("lanceql.query.expr", .{
+    const query_expr_mod = b.addModule("edgeq.query.expr", .{
         .root_source_file = b.path("src/query/expr.zig"),
         .imports = &.{
-            .{ .name = "lanceql.value", .module = value_mod },
+            .{ .name = "edgeq.value", .module = value_mod },
         },
     });
 
-    const query_mod = b.addModule("lanceql.query", .{
+    const query_mod = b.addModule("edgeq.query", .{
         .root_source_file = b.path("src/query/query.zig"),
         .imports = &.{
-            .{ .name = "lanceql.value", .module = value_mod },
-            .{ .name = "lanceql.gpu", .module = gpu_mod },
-            .{ .name = "lanceql.query.expr", .module = query_expr_mod },
+            .{ .name = "edgeq.value", .module = value_mod },
+            .{ .name = "edgeq.gpu", .module = gpu_mod },
+            .{ .name = "edgeq.query.expr", .module = query_expr_mod },
         },
     });
 
-    const format_mod = b.addModule("lanceql.format", .{
+    const format_mod = b.addModule("edgeq.format", .{
         .root_source_file = b.path("src/format/format.zig"),
         .imports = &.{
-            .{ .name = "lanceql.proto", .module = proto_mod },
-            .{ .name = "lanceql.io", .module = io_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "edgeq.io", .module = io_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
         },
     });
 
-    const parquet_encoding_mod = b.addModule("lanceql.encoding.parquet", .{
+    const parquet_encoding_mod = b.addModule("edgeq.encoding.parquet", .{
         .root_source_file = b.path("src/encoding/parquet/parquet_encoding.zig"),
         .imports = &.{
-            .{ .name = "lanceql.proto", .module = proto_mod },
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding.snappy", .module = snappy_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding.snappy", .module = snappy_mod },
         },
     });
 
     // SQL modules
-    const sql_ast_mod = b.addModule("lanceql.sql.ast", .{
+    const sql_ast_mod = b.addModule("edgeq.sql.ast", .{
         .root_source_file = b.path("src/sql/ast.zig"),
     });
 
-    const sql_lexer_mod = b.addModule("lanceql.sql.lexer", .{
+    const sql_lexer_mod = b.addModule("edgeq.sql.lexer", .{
         .root_source_file = b.path("src/sql/lexer.zig"),
     });
 
-    const sql_parser_mod = b.addModule("lanceql.sql.parser", .{
+    const sql_parser_mod = b.addModule("edgeq.sql.parser", .{
         .root_source_file = b.path("src/sql/parser.zig"),
         .imports = &.{
             .{ .name = "ast", .module = sql_ast_mod },
@@ -122,191 +122,191 @@ pub fn build(b: *std.Build) void {
     });
 
     // SIMD and parallel compute primitives
-    const simd_mod = b.addModule("lanceql.simd", .{
+    const simd_mod = b.addModule("edgeq.simd", .{
         .root_source_file = b.path("src/simd.zig"),
     });
 
     // Hash functions for GROUP BY and JOIN
-    const hash_mod = b.addModule("lanceql.hash", .{
+    const hash_mod = b.addModule("edgeq.hash", .{
         .root_source_file = b.path("src/hash.zig"),
     });
 
     // SIMD columnar operations for SQL executor
-    const columnar_ops_mod = b.addModule("lanceql.columnar_ops", .{
+    const columnar_ops_mod = b.addModule("edgeq.columnar_ops", .{
         .root_source_file = b.path("src/columnar_ops.zig"),
     });
 
     // DuckDB-style vectorized query engine primitives
     // Shared between native and WASM executors for consistent performance
-    const vector_engine_mod = b.addModule("lanceql.query.vector_engine", .{
+    const vector_engine_mod = b.addModule("edgeq.query.vector_engine", .{
         .root_source_file = b.path("src/query/vector_engine.zig"),
     });
 
-    const table_mod = b.addModule("lanceql.table", .{
+    const table_mod = b.addModule("edgeq.table", .{
         .root_source_file = b.path("src/table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.proto", .module = proto_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.io", .module = io_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.io", .module = io_mod },
             .{ .name = "simd", .module = simd_mod },
         },
     });
 
-    const parquet_table_mod = b.addModule("lanceql.parquet_table", .{
+    const parquet_table_mod = b.addModule("edgeq.parquet_table", .{
         .root_source_file = b.path("src/parquet_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding.parquet", .module = parquet_encoding_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
         },
     });
 
-    const delta_table_mod = b.addModule("lanceql.delta_table", .{
+    const delta_table_mod = b.addModule("edgeq.delta_table", .{
         .root_source_file = b.path("src/delta_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.parquet_table", .module = parquet_table_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
         },
     });
 
-    const iceberg_table_mod = b.addModule("lanceql.iceberg_table", .{
+    const iceberg_table_mod = b.addModule("edgeq.iceberg_table", .{
         .root_source_file = b.path("src/iceberg_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.parquet_table", .module = parquet_table_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
         },
     });
 
-    const arrow_table_mod = b.addModule("lanceql.arrow_table", .{
+    const arrow_table_mod = b.addModule("edgeq.arrow_table", .{
         .root_source_file = b.path("src/arrow_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.table_utils", .module = table_utils_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
         },
     });
 
-    const avro_table_mod = b.addModule("lanceql.avro_table", .{
+    const avro_table_mod = b.addModule("edgeq.avro_table", .{
         .root_source_file = b.path("src/avro_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.table_utils", .module = table_utils_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
         },
     });
 
-    const orc_table_mod = b.addModule("lanceql.orc_table", .{
+    const orc_table_mod = b.addModule("edgeq.orc_table", .{
         .root_source_file = b.path("src/orc_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.table_utils", .module = table_utils_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
         },
     });
 
-    const xlsx_table_mod = b.addModule("lanceql.xlsx_table", .{
+    const xlsx_table_mod = b.addModule("edgeq.xlsx_table", .{
         .root_source_file = b.path("src/xlsx_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.table_utils", .module = table_utils_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.table_utils", .module = table_utils_mod },
         },
     });
 
-    const any_table_mod = b.addModule("lanceql.any_table", .{
+    const any_table_mod = b.addModule("edgeq.any_table", .{
         .root_source_file = b.path("src/any_table.zig"),
         .imports = &.{
-            .{ .name = "lanceql.table", .module = table_mod },
-            .{ .name = "lanceql.parquet_table", .module = parquet_table_mod },
-            .{ .name = "lanceql.delta_table", .module = delta_table_mod },
-            .{ .name = "lanceql.iceberg_table", .module = iceberg_table_mod },
-            .{ .name = "lanceql.arrow_table", .module = arrow_table_mod },
-            .{ .name = "lanceql.avro_table", .module = avro_table_mod },
-            .{ .name = "lanceql.orc_table", .module = orc_table_mod },
-            .{ .name = "lanceql.xlsx_table", .module = xlsx_table_mod },
+            .{ .name = "edgeq.table", .module = table_mod },
+            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
+            .{ .name = "edgeq.delta_table", .module = delta_table_mod },
+            .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
+            .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
+            .{ .name = "edgeq.avro_table", .module = avro_table_mod },
+            .{ .name = "edgeq.orc_table", .module = orc_table_mod },
+            .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
         },
     });
 
-    const sql_executor_mod = b.addModule("lanceql.sql.executor", .{
+    const sql_executor_mod = b.addModule("edgeq.sql.executor", .{
         .root_source_file = b.path("src/sql/executor.zig"),
         .imports = &.{
             .{ .name = "ast", .module = sql_ast_mod },
             .{ .name = "parser", .module = sql_parser_mod },
-            .{ .name = "lanceql.table", .module = table_mod },
-            .{ .name = "lanceql.parquet_table", .module = parquet_table_mod },
-            .{ .name = "lanceql.delta_table", .module = delta_table_mod },
-            .{ .name = "lanceql.iceberg_table", .module = iceberg_table_mod },
-            .{ .name = "lanceql.arrow_table", .module = arrow_table_mod },
-            .{ .name = "lanceql.avro_table", .module = avro_table_mod },
-            .{ .name = "lanceql.orc_table", .module = orc_table_mod },
-            .{ .name = "lanceql.xlsx_table", .module = xlsx_table_mod },
-            .{ .name = "lanceql.any_table", .module = any_table_mod },
-            .{ .name = "lanceql.hash", .module = hash_mod },
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.vector_engine", .module = vector_engine_mod },
-            .{ .name = "lanceql.columnar_ops", .module = columnar_ops_mod },
-            .{ .name = "lanceql.query", .module = query_mod },
+            .{ .name = "edgeq.table", .module = table_mod },
+            .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
+            .{ .name = "edgeq.delta_table", .module = delta_table_mod },
+            .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
+            .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
+            .{ .name = "edgeq.avro_table", .module = avro_table_mod },
+            .{ .name = "edgeq.orc_table", .module = orc_table_mod },
+            .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
+            .{ .name = "edgeq.any_table", .module = any_table_mod },
+            .{ .name = "edgeq.hash", .module = hash_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.vector_engine", .module = vector_engine_mod },
+            .{ .name = "edgeq.columnar_ops", .module = columnar_ops_mod },
+            .{ .name = "edgeq.query", .module = query_mod },
         },
     });
 
-    const dataframe_mod = b.addModule("lanceql.dataframe", .{
+    const dataframe_mod = b.addModule("edgeq.dataframe", .{
         .root_source_file = b.path("src/dataframe.zig"),
         .imports = &.{
-            .{ .name = "lanceql.value", .module = value_mod },
-            .{ .name = "lanceql.query", .module = query_mod },
-            .{ .name = "lanceql.table", .module = table_mod },
+            .{ .name = "edgeq.value", .module = value_mod },
+            .{ .name = "edgeq.query", .module = query_mod },
+            .{ .name = "edgeq.table", .module = table_mod },
         },
     });
 
     // Dataset module - high-level API mirroring browser vault.js
-    const dataset_mod = b.addModule("lanceql.dataset", .{
+    const dataset_mod = b.addModule("edgeq.dataset", .{
         .root_source_file = b.path("src/dataset.zig"),
         .imports = &.{
-            .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
+            .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
             .{ .name = "lexer", .module = sql_lexer_mod },
             .{ .name = "parser", .module = sql_parser_mod },
             .{ .name = "ast", .module = sql_ast_mod },
-            .{ .name = "lanceql.table", .module = table_mod },
-            .{ .name = "lanceql.dataframe", .module = dataframe_mod },
-            .{ .name = "lanceql.format", .module = format_mod },
+            .{ .name = "edgeq.table", .module = table_mod },
+            .{ .name = "edgeq.dataframe", .module = dataframe_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
         },
     });
 
     // Dataset writer module - distributed writes with ETag-based CAS
-    const dataset_writer_mod = b.addModule("lanceql.dataset_writer", .{
+    const dataset_writer_mod = b.addModule("edgeq.dataset_writer", .{
         .root_source_file = b.path("src/dataset_writer.zig"),
         .imports = &.{
-            .{ .name = "lanceql.io", .module = io_mod },
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.writer", .module = writer_mod },
-            .{ .name = "lanceql.proto", .module = proto_mod },
+            .{ .name = "edgeq.io", .module = io_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.writer", .module = writer_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
         },
     });
 
     // AI module - native GGUF model inference (TinyBERT, MiniLM)
     // Only built when enable_ai=true
-    const ai_mod = b.addModule("lanceql.ai", .{
+    const ai_mod = b.addModule("edgeq.ai", .{
         .root_source_file = b.path("src/ai/ai.zig"),
     });
 
     // Root module exports all
-    const lanceql_mod = b.addModule("lanceql", .{
-        .root_source_file = b.path("src/lanceql.zig"),
+    const edgeq_mod = b.addModule("edgeq", .{
+        .root_source_file = b.path("src/edgeq.zig"),
         .imports = &.{
-            .{ .name = "lanceql.format", .module = format_mod },
-            .{ .name = "lanceql.io", .module = io_mod },
-            .{ .name = "lanceql.proto", .module = proto_mod },
-            .{ .name = "lanceql.encoding", .module = encoding_mod },
-            .{ .name = "lanceql.writer", .module = writer_mod },
-            .{ .name = "lanceql.table", .module = table_mod },
-            .{ .name = "lanceql.query", .module = query_mod },
-            .{ .name = "lanceql.value", .module = value_mod },
-            .{ .name = "lanceql.dataframe", .module = dataframe_mod },
-            .{ .name = "lanceql.dataset", .module = dataset_mod },
-            .{ .name = "lanceql.dataset_writer", .module = dataset_writer_mod },
-            .{ .name = "lanceql.gpu", .module = gpu_mod },
+            .{ .name = "edgeq.format", .module = format_mod },
+            .{ .name = "edgeq.io", .module = io_mod },
+            .{ .name = "edgeq.proto", .module = proto_mod },
+            .{ .name = "edgeq.encoding", .module = encoding_mod },
+            .{ .name = "edgeq.writer", .module = writer_mod },
+            .{ .name = "edgeq.table", .module = table_mod },
+            .{ .name = "edgeq.query", .module = query_mod },
+            .{ .name = "edgeq.value", .module = value_mod },
+            .{ .name = "edgeq.dataframe", .module = dataframe_mod },
+            .{ .name = "edgeq.dataset", .module = dataset_mod },
+            .{ .name = "edgeq.dataset_writer", .module = dataset_writer_mod },
+            .{ .name = "edgeq.gpu", .module = gpu_mod },
         },
     });
 
@@ -317,7 +317,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "use_onnx", onnx_path != null);
     build_options.addOption(bool, "enable_ai", enable_ai); // Native GGUF inference (TinyBERT, MiniLM)
     gpu_mod.addOptions("build_options", build_options);
-    lanceql_mod.addOptions("build_options", build_options);
+    edgeq_mod.addOptions("build_options", build_options);
 
     // === Tests ===
     const test_footer = b.addTest(.{
@@ -326,8 +326,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
             },
         }),
     });
@@ -338,8 +338,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.proto", .module = proto_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.proto", .module = proto_mod },
             },
         }),
     });
@@ -350,12 +350,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
-                .{ .name = "lanceql.proto", .module = proto_mod },
-                .{ .name = "lanceql.encoding", .module = encoding_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "edgeq.proto", .module = proto_mod },
+                .{ .name = "edgeq.encoding", .module = encoding_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -386,8 +386,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
@@ -405,9 +405,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql.value", .module = value_mod },
-                .{ .name = "lanceql.gpu", .module = gpu_mod },
-                .{ .name = "lanceql.query.expr", .module = query_expr_mod },
+                .{ .name = "edgeq.value", .module = value_mod },
+                .{ .name = "edgeq.gpu", .module = gpu_mod },
+                .{ .name = "edgeq.query.expr", .module = query_expr_mod },
             },
         }),
     });
@@ -463,9 +463,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql.value", .module = value_mod },
-                .{ .name = "lanceql.query", .module = query_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.value", .module = value_mod },
+                .{ .name = "edgeq.query", .module = query_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -483,10 +483,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.encoding", .module = encoding_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.encoding", .module = encoding_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
@@ -520,8 +520,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
             },
         }),
     });
@@ -537,13 +537,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
-                .{ .name = "lanceql.simd", .module = simd_mod },
-                .{ .name = "lanceql.sql.ast", .module = sql_ast_mod },
-                .{ .name = "lanceql.sql.parser", .module = sql_parser_mod },
-                .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "edgeq.simd", .module = simd_mod },
+                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
+                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
+                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
             },
         }),
     });
@@ -559,10 +559,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
-                .{ .name = "lanceql.simd", .module = simd_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "edgeq.simd", .module = simd_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -578,7 +578,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -594,7 +594,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -610,7 +610,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -618,7 +618,7 @@ pub fn build(b: *std.Build) void {
     const bench_tiered_step = b.step("bench-tiered", "FAIR end-to-end: SIMD dot product");
     bench_tiered_step.dependOn(&run_bench_tiered.step);
 
-    // Parquet benchmark - LanceQL vs DuckDB vs Polars
+    // Parquet benchmark - EdgeQ vs DuckDB vs Polars
     const bench_parquet = b.addExecutable(.{
         .name = "bench_parquet",
         .root_module = b.createModule(.{
@@ -626,16 +626,16 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.encoding.parquet", .module = parquet_encoding_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.encoding.parquet", .module = parquet_encoding_mod },
             },
         }),
     });
     b.installArtifact(bench_parquet);
-    const bench_parquet_step = b.step("bench-parquet", "Benchmark Parquet reading: LanceQL vs DuckDB vs Polars");
+    const bench_parquet_step = b.step("bench-parquet", "Benchmark Parquet reading: EdgeQ vs DuckDB vs Polars");
     bench_parquet_step.dependOn(&b.addInstallArtifact(bench_parquet, .{}).step);
 
-    // In-process benchmark: LanceQL vs DuckDB C API (FAIR comparison)
+    // In-process benchmark: EdgeQ vs DuckDB C API (FAIR comparison)
     const bench_inprocess = b.addExecutable(.{
         .name = "bench_inprocess",
         .root_module = b.createModule(.{
@@ -643,12 +643,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
     const run_bench_inprocess = b.addRunArtifact(bench_inprocess);
-    const bench_inprocess_step = b.step("bench-inprocess", "FAIR end-to-end: LanceQL vs DuckDB vs Polars");
+    const bench_inprocess_step = b.step("bench-inprocess", "FAIR end-to-end: EdgeQ vs DuckDB vs Polars");
     bench_inprocess_step.dependOn(&run_bench_inprocess.step);
 
     // RAG Pipeline benchmark - end-to-end document retrieval
@@ -659,7 +659,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -675,8 +675,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.gpu", .module = gpu_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.gpu", .module = gpu_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -695,7 +695,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -711,8 +711,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
             },
         }),
     });
@@ -728,7 +728,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -744,23 +744,23 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.gpu", .module = gpu_mod },
-                .{ .name = "lanceql.query", .module = query_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
-                .{ .name = "lanceql.parquet_table", .module = parquet_table_mod },
-                .{ .name = "lanceql.delta_table", .module = delta_table_mod },
-                .{ .name = "lanceql.iceberg_table", .module = iceberg_table_mod },
-                .{ .name = "lanceql.arrow_table", .module = arrow_table_mod },
-                .{ .name = "lanceql.avro_table", .module = avro_table_mod },
-                .{ .name = "lanceql.orc_table", .module = orc_table_mod },
-                .{ .name = "lanceql.xlsx_table", .module = xlsx_table_mod },
-                .{ .name = "lanceql.any_table", .module = any_table_mod },
-                .{ .name = "lanceql.sql.ast", .module = sql_ast_mod },
-                .{ .name = "lanceql.sql.lexer", .module = sql_lexer_mod },
-                .{ .name = "lanceql.sql.parser", .module = sql_parser_mod },
-                .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
-                .{ .name = "lanceql.ai", .module = ai_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.gpu", .module = gpu_mod },
+                .{ .name = "edgeq.query", .module = query_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "edgeq.parquet_table", .module = parquet_table_mod },
+                .{ .name = "edgeq.delta_table", .module = delta_table_mod },
+                .{ .name = "edgeq.iceberg_table", .module = iceberg_table_mod },
+                .{ .name = "edgeq.arrow_table", .module = arrow_table_mod },
+                .{ .name = "edgeq.avro_table", .module = avro_table_mod },
+                .{ .name = "edgeq.orc_table", .module = orc_table_mod },
+                .{ .name = "edgeq.xlsx_table", .module = xlsx_table_mod },
+                .{ .name = "edgeq.any_table", .module = any_table_mod },
+                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
+                .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
+                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
+                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
+                .{ .name = "edgeq.ai", .module = ai_mod },
             },
         }),
     });
@@ -807,7 +807,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cli.addArgs(args);
     }
-    const cli_step = b.step("cli", "Build and run LanceQL CLI");
+    const cli_step = b.step("cli", "Build and run EdgeQ CLI");
     cli_step.dependOn(&run_cli.step);
 
     // SQL executor tests
@@ -817,10 +817,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql.table", .module = table_mod },
-                .{ .name = "lanceql.sql.ast", .module = sql_ast_mod },
-                .{ .name = "lanceql.sql.parser", .module = sql_parser_mod },
-                .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
+                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
+                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
             },
         }),
     });
@@ -838,7 +838,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql.ai", .module = ai_mod },
+                .{ .name = "edgeq.ai", .module = ai_mod },
             },
         }),
     });
@@ -854,10 +854,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast, // Use ReleaseFast for performance tests
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
             },
         }),
     });
@@ -946,14 +946,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql", .module = lanceql_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.proto", .module = proto_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
-                .{ .name = "lanceql.encoding", .module = encoding_mod },
-                .{ .name = "lanceql.value", .module = value_mod },
-                .{ .name = "lanceql.gpu", .module = gpu_mod },
+                .{ .name = "edgeq", .module = edgeq_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.proto", .module = proto_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "edgeq.encoding", .module = encoding_mod },
+                .{ .name = "edgeq.value", .module = value_mod },
+                .{ .name = "edgeq.gpu", .module = gpu_mod },
                 .{ .name = "arrow_c", .module = arrow_c_mod },
             },
         }),
@@ -977,16 +977,16 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "lanceql.format", .module = format_mod },
-                .{ .name = "lanceql.io", .module = io_mod },
-                .{ .name = "lanceql.proto", .module = proto_mod },
-                .{ .name = "lanceql.encoding", .module = encoding_mod },
-                .{ .name = "lanceql.table", .module = table_mod },
-                .{ .name = "lanceql.value", .module = value_mod },
-                .{ .name = "lanceql.sql.ast", .module = sql_ast_mod },
-                .{ .name = "lanceql.sql.lexer", .module = sql_lexer_mod },
-                .{ .name = "lanceql.sql.parser", .module = sql_parser_mod },
-                .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
+                .{ .name = "edgeq.format", .module = format_mod },
+                .{ .name = "edgeq.io", .module = io_mod },
+                .{ .name = "edgeq.proto", .module = proto_mod },
+                .{ .name = "edgeq.encoding", .module = encoding_mod },
+                .{ .name = "edgeq.table", .module = table_mod },
+                .{ .name = "edgeq.value", .module = value_mod },
+                .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
+                .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
+                .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
+                .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
             },
         }),
     });
@@ -1028,16 +1028,16 @@ pub fn build(b: *std.Build) void {
                 .target = resolved_target,
                 .optimize = .ReleaseFast,
                 .imports = &.{
-                    .{ .name = "lanceql.format", .module = format_mod },
-                    .{ .name = "lanceql.io", .module = io_mod },
-                    .{ .name = "lanceql.proto", .module = proto_mod },
-                    .{ .name = "lanceql.encoding", .module = encoding_mod },
-                    .{ .name = "lanceql.table", .module = table_mod },
-                    .{ .name = "lanceql.value", .module = value_mod },
-                    .{ .name = "lanceql.sql.ast", .module = sql_ast_mod },
-                    .{ .name = "lanceql.sql.lexer", .module = sql_lexer_mod },
-                    .{ .name = "lanceql.sql.parser", .module = sql_parser_mod },
-                    .{ .name = "lanceql.sql.executor", .module = sql_executor_mod },
+                    .{ .name = "edgeq.format", .module = format_mod },
+                    .{ .name = "edgeq.io", .module = io_mod },
+                    .{ .name = "edgeq.proto", .module = proto_mod },
+                    .{ .name = "edgeq.encoding", .module = encoding_mod },
+                    .{ .name = "edgeq.table", .module = table_mod },
+                    .{ .name = "edgeq.value", .module = value_mod },
+                    .{ .name = "edgeq.sql.ast", .module = sql_ast_mod },
+                    .{ .name = "edgeq.sql.lexer", .module = sql_lexer_mod },
+                    .{ .name = "edgeq.sql.parser", .module = sql_parser_mod },
+                    .{ .name = "edgeq.sql.executor", .module = sql_executor_mod },
                 },
             }),
         });

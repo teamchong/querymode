@@ -1,6 +1,6 @@
 //! Reader interface (VFS abstraction).
 //!
-//! The Reader interface allows LanceQL to read data from various sources
+//! The Reader interface allows EdgeQ to read data from various sources
 //! (files, memory, HTTP) using the same parsing code. This is essential
 //! for supporting both native execution and WASM browser targets.
 

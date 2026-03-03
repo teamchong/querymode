@@ -3,12 +3,12 @@
 //! Arrow IPC, Avro, ORC, and XLSX ingestion to Lance format.
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const arrow_ipc = lanceql.encoding.arrow_ipc;
-const avro = lanceql.encoding.avro;
-const orc = lanceql.encoding.orc;
-const xlsx = lanceql.encoding.xlsx;
-const writer = lanceql.encoding.writer;
+const edgeq = @import("edgeq");
+const arrow_ipc = edgeq.encoding.arrow_ipc;
+const avro = edgeq.encoding.avro;
+const orc = edgeq.encoding.orc;
+const xlsx = edgeq.encoding.xlsx;
+const writer = edgeq.encoding.writer;
 const formats = @import("formats.zig");
 
 /// Map Arrow type to Lance DataType

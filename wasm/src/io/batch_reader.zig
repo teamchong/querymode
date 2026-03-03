@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const reader_mod = @import("reader.zig");
-const format = @import("lanceql.format");
+const format = @import("edgeq.format");
 
 const Reader = reader_mod.Reader;
 const ReadError = reader_mod.ReadError;

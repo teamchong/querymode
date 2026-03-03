@@ -4,7 +4,7 @@
 //! Also includes LanceColumnType for unified type detection across Lance tables.
 
 const std = @import("std");
-const Table = @import("lanceql.table").Table;
+const Table = @import("edgeq.table").Table;
 
 /// Lance column types - unified type detection for Lance table logical types
 pub const LanceColumnType = enum {

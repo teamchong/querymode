@@ -323,7 +323,7 @@ test "mmap reader basic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const test_data = "Hello, LanceQL with mmap!";
+    const test_data = "Hello, EdgeQ with mmap!";
     {
         const f = try tmp.dir.createFile("test.bin", .{});
         defer f.close();

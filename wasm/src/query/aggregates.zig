@@ -3,7 +3,7 @@
 //! Supports COUNT, SUM, AVG, MIN, MAX with optional DISTINCT.
 
 const std = @import("std");
-const Value = @import("lanceql.value").Value;
+const Value = @import("edgeq.value").Value;
 const ast = @import("ast.zig");
 const AggregateType = ast.AggregateType;
 

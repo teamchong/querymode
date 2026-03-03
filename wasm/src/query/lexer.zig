@@ -1,6 +1,6 @@
 //! SQL Lexer - tokenizes SQL strings into tokens.
 //!
-//! Supports the SQL subset needed for LanceQL:
+//! Supports the SQL subset needed for EdgeQ:
 //! SELECT, FROM, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, ASC, DESC,
 //! AND, OR, NOT, aggregate functions, comparison operators.
 

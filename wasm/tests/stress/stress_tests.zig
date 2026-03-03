@@ -1,4 +1,4 @@
-//! Stress tests for LanceQL - large datasets, memory limits, concurrent access.
+//! Stress tests for EdgeQ - large datasets, memory limits, concurrent access.
 //!
 //! These tests validate performance and stability under heavy load:
 //! - Large row counts (100K+)
@@ -7,10 +7,10 @@
 //! - Edge cases with extreme values
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const format = @import("lanceql.format");
-const io = @import("lanceql.io");
-const table_mod = @import("lanceql.table");
+const edgeq = @import("edgeq");
+const format = @import("edgeq.format");
+const io = @import("edgeq.io");
+const table_mod = @import("edgeq.table");
 
 const Table = table_mod.Table;
 const MemoryReader = io.MemoryReader;
@@ -195,11 +195,11 @@ test "stress: invalid magic number" {
     const allocator = std.testing.allocator;
 
     // Create buffer with correct size but wrong magic
-    var bad_buf: [lanceql.FOOTER_SIZE + 100]u8 = undefined;
+    var bad_buf: [edgeq.FOOTER_SIZE + 100]u8 = undefined;
     @memset(&bad_buf, 0);
 
     // Put wrong magic at the end
-    const footer_start = bad_buf.len - lanceql.FOOTER_SIZE;
+    const footer_start = bad_buf.len - edgeq.FOOTER_SIZE;
     bad_buf[footer_start + 36] = 'B';
     bad_buf[footer_start + 37] = 'A';
     bad_buf[footer_start + 38] = 'D';

@@ -3,7 +3,7 @@
 //! Tests TinyBERT cross-encoder with actual GGUF model file.
 
 const std = @import("std");
-const ai = @import("lanceql.ai");
+const ai = @import("edgeq.ai");
 
 test "tinybert: load model and cross-encode" {
     const allocator = std.testing.allocator;

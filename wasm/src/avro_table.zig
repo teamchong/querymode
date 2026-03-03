@@ -5,11 +5,11 @@
 //! 2. Exposing unified column read interface
 
 const std = @import("std");
-const AvroReader = @import("lanceql.encoding").AvroReader;
-const AvroType = @import("lanceql.encoding").AvroType;
-const format = @import("lanceql.format");
+const AvroReader = @import("edgeq.encoding").AvroReader;
+const AvroType = @import("edgeq.encoding").AvroType;
+const format = @import("edgeq.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("lanceql.table_utils");
+const table_utils = @import("edgeq.table_utils");
 
 pub const AvroTableError = error{
     InvalidAvroFile,

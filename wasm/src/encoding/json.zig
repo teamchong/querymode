@@ -1,4 +1,4 @@
-//! JSON/JSONL Parser for LanceQL
+//! JSON/JSONL Parser for EdgeQ
 //!
 //! Parses JSON arrays and JSONL (newline-delimited JSON) into columnar data.
 //!

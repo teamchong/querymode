@@ -5,11 +5,11 @@
 //! 2. Exposing unified column read interface
 
 const std = @import("std");
-const OrcReader = @import("lanceql.encoding").OrcReader;
-const OrcType = @import("lanceql.encoding").OrcType;
-const format = @import("lanceql.format");
+const OrcReader = @import("edgeq.encoding").OrcReader;
+const OrcType = @import("edgeq.encoding").OrcType;
+const format = @import("edgeq.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("lanceql.table_utils");
+const table_utils = @import("edgeq.table_utils");
 
 pub const OrcTableError = error{
     InvalidOrcFile,

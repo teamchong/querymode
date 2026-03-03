@@ -8,7 +8,7 @@
 const std = @import("std");
 const ast = @import("ast");
 const Expr = ast.Expr;
-const hash = @import("lanceql.hash");
+const hash = @import("edgeq.hash");
 const result_types = @import("result_types.zig");
 const Result = result_types.Result;
 const CachedColumn = result_types.CachedColumn;
@@ -16,7 +16,7 @@ pub const aggregate_functions = @import("aggregate_functions.zig");
 const AggregateType = aggregate_functions.AggregateType;
 const Accumulator = aggregate_functions.Accumulator;
 const PercentileAccumulator = aggregate_functions.PercentileAccumulator;
-const columnar_ops = @import("lanceql.columnar_ops");
+const columnar_ops = @import("edgeq.columnar_ops");
 
 /// Group evaluation context
 pub const GroupContext = struct {

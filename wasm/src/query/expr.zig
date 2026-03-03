@@ -4,7 +4,7 @@
 //! and function calls (aggregates).
 
 const std = @import("std");
-pub const Value = @import("lanceql.value").Value;
+pub const Value = @import("edgeq.value").Value;
 
 /// Binary operators for expressions.
 pub const BinaryOp = enum {

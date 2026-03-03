@@ -29,10 +29,10 @@
 //! ```
 
 const std = @import("std");
-const io_mod = @import("lanceql.io");
-const format_mod = @import("lanceql.format");
-const writer_mod = @import("lanceql.writer");
-const proto_mod = @import("lanceql.proto");
+const io_mod = @import("edgeq.io");
+const format_mod = @import("edgeq.format");
+const writer_mod = @import("edgeq.writer");
+const proto_mod = @import("edgeq.proto");
 
 const S3Client = io_mod.S3Client;
 const PutResult = io_mod.PutResult;

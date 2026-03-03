@@ -2,7 +2,7 @@
 """
 Vector algorithm conformance tests.
 
-Validates that LanceQL's vector operations (distance metrics, IVF-PQ recall)
+Validates that EdgeQ's vector operations (distance metrics, IVF-PQ recall)
 match reference implementations.
 
 Usage:

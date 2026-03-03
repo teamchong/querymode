@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LanceQL Config Builder</title>
+    <title>EdgeQ Config Builder</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -181,7 +181,7 @@
 </head>
 <body>
     <header>
-        <h1>LanceQL</h1>
+        <h1>EdgeQ</h1>
         <span class="subtitle">Config Builder</span>
     </header>
     <main>
@@ -303,7 +303,7 @@ output: ""</pre>
                 </div>
                 <div class="preview-section cli">
                     <h4>CLI Command</h4>
-                    <pre id="cli-preview">lanceql ingest</pre>
+                    <pre id="cli-preview">edgeq ingest</pre>
                 </div>
             </div>
             <div class="actions">
@@ -390,7 +390,7 @@ output: ""</pre>
         }
 
         function toCliCommand(data) {
-            let cmd = `lanceql ${data.command}`;
+            let cmd = `edgeq ${data.command}`;
             if (data.input) cmd += ` "${data.input}"`;
             if (data.output) cmd += ` -o "${data.output}"`;
             if (data.format) cmd += ` --format ${data.format}`;
@@ -452,10 +452,10 @@ output: ""</pre>
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'lanceql.yaml';
+            a.download = 'edgeq.yaml';
             a.click();
             URL.revokeObjectURL(url);
-            showToast('Config saved as lanceql.yaml');
+            showToast('Config saved as edgeq.yaml');
         }
 
         function showToast(message, type = 'success') {

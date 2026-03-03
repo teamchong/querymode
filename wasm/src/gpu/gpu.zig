@@ -1,4 +1,4 @@
-//! LanceQL GPU Module - Cross-platform GPU acceleration via wgpu-native
+//! EdgeQ GPU Module - Cross-platform GPU acceleration via wgpu-native
 //!
 //! Replaces Metal-only backend with cross-platform WebGPU.
 //! Shares WGSL shaders with browser for single codebase.

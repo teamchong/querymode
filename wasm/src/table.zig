@@ -4,11 +4,11 @@
 //! combining file parsing, schema access, and column value decoding.
 
 const std = @import("std");
-const format = @import("lanceql.format");
-const proto = @import("lanceql.proto");
-const encoding = @import("lanceql.encoding");
+const format = @import("edgeq.format");
+const proto = @import("edgeq.proto");
+const encoding = @import("edgeq.encoding");
 const simd = @import("simd");
-const io = @import("lanceql.io");
+const io = @import("edgeq.io");
 
 const LanceFile = format.LanceFile;
 const LazyLanceFile = format.LazyLanceFile;

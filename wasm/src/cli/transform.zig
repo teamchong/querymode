@@ -1,16 +1,16 @@
-//! LanceQL Transform Command
+//! EdgeQ Transform Command
 //!
 //! Applies SQL-like transformations to data files and outputs to Lance format.
 //!
 //! Usage:
-//!   lanceql transform input.parquet -o output.lance --select "col1,col2"
-//!   lanceql transform data.lance -o filtered.lance --filter "x > 100"
-//!   lanceql transform input.csv -o output.lance --rename "old:new" --limit 1000
+//!   edgeq transform input.parquet -o output.lance --select "col1,col2"
+//!   edgeq transform data.lance -o filtered.lance --filter "x > 100"
+//!   edgeq transform input.csv -o output.lance --rename "old:new" --limit 1000
 
 const std = @import("std");
-const lanceql = @import("lanceql");
-const writer = lanceql.encoding.writer;
-const Result = @import("lanceql.sql.executor").Result;
+const edgeq = @import("edgeq");
+const writer = edgeq.encoding.writer;
+const Result = @import("edgeq.sql.executor").Result;
 const args = @import("args.zig");
 const file_detect = @import("file_detect.zig");
 const query_utils = @import("query_utils.zig");
@@ -30,7 +30,7 @@ pub fn run(allocator: std.mem.Allocator, opts: args.TransformOptions) !void {
     // Validate input
     const input_path = opts.input orelse {
         std.debug.print("Error: No input file specified\n", .{});
-        std.debug.print("Usage: lanceql transform <input> -o <output> [options]\n", .{});
+        std.debug.print("Usage: edgeq transform <input> -o <output> [options]\n", .{});
         return TransformError.NoInputFile;
     };
 

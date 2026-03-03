@@ -6,12 +6,12 @@
 //! 3. Exposing unified column read interface
 
 const std = @import("std");
-const XlsxReader = @import("lanceql.encoding").XlsxReader;
-const CellValue = @import("lanceql.encoding").CellValue;
-const CellType = @import("lanceql.encoding").CellType;
-const format = @import("lanceql.format");
+const XlsxReader = @import("edgeq.encoding").XlsxReader;
+const CellValue = @import("edgeq.encoding").CellValue;
+const CellType = @import("edgeq.encoding").CellType;
+const format = @import("edgeq.format");
 const Type = format.parquet_metadata.Type;
-const table_utils = @import("lanceql.table_utils");
+const table_utils = @import("edgeq.table_utils");
 
 pub const XlsxTableError = error{
     InvalidXlsxFile,
