@@ -3,7 +3,6 @@ import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
-import { createPageProcessor, type PageProcessor } from "./page-processor.js";
 import { computePartialAgg, type PartialAgg } from "./partial-agg.js";
 import { coalesceRanges } from "./coalesce.js";
 
@@ -21,8 +20,7 @@ interface ScanRequest {
 export class FragmentDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
-  private wasmEngine: WasmEngine | null = null;
-  private pageProcessor: PageProcessor | null = null;
+  private wasmEngine!: WasmEngine;
   /** Footer cache keyed by r2Key — survives across scans while the DO is alive. */
   private footerCache = new Map<string, TableMeta>();
   private initialized = false;
@@ -48,10 +46,7 @@ export class FragmentDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "frag:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("frag:", ""), meta);
 
-    if (this.env.LANCEQL_WASM) {
-      try { this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM); } catch {}
-    }
-    this.pageProcessor = createPageProcessor(this.wasmEngine);
+    this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM);
   }
 
   private json(body: unknown, status = 200): Response {

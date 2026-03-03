@@ -25,14 +25,15 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
   return false;
 }
 
-/** Assemble rows from column page buffers. Uses WASM SIMD for vector search when available. */
+/** Assemble rows from column page buffers. WASM required for vector search. */
 export function assembleRows(
   columnData: Map<string, ArrayBuffer[]>,
   projectedColumns: ColumnMeta[],
   query: QueryDescriptor,
-  wasmEngine?: WasmEngine | null,
+  wasmEngine?: WasmEngine,
 ): Row[] {
   if (query.vectorSearch) {
+    if (!wasmEngine) throw new Error("WASM engine required for vector search");
     return vectorSearch(columnData, projectedColumns, query, wasmEngine);
   }
 
@@ -305,12 +306,12 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
 
 // --- Vector search ---
 
-/** Cosine similarity vector search. WASM SIMD fast path, TS fallback. */
+/** Cosine similarity vector search via WASM SIMD. */
 function vectorSearch(
   columnData: Map<string, ArrayBuffer[]>,
   projectedColumns: ColumnMeta[],
   query: QueryDescriptor,
-  wasmEngine?: WasmEngine | null,
+  wasmEngine: WasmEngine,
 ): Row[] {
   const vs = query.vectorSearch!;
   const embCol = projectedColumns.find(c => c.name === vs.column);
@@ -336,65 +337,19 @@ function vectorSearch(
   // Decode non-embedding columns
   const otherCols = decodeAllColumns(columnData, projectedColumns, vs.column);
 
-  // WASM SIMD path
-  if (wasmEngine) {
-    try {
-      wasmEngine.reset();
-      const { indices, scores } = wasmEngine.vectorSearchBuffer(flat, numRows, dim, vs.queryVector, vs.topK);
-      const rows: Row[] = [];
-      for (let i = 0; i < indices.length; i++) {
-        const idx = indices[i];
-        const row: Row = { _distance: 1 - scores[i], _score: scores[i] };
-        for (const col of projectedColumns) {
-          if (col.name === vs.column) row[col.name] = embeddings[idx] ?? null;
-          else { const vals = otherCols.get(col.name); row[col.name] = vals ? (vals[idx] as Row[string]) : null; }
-        }
-        rows.push(row);
-      }
-      return rows;
-    } catch { /* fall through to TS */ }
-  }
-
-  // TS cosine similarity fallback
-  const qv = vs.queryVector;
-  let qNorm = 0;
-  for (let d = 0; d < dim; d++) qNorm += qv[d] * qv[d];
-  qNorm = Math.sqrt(qNorm);
-
-  // Top-K via max-heap on cosine distance
-  const heap: { dist: number; idx: number }[] = [];
-  for (let i = 0; i < numRows; i++) {
-    const emb = embeddings[i];
-    let dot = 0, eNorm = 0;
-    for (let d = 0; d < dim; d++) { dot += emb[d] * qv[d]; eNorm += emb[d] * emb[d]; }
-    const dist = 1 - ((qNorm > 0 && eNorm > 0) ? dot / (qNorm * Math.sqrt(eNorm)) : 0);
-
-    if (heap.length < vs.topK) {
-      heap.push({ dist, idx: i });
-      let j = heap.length - 1;
-      while (j > 0) { const p = (j - 1) >> 1; if (heap[j].dist > heap[p].dist) { [heap[j], heap[p]] = [heap[p], heap[j]]; j = p; } else break; }
-    } else if (dist < heap[0].dist) {
-      heap[0] = { dist, idx: i };
-      let j = 0;
-      while (true) {
-        let t = j; const l = 2 * j + 1, r = 2 * j + 2;
-        if (l < heap.length && heap[l].dist > heap[t].dist) t = l;
-        if (r < heap.length && heap[r].dist > heap[t].dist) t = r;
-        if (t === j) break;
-        [heap[j], heap[t]] = [heap[t], heap[j]]; j = t;
-      }
-    }
-  }
-
-  heap.sort((a, b) => a.dist - b.dist);
-  return heap.map(({ dist, idx }) => {
-    const row: Row = { _distance: dist, _score: 1 - dist };
+  wasmEngine.reset();
+  const { indices, scores } = wasmEngine.vectorSearchBuffer(flat, numRows, dim, vs.queryVector, vs.topK);
+  const rows: Row[] = [];
+  for (let i = 0; i < indices.length; i++) {
+    const idx = indices[i];
+    const row: Row = { _distance: 1 - scores[i], _score: scores[i] };
     for (const col of projectedColumns) {
       if (col.name === vs.column) row[col.name] = embeddings[idx] ?? null;
       else { const vals = otherCols.get(col.name); row[col.name] = vals ? (vals[idx] as Row[string]) : null; }
     }
-    return row;
-  });
+    rows.push(row);
+  }
+  return rows;
 }
 
 // --- Filters ---

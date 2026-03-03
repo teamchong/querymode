@@ -4,26 +4,21 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
-import { createPageProcessor } from "./page-processor.js";
 import { mergeQueryResults } from "./merge.js";
-import { computePartialAgg, mergePartialAggs, finalizePartialAgg } from "./partial-agg.js";
 import { coalesceRanges } from "./coalesce.js";
 
-const MAX_WASM_FILE = 64 * 1024 * 1024; // 64MB — stay within 128MB DO limit
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
 
 /**
  * Query DO — per-region reader with cached footers.
- * WASM (Zig SIMD) handles all compute; TS handles orchestration.
- * Falls back to TS decode if WASM unavailable.
+ * WASM (Zig SIMD) handles all compute; TS handles I/O orchestration only.
  */
 export class QueryDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private footerCache = new Map<string, TableMeta>();
   private datasetCache = new Map<string, DatasetMeta>();
-  private wasmEngine: WasmEngine | null = null;
-  private wasmLoaded = new Map<string, number>(); // table → updatedAt
+  private wasmEngine!: WasmEngine;
   private queryCount = new Map<string, number>(); // table → hit count (for VIP pinning)
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
   private initialized = false;
@@ -66,10 +61,7 @@ export class QueryDO implements DurableObject {
     const stored = await this.state.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 
-    if (this.env.LANCEQL_WASM) {
-      try { this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM); }
-      catch { /* TS fallback */ }
-    }
+    this.wasmEngine = await instantiateWasm(this.env.LANCEQL_WASM);
 
     // Register with Master for invalidation broadcasts
     this.registerWithMaster();
@@ -126,12 +118,7 @@ export class QueryDO implements DurableObject {
       };
       this.footerCache.set(table, meta);
 
-      // Evict stale WASM-loaded table so it gets reloaded on next query
-      if (this.wasmEngine && this.wasmLoaded.has(table)) {
-        this.wasmEngine.clearTable(table);
-        this.wasmLoaded.delete(table);
-      }
-
+      this.wasmEngine.clearTable(table);
       await this.state.storage.put(`table:${table}`, meta);
     }
   }
@@ -154,87 +141,36 @@ export class QueryDO implements DurableObject {
     };
 
     this.footerCache.set(body.table, meta);
-    if (this.wasmEngine && this.wasmLoaded.has(body.table)) {
-      this.wasmEngine.clearTable(body.table);
-      this.wasmLoaded.delete(body.table);
-    }
+    this.wasmEngine.clearTable(body.table);
     await this.state.storage.put(`table:${body.table}`, meta);
     return this.json({ updated: true, table: body.table });
   }
 
   private async handleQuery(request: Request): Promise<Response> {
     const query = (await request.json()) as QueryDescriptor;
+    return this.json(await this.executeQuery(query));
+  }
+
+  /** Execute query using page-level R2 Range reads + WASM compute. Never downloads full files. */
+  private async executeQuery(query: QueryDescriptor): Promise<QueryResult> {
     const t0 = Date.now();
 
-    // Check dataset cache first (multi-fragment Lance directories)
+    // Multi-fragment dataset path
     const dataset = this.datasetCache.get(query.table);
-    if (dataset) {
-      return this.json(await this.executeMultiFragment(query, dataset, t0));
-    }
+    if (dataset) return this.executeMultiFragment(query, dataset, t0);
 
     let meta: TableMeta | undefined = this.footerCache.get(query.table);
     if (!meta) {
       meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (!meta) return this.json({ error: `Table "${query.table}" not found` }, 404);
+      if (!meta) throw new Error(`Table "${query.table}" not found`);
     }
 
-    // Track query frequency for VIP pinning (zell-inspired)
     this.queryCount.set(query.table, (this.queryCount.get(query.table) ?? 0) + 1);
-
-    // WASM path — skip R2 fetch if table already loaded at current version
-    if (this.wasmEngine && Number(meta.fileSize) <= MAX_WASM_FILE) {
-      try {
-        const rows = await this.executeWasm(query, meta);
-        if (rows) {
-          return this.json({
-            rows, rowCount: rows.length,
-            columns: query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name),
-            bytesRead: Number(meta.fileSize), pagesSkipped: 0, durationMs: Date.now() - t0,
-          });
-        }
-      } catch (err) {
-        const wasmErr = this.wasmEngine.getLastError();
-        console.warn("WASM failed:", wasmErr ?? err);
-        this.wasmEngine.reset();
-      }
-    }
-
-    // TS fallback
-    return this.json(await this.executeTsFallback(query, meta, t0));
+    return this.scanPages(query, meta, t0);
   }
 
-  private async executeWasm(query: QueryDescriptor, meta: TableMeta): Promise<Row[] | null> {
-    if (this.wasmLoaded.get(query.table) !== meta.updatedAt) {
-      // Evict coldest table if we're loading a new one and have many loaded
-      if (this.wasmLoaded.size >= 8) this.evictColdestTable(query.table);
-
-      const fileSize = Number(meta.fileSize);
-      const obj = fileSize > 0
-        ? await this.env.DATA_BUCKET.get(meta.r2Key, { range: { offset: 0, length: fileSize } })
-        : await this.env.DATA_BUCKET.get(meta.r2Key);
-      if (!obj) return null;
-      if (!this.wasmEngine!.loadTable(query.table, await obj.arrayBuffer())) return null;
-      this.wasmLoaded.set(query.table, meta.updatedAt);
-    }
-    return this.wasmEngine!.executeQuery(query);
-  }
-
-  /** Evict the least-queried table from WASM memory (VIP pinning — zell-inspired). */
-  private evictColdestTable(exclude: string): void {
-    let coldest: string | null = null;
-    let minHits = Infinity;
-    for (const [table] of this.wasmLoaded) {
-      if (table === exclude) continue;
-      const hits = this.queryCount.get(table) ?? 0;
-      if (hits < minHits) { coldest = table; minHits = hits; }
-    }
-    if (coldest) {
-      this.wasmEngine!.clearTable(coldest);
-      this.wasmLoaded.delete(coldest);
-    }
-  }
-
-  private async executeTsFallback(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
+  /** Scan only the needed pages from R2 via coalesced Range reads. */
+  private async scanPages(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
     let cols = query.projections.length > 0
       ? meta.columns.filter(c => query.projections.includes(c.name))
       : meta.columns;
@@ -256,7 +192,6 @@ export class QueryDO implements DurableObject {
       }
     }
 
-    // Coalesce nearby ranges into fewer R2 reads (max 64KB gap to merge)
     const coalesced = coalesceRanges(ranges, 64 * 1024);
     const fetched = await Promise.all(coalesced.map(async c => {
       const obj = await this.env.DATA_BUCKET.get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
@@ -268,7 +203,6 @@ export class QueryDO implements DurableObject {
     for (const f of fetched) {
       if (!f) continue;
       bytesRead += f.data.byteLength;
-      // Slice coalesced buffer back into per-range pieces
       for (const sub of f.ranges) {
         const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
         const arr = columnData.get(sub.column) ?? [];
@@ -390,18 +324,15 @@ export class QueryDO implements DurableObject {
   /** Execute a query across multiple fragments of a dataset. */
   private async executeMultiFragment(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
     const fragments = [...dataset.fragmentMetas.values()];
-    const totalSize = fragments.reduce((s, m) => s + Number(m.fileSize), 0);
-
-    // Large datasets (>4 fragments or >64MB total): fan out to Fragment DOs
-    if (fragments.length > 4 || totalSize > MAX_WASM_FILE) {
+    // Large datasets (>4 fragments): fan out to Fragment DOs
+    if (fragments.length > 4) {
       return this.executeWithFragmentDOs(query, dataset, t0);
     }
 
     // Small datasets: scan locally
     const partials: QueryResult[] = [];
     for (const meta of fragments) {
-      const result = await this.executeTsFallback(query, meta, t0);
-      partials.push(result);
+      partials.push(await this.scanPages(query, meta, t0));
     }
     return mergeQueryResults(partials, query);
   }
@@ -432,10 +363,10 @@ export class QueryDO implements DurableObject {
     const slotsNeeded = Math.min(fragments.length, FRAGMENT_POOL_MAX - this.activeFragmentSlots.size);
 
     if (slotsNeeded <= 0) {
-      // All slots busy — fall back to local sequential scan rather than queueing
+      // All slots busy — scan locally rather than queueing
       const partials: QueryResult[] = [];
       for (const [, meta] of fragments) {
-        partials.push(await this.executeTsFallback(query, meta, t0));
+        partials.push(await this.scanPages(query, meta, t0));
       }
       return mergeQueryResults(partials, query);
     }
@@ -479,7 +410,7 @@ export class QueryDO implements DurableObject {
   /** Stream query results as NDJSON. */
   private async handleQueryStream(request: Request): Promise<Response> {
     const query = (await request.json()) as QueryDescriptor;
-    const result = await this.handleQueryInternal(query);
+    const result = await this.executeQuery(query);
 
     const { readable, writable } = new TransformStream<Uint8Array>();
     const writer = writable.getWriter();
@@ -500,37 +431,5 @@ export class QueryDO implements DurableObject {
     });
   }
 
-  /** Internal query execution — shared by /query and /query/stream. */
-  private async handleQueryInternal(query: QueryDescriptor): Promise<QueryResult> {
-    const t0 = Date.now();
-
-    const dataset = this.datasetCache.get(query.table);
-    if (dataset) return this.executeMultiFragment(query, dataset, t0);
-
-    let meta: TableMeta | undefined = this.footerCache.get(query.table);
-    if (!meta) {
-      meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (!meta) return { rows: [], rowCount: 0, columns: [], bytesRead: 0, pagesSkipped: 0, durationMs: 0 };
-    }
-
-    this.queryCount.set(query.table, (this.queryCount.get(query.table) ?? 0) + 1);
-
-    if (this.wasmEngine && Number(meta.fileSize) <= MAX_WASM_FILE) {
-      try {
-        const rows = await this.executeWasm(query, meta);
-        if (rows) {
-          return {
-            rows, rowCount: rows.length,
-            columns: query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name),
-            bytesRead: Number(meta.fileSize), pagesSkipped: 0, durationMs: Date.now() - t0,
-          };
-        }
-      } catch {
-        this.wasmEngine.reset();
-      }
-    }
-
-    return this.executeTsFallback(query, meta, t0);
-  }
 }
 

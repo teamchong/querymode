@@ -1,7 +1,24 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { FragmentDO } from "./fragment-do.js";
 import { bigIntReplacer } from "./decode.js";
 import type { TableMeta, ColumnMeta } from "./types.js";
+
+// Mock instantiateWasm to return a minimal mock engine
+vi.mock("./wasm-engine.js", () => ({
+  instantiateWasm: async () => ({
+    exports: {
+      memory: new WebAssembly.Memory({ initial: 1 }),
+      wasmAlloc: () => 0,
+      resetHeap: () => {},
+      resetResult: () => {},
+      clearTable: () => {},
+      clearTables: () => {},
+    },
+    reset: () => {},
+    clearTable: () => {},
+    vectorSearchBuffer: () => ({ indices: new Uint32Array(0), scores: new Float32Array(0) }),
+  }),
+}));
 
 const mockState = {
   id: { toString: () => "test-fragment-id" },
@@ -12,7 +29,7 @@ const mockEnv = {
   DATA_BUCKET: { get: async () => null, head: async () => null },
   MASTER_DO: null,
   QUERY_DO: null,
-  LANCEQL_WASM: null,
+  LANCEQL_WASM: {} as any, // non-null, mocked by vi.mock above
 } as any;
 
 function makeScanRequest(url: string, body: unknown): Request {

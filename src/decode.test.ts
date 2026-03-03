@@ -300,52 +300,8 @@ describe("bigIntReplacer", () => {
   });
 });
 
-describe("vector search (TypeScript fallback)", () => {
-  it("returns top-K nearest rows by cosine similarity", () => {
-    const dim = 4;
-    // 4 rows with 4-dim embeddings
-    const embBuf = new ArrayBuffer(64);
-    const embView = new DataView(embBuf);
-    const vecs = [
-      [1, 0, 0, 0],  // Row 0: cosine similarity to query [1,0,0,0] = 1.0
-      [0, 1, 0, 0],  // Row 1: similarity = 0.0
-      [0.9, 0.1, 0, 0], // Row 2: similarity ~= 0.994
-      [0, 0, 0, 1],  // Row 3: similarity = 0.0
-    ];
-    let offset = 0;
-    for (const vec of vecs) {
-      for (const v of vec) {
-        embView.setFloat32(offset, v, true);
-        offset += 4;
-      }
-    }
-
-    // Also include a scalar column
-    const idBuf = new ArrayBuffer(16);
-    const idView = new DataView(idBuf);
-    for (let i = 0; i < 4; i++) idView.setInt32(i * 4, i + 1, true);
-
-    const cols: ColumnMeta[] = [
-      {
-        name: "embedding",
-        dtype: "fixed_size_list",
-        listDimension: dim,
-        pages: [{ byteOffset: 0n, byteLength: 64, rowCount: 4, nullCount: 0 }],
-        nullCount: 0,
-      },
-      {
-        name: "id",
-        dtype: "int32",
-        pages: [{ byteOffset: 0n, byteLength: 16, rowCount: 4, nullCount: 0 }],
-        nullCount: 0,
-      },
-    ];
-
-    const columnData = new Map<string, ArrayBuffer[]>([
-      ["embedding", [embBuf]],
-      ["id", [idBuf]],
-    ]);
-
+describe("vector search", () => {
+  it("throws without WASM engine", () => {
     const query: QueryDescriptor = {
       table: "test",
       filters: [],
@@ -356,12 +312,6 @@ describe("vector search (TypeScript fallback)", () => {
         topK: 2,
       },
     };
-
-    const rows = assembleRows(columnData, cols, query);
-    expect(rows).toHaveLength(2);
-    // Row 0 (exact match) should be first
-    expect(rows[0].id).toBe(1);
-    // Row 2 (closest neighbor) should be second
-    expect(rows[1].id).toBe(3);
+    expect(() => assembleRows(new Map(), [], query)).toThrow("WASM engine required");
   });
 });
