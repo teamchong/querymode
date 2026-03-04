@@ -32,5 +32,6 @@
     "dist",
     "src/wasm/querymode.wasm"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "packageManager": "pnpm@10.21.0"
 }

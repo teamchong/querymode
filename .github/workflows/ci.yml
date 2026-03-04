@@ -13,8 +13,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -36,8 +34,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -52,7 +48,6 @@ jobs:
       - name: Start wrangler dev
         run: |
           pnpm dev &
-          # Wait for worker to be ready
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
               echo "Worker ready"
