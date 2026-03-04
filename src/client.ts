@@ -20,13 +20,14 @@ import type {
  *     .limit(100)
  *     .exec()
  */
-export class TableQuery {
+export class TableQuery<T extends Row = Row> {
   private _table: string;
   private _filters: FilterOp[] = [];
   private _projections: string[] = [];
   private _sortColumn?: string;
   private _sortDirection?: "asc" | "desc";
   private _limit?: number;
+  private _offset?: number;
   private _vectorSearch?: VectorSearchParams;
   private _aggregates: AggregateOp[] = [];
   private _groupBy: string[] = [];
@@ -65,6 +66,20 @@ export class TableQuery {
   /** Limit the number of returned rows. Enables early termination. */
   limit(n: number): this {
     this._limit = n;
+    return this;
+  }
+
+  /** Skip the first N rows. Enables offset-based pagination. */
+  offset(n: number): this {
+    this._offset = n;
+    return this;
+  }
+
+  /** Keyset pagination: fetch rows after the given cursor value. Requires sort(). */
+  after(value: FilterOp["value"]): this {
+    if (!this._sortColumn) throw new Error("after() requires sort()");
+    const op = this._sortDirection === "desc" ? "lt" : "gt";
+    this._filters.push({ column: this._sortColumn, op, value });
     return this;
   }
 
@@ -112,12 +127,12 @@ export class TableQuery {
   }
 
   /** Return the first matching row, or null. */
-  async first(): Promise<Row | null> {
-    if (this._executor.first) return this._executor.first(this.toDescriptor());
+  async first(): Promise<T | null> {
+    if (this._executor.first) return this._executor.first(this.toDescriptor()) as Promise<T | null>;
     const desc = this.toDescriptor();
     desc.limit = 1;
     const result = await this._executor.execute(desc);
-    return result.rows[0] ?? null;
+    return (result.rows[0] as T) ?? null;
   }
 
   /** Inspect the query plan without executing. No data I/O is performed. */
@@ -145,8 +160,8 @@ export class TableQuery {
   }
 
   /** Execute the query. Resolves page ranges from cached footer, issues parallel Range reads. */
-  async exec(): Promise<QueryResult> {
-    return this._executor.execute(this.toDescriptor());
+  async exec(): Promise<QueryResult<T>> {
+    return this._executor.execute(this.toDescriptor()) as Promise<QueryResult<T>>;
   }
 
   /** Execute and return an NDJSON stream of rows. Only works with RemoteExecutor. */
@@ -165,6 +180,7 @@ export class TableQuery {
       sortColumn: this._sortColumn,
       sortDirection: this._sortDirection,
       limit: this._limit,
+      offset: this._offset,
       vectorSearch: this._vectorSearch,
       aggregates: this._aggregates.length > 0 ? this._aggregates : undefined,
       groupBy: this._groupBy.length > 0 ? this._groupBy : undefined,
@@ -181,6 +197,7 @@ export interface QueryDescriptor {
   sortColumn?: string;
   sortDirection?: "asc" | "desc";
   limit?: number;
+  offset?: number;
   vectorSearch?: VectorSearchParams;
   aggregates?: AggregateOp[];
   groupBy?: string[];

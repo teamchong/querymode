@@ -87,6 +87,32 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
   return output;
 }
 
+/** Bytes per value for fixed-width types (0 for variable-length). */
+function bytesPerValue(dtype: DataType): number {
+  switch (dtype) {
+    case "int8": case "uint8": case "bool": return 1;
+    case "int16": case "uint16": case "float16": return 2;
+    case "int32": case "uint32": case "float32": return 4;
+    case "int64": case "uint64": case "float64": return 8;
+    default: return 0; // variable-length (utf8, binary)
+  }
+}
+
+/**
+ * Skip a DATA_PAGE v1 level section (repetition or definition levels).
+ * Format: <4-byte LE length><RLE-encoded data>.
+ * Some writers include these even for flat schemas (max_level=0).
+ * Returns new offset after the section, or same offset if no section present.
+ */
+function skipV1LevelSection(data: Uint8Array, offset: number): number {
+  if (offset + 4 > data.length) return offset;
+  const len = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+  if (len >= 0 && len < data.length - offset - 4) {
+    return offset + 4 + len;
+  }
+  return offset;
+}
+
 // --- RLE/Bit-Packed Hybrid Decoding ---
 
 function decodeRleBitPacked(
@@ -387,15 +413,19 @@ export function decodeParquetColumnChunk(
       pageData = decompressPage(pageData, pageEncoding.compression, header.uncompressedSize, wasm);
 
       let dataOffset = 0;
-      // Note: for flat schemas (max_rep_level=0, max_def_level=0),
-      // no repetition or definition levels are present.
-      // Data starts immediately after decompression.
 
       // Check if dictionary encoding
       const enc = header.encoding;
       if (enc === 8 || enc === 3) {
         // RLE_DICTIONARY or PLAIN_DICTIONARY
         if (dictionary) {
+          // DATA_PAGE v1 may include definition level sections before values.
+          // Detect by checking if the first byte matches the expected bitWidth.
+          const expectedBitWidth = dictionary.length <= 1 ? 0 : Math.ceil(Math.log2(dictionary.length));
+          if (pageData[dataOffset] !== expectedBitWidth && dataOffset + 4 < pageData.length) {
+            // First byte doesn't match expected bitWidth — skip level section
+            dataOffset = skipV1LevelSection(pageData, dataOffset); // definition levels
+          }
           const bitWidth = pageData[dataOffset];
           dataOffset++;
           if (bitWidth === 0) {
@@ -412,9 +442,14 @@ export function decodeParquetColumnChunk(
           }
         }
       } else {
-        // PLAIN encoding
-        const remaining = pageData.subarray(dataOffset);
-        const decoded = decodePlainValues(remaining, dtype, header.numValues);
+        // PLAIN encoding — skip definition level section if present
+        const expectedPlainBytes = header.numValues * bytesPerValue(dtype);
+        const remaining = pageData.length - dataOffset;
+        if (expectedPlainBytes > 0 && remaining > expectedPlainBytes + 4) {
+          dataOffset = skipV1LevelSection(pageData, dataOffset); // definition levels
+        }
+        const plainData = pageData.subarray(dataOffset);
+        const decoded = decodePlainValues(plainData, dtype, header.numValues);
         for (let i = 0; i < decoded.length && values.length < numValues; i++) {
           values.push(decoded[i]);
         }

@@ -63,9 +63,17 @@ export function computePartialAgg(
     );
     for (const row of rows) {
       for (let i = 0; i < aggregates.length; i++) {
-        const val = row[aggregates[i].column];
-        if (typeof val === "number") {
-          updatePartialAgg(states[i], val);
+        const col = aggregates[i].column;
+        if (col === "*") {
+          // count(*) — always count the row
+          states[i].count++;
+        } else {
+          const val = row[col];
+          if (typeof val === "number") {
+            updatePartialAgg(states[i], val);
+          } else if (typeof val === "bigint") {
+            updatePartialAgg(states[i], Number(val));
+          }
         }
       }
     }
@@ -85,9 +93,16 @@ export function computePartialAgg(
       groups.set(key, states);
     }
     for (let i = 0; i < aggregates.length; i++) {
-      const val = row[aggregates[i].column];
-      if (typeof val === "number") {
-        updatePartialAgg(states[i], val);
+      const col = aggregates[i].column;
+      if (col === "*") {
+        states[i].count++;
+      } else {
+        const val = row[col];
+        if (typeof val === "number") {
+          updatePartialAgg(states[i], val);
+        } else if (typeof val === "bigint") {
+          updatePartialAgg(states[i], Number(val));
+        }
       }
     }
   }

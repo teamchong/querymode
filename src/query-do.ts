@@ -10,6 +10,7 @@ import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { VipCache } from "./vip-cache.js";
+import { parseLanceV2Columns } from "./lance-v2.js";
 import wasmModule from "./wasm-module.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
@@ -499,98 +500,17 @@ export class QueryDO implements DurableObject {
     const loadResult = this.wasmEngine.exports.fragmentLoad(dataPtr, fileData.byteLength);
     if (loadResult === 0) throw new Error(`Failed to load Lance fragment (invalid file?)`);
 
-    // Parse Lance v2 column metadata from the protobuf footer
-    // The metadata uses nested encoding descriptors — extract row count from field 3 of the page sub-message
-    const fileBytes = new Uint8Array(fileData);
-    const footerStart = fileBytes.length - 40;
-    const colMetaStart = Number(new DataView(fileData, footerStart, 8).getBigUint64(0, true));
-    const colMetaOffsetsStart = Number(new DataView(fileData, footerStart + 8, 8).getBigUint64(0, true));
-    const globalBufOffsetsStart = Number(new DataView(fileData, footerStart + 16, 8).getBigUint64(0, true));
-    const numCols = new DataView(fileData, footerStart + 28, 4).getUint32(0, true);
-
-    // Read global buffer offsets
-    const bufOffsets: number[] = [];
-    for (let i = globalBufOffsetsStart; i < footerStart; i += 8) {
-      bufOffsets.push(Number(new DataView(fileData, i, 8).getBigUint64(0, true)));
-    }
-
-    // Parse each column's metadata to get column type and row count
-    // Lance v2 column metadata: field 1 = encoding, field 2 = page data
-    // Page data: field 1 = buffer ref, field 2 = data type, field 3 = row count
-    const colInfos: { name: string; dtype: string; rowCount: number; dataOffset: number; dataSize: number }[] = [];
-    for (let col = 0; col < numCols; col++) {
-      const metaOffset = Number(new DataView(fileData, colMetaOffsetsStart + col * 8, 8).getBigUint64(0, true));
-      const metaEnd = col + 1 < numCols
-        ? Number(new DataView(fileData, colMetaOffsetsStart + (col + 1) * 8, 8).getBigUint64(0, true))
-        : colMetaOffsetsStart;
-
-      // Parse column protobuf (Lance v2)
-      let pageBytes: Uint8Array | null = null;
-      let pos = metaOffset;
-      while (pos < metaEnd) {
-        const tag = fileBytes[pos++];
-        const fn2 = tag >> 3, wt = tag & 7;
-        if (wt === 2) {
-          let len = 0, shift = 0;
-          while (pos < metaEnd) { const b = fileBytes[pos++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-          if (fn2 === 2) pageBytes = fileBytes.subarray(pos, pos + len);
-          pos += len;
-        } else if (wt === 0) { while (pos < metaEnd && fileBytes[pos++] & 0x80); }
-        else if (wt === 1) pos += 8;
-        else if (wt === 5) pos += 4;
-        else break;
-      }
-
-      // Parse page sub-message for row count and data type
-      let rowCount = 0;
-      let dtypeCode = 0;
-      if (pageBytes) {
-        let pp = 0;
-        while (pp < pageBytes.length) {
-          const tag = pageBytes[pp++];
-          const fn3 = tag >> 3, wt = tag & 7;
-          if (wt === 0) {
-            let val = 0, shift = 0;
-            while (pp < pageBytes.length) { const b = pageBytes[pp++]; val |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-            if (fn3 === 3) rowCount = val;
-          } else if (wt === 2) {
-            let len = 0, shift = 0;
-            while (pp < pageBytes.length) { const b = pageBytes[pp++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-            if (fn3 === 2 && len === 1) dtypeCode = pageBytes[pp]; // encoding hints
-            pp += len;
-          } else if (wt === 1) pp += 8;
-          else if (wt === 5) pp += 4;
-          else break;
-        }
-      }
-
-      // Fall back to manifest totalRows if protobuf didn't encode row count
-      if (rowCount === 0 && meta.totalRows > 0) {
-        rowCount = meta.totalRows;
-      }
-
-      // Column name/type from footer-level metadata or manifest schema
-      const colMeta = meta.columns[col];
-      let colName = colMeta?.name ?? `column_${col}`;
-      let dtype = colMeta?.dtype ?? "int64";
-
-      // Override from manifest schema if available (covers v2 format where column meta has encoding paths)
-      const dataset = this.datasetCache.get(query.table);
-      if (dataset?.manifest.schema.length) {
-        const leafFields = dataset.manifest.schema.filter(f => f.parentId === -1 || f.parentId === 0);
-        const schemaField = leafFields[col];
-        if (schemaField) {
-          colName = schemaField.name;
-          dtype = logicalTypeToDataType(schemaField.logicalType);
-        }
-      }
-
-      const bytesPerValue = (dtype === "int32" || dtype === "float32") ? 4 : 8;
-      colInfos.push({ name: colName, dtype, rowCount, dataOffset: 0, dataSize: rowCount * bytesPerValue });
+    // Parse Lance v2 column metadata using shared parser
+    const dataset = this.datasetCache.get(query.table);
+    const schema = dataset?.manifest.schema;
+    const colInfos = parseLanceV2Columns(fileData, schema, meta.totalRows);
+    if (!colInfos || colInfos.length === 0) {
+      throw new Error("Failed to parse Lance v2 column metadata");
     }
 
     this.log("info", "lance_fragment_parsed", {
-      numCols, colInfos: colInfos.map(c => ({ name: c.name, dtype: c.dtype, rows: c.rowCount })),
+      numCols: colInfos.length,
+      colInfos: colInfos.map(c => ({ name: c.name, dtype: c.dtype, rows: c.rowCount })),
     });
 
     // Read raw column data from the Lance file and assemble rows

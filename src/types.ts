@@ -107,8 +107,8 @@ export interface VectorSearchParams {
 export type Row = Record<string, number | bigint | string | boolean | Float32Array | null>;
 
 /** Execution result returned by .exec() */
-export interface QueryResult {
-  rows: Row[];
+export interface QueryResult<T extends Row = Row> {
+  rows: T[];
   rowCount: number;
   /** Columns that were actually fetched */
   columns: string[];
@@ -128,6 +128,8 @@ export interface QueryResult {
   cacheHits?: number;
   /** Number of page cache misses */
   cacheMisses?: number;
+  /** Whether the result was served from cache */
+  cacheHit?: boolean;
 }
 
 /** Schema field extracted from Lance manifest */
@@ -211,6 +213,8 @@ export interface ExplainResult {
   fragments: number;
   filters: { column: string; op: string; pushable: boolean }[];
   metaCached: boolean;
+  /** Estimated number of rows after filter pushdown */
+  estimatedRows: number;
 }
 
 /** Environment bindings for Cloudflare Workers */
