@@ -5,16 +5,30 @@
  * The standard parseColumnMetaFromProtobuf() returns 0 pages and generic
  * column_N names for v2 files. This module provides correct v2 parsing.
  *
- * Layout of a Lance v2 file footer (last 40 bytes):
+ * Layout of a Lance v2 file:
+ *   [data buffers with alignment padding]
+ *   [column metadata protobuf region]
+ *   [column metadata offset table: numColumns * u64]
+ *   [global buffer offset table: (numGlobalBuffers+1) * u64]
+ *   [footer: 40 bytes]
+ *
+ * Footer (last 40 bytes):
  *   [columnMetaStart: u64] [columnMetaOffsetsStart: u64]
  *   [globalBufOffsetsStart: u64] [numGlobalBuffers: u32]
  *   [numColumns: u32] [majorVersion: u16] [minorVersion: u16] [magic: u32]
  *
- * Column metadata protobuf (per column):
- *   field 1 (LEN) = encoding descriptor
- *   field 2 (LEN) = page data sub-message:
- *     field 2 (LEN) = data type hint
+ * Column metadata protobuf (per column, may have multiple page descriptors):
+ *   field 1 (LEN) = encoding descriptor (e.g. "/lance.encodings.ColumnEncoding")
+ *   field 2 (LEN) = page descriptor sub-message:
+ *     field 1 (LEN) = buffer position(s) as packed varints
+ *     field 2 (LEN) = data length info (for variable-length types)
  *     field 3 (VARINT) = row count
+ *     field 4 (LEN) = array encoding descriptor
+ *
+ * For fixed-width columns (int64, float64, etc.), a single page descriptor
+ * encodes the buffer position of the data. For variable-width columns (utf8),
+ * there are two page descriptors: one for the offsets array and one whose
+ * sub-pages contain the offsets buffer + data buffer positions.
  */
 
 import type { ColumnMeta, DataType, SchemaField } from "./types.js";
@@ -24,11 +38,103 @@ export interface LanceV2ColumnInfo {
   name: string;
   dtype: DataType;
   rowCount: number;
-  bytesPerValue: number;
+  /** Byte offset of data in the file */
+  byteOffset: number;
+  /** Byte length of data in the file */
+  byteLength: number;
+  /** For nullable columns: byte offset of validity bitmap */
+  bitmapOffset?: number;
+  /** For nullable columns: byte length of validity bitmap */
+  bitmapLength?: number;
+  /** For utf8: byte offset of the string offsets array */
+  offsetsOffset?: number;
+  /** For utf8: byte length of the string offsets array */
+  offsetsLength?: number;
+  /** For utf8: byte offset of the string data buffer */
+  dataOffset?: number;
+  /** For utf8: byte length of the string data buffer */
+  dataLength?: number;
+}
+
+/** Read a varint from bytes, returning value and number of bytes consumed. */
+function readLEB128(bytes: Uint8Array, pos: number): { val: number; len: number } {
+  let val = 0, shift = 0, len = 0;
+  while (pos + len < bytes.length) {
+    const b = bytes[pos + len++];
+    if (shift < 32) val |= (b & 0x7f) << shift;
+    shift += 7;
+    if (!(b & 0x80)) break;
+  }
+  return { val: val >>> 0, len };
+}
+
+/** Read all varints packed in a LEN-delimited field. */
+function readPackedVarints(bytes: Uint8Array, start: number, length: number): number[] {
+  const vals: number[] = [];
+  let pos = start;
+  const end = start + length;
+  while (pos < end) {
+    const { val, len } = readLEB128(bytes, pos);
+    vals.push(val);
+    pos += len;
+  }
+  return vals;
+}
+
+/** Parse a page descriptor sub-message. Returns buffer positions, data lengths, and row count. */
+function parsePageDescriptor(bytes: Uint8Array, start: number, length: number): {
+  bufferPositions: number[];
+  dataLengths: number[];
+  dataLength: number;
+  rowCount: number;
+} {
+  let bufferPositions: number[] = [];
+  let dataLengths: number[] = [];
+  let rowCount = 0;
+  let pos = start;
+  const end = start + length;
+
+  while (pos < end) {
+    const tag = bytes[pos++];
+    const fn = tag >> 3, wt = tag & 7;
+    if (wt === 2) {
+      const { val: len, len: lenBytes } = readLEB128(bytes, pos);
+      pos += lenBytes;
+      if (fn === 1) {
+        bufferPositions = readPackedVarints(bytes, pos, len);
+      } else if (fn === 2) {
+        // Data length info — packed varints [bitmap_len, data_len] or [data_len]
+        dataLengths = readPackedVarints(bytes, pos, len);
+      }
+      pos += len;
+    } else if (wt === 0) {
+      const { val, len } = readLEB128(bytes, pos);
+      pos += len;
+      if (fn === 3) rowCount = val;
+    } else if (wt === 1) pos += 8;
+    else if (wt === 5) pos += 4;
+    else break;
+  }
+
+  return {
+    bufferPositions,
+    dataLengths,
+    dataLength: dataLengths.length > 0 ? dataLengths[dataLengths.length - 1] : 0,
+    rowCount,
+  };
 }
 
 /**
  * Parse Lance v2 column metadata from a file's raw bytes.
+ *
+ * Lance v2 stores column metadata as a sequence of protobuf messages in the
+ * region [colMetaStart, colMetaOffsetsStart). Each logical schema column
+ * produces one or more physical column entries. For example, a utf8 column
+ * produces both an offsets column and a data column.
+ *
+ * Instead of relying on the column offset table (which may point into the
+ * data region for secondary columns), we parse all column proto messages
+ * sequentially from colMetaStart and match them to schema fields.
  *
  * @param fileData - Full file contents as ArrayBuffer
  * @param schema - Optional manifest schema for column name/type resolution
@@ -56,94 +162,264 @@ export function parseLanceV2Columns(
   // Resolve leaf schema fields for name/type lookup
   const leafFields = schema?.filter(f => f.parentId === -1 || f.parentId === 0) ?? [];
 
-  const colInfos: LanceV2ColumnInfo[] = [];
-  for (let col = 0; col < numCols; col++) {
-    const metaOffset = Number(new DataView(fileData, colMetaOffsetsStart + col * 8, 8).getBigUint64(0, true));
-    const metaEnd = col + 1 < numCols
-      ? Number(new DataView(fileData, colMetaOffsetsStart + (col + 1) * 8, 8).getBigUint64(0, true))
-      : colMetaOffsetsStart;
+  // Parse ALL column proto messages sequentially from the metadata region.
+  // Each column proto consists of repeated (field 1: encoding, field 2: page) pairs.
+  // A new column starts with field 1 after a field 2. We detect boundaries by
+  // tracking field number transitions.
+  type ColProto = { pages: ReturnType<typeof parsePageDescriptor>[] };
+  const colProtos: ColProto[] = [];
+  let currentCol: ColProto = { pages: [] };
+  let lastFieldNum = 0;
+  let pos = colMetaStart;
 
-    // Parse column protobuf — find field 2 (page sub-message)
-    let pageBytes: Uint8Array | null = null;
-    let pos = metaOffset;
-    while (pos < metaEnd) {
-      const tag = fileBytes[pos++];
-      const fn = tag >> 3, wt = tag & 7;
-      if (wt === 2) {
-        let len = 0, shift = 0;
-        while (pos < metaEnd) { const b = fileBytes[pos++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-        if (fn === 2) pageBytes = fileBytes.subarray(pos, pos + len);
-        pos += len;
-      } else if (wt === 0) { while (pos < metaEnd && fileBytes[pos++] & 0x80); }
-      else if (wt === 1) pos += 8;
-      else if (wt === 5) pos += 4;
-      else break;
+  while (pos < colMetaOffsetsStart) {
+    if (pos >= fileBytes.length) break;
+    const tag = fileBytes[pos++];
+    const fn = tag >> 3, wt = tag & 7;
+
+    // A field 1 after a field 2 signals the start of a new column
+    if (fn === 1 && lastFieldNum === 2 && currentCol.pages.length > 0) {
+      colProtos.push(currentCol);
+      currentCol = { pages: [] };
     }
 
-    // Parse page sub-message for row count
-    let rowCount = 0;
-    if (pageBytes) {
-      let pp = 0;
-      while (pp < pageBytes.length) {
-        const tag = pageBytes[pp++];
-        const fn = tag >> 3, wt = tag & 7;
-        if (wt === 0) {
-          let val = 0, shift = 0;
-          while (pp < pageBytes.length) { const b = pageBytes[pp++]; val |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-          if (fn === 3) rowCount = val;
-        } else if (wt === 2) {
-          let len = 0, shift = 0;
-          while (pp < pageBytes.length) { const b = pageBytes[pp++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; }
-          pp += len;
-        } else if (wt === 1) pp += 8;
-        else if (wt === 5) pp += 4;
-        else break;
+    if (wt === 2) {
+      const { val: len, len: lenBytes } = readLEB128(fileBytes, pos);
+      pos += lenBytes;
+      if (fn === 2) {
+        currentCol.pages.push(parsePageDescriptor(fileBytes, pos, len));
       }
-    }
+      pos += len;
+    } else if (wt === 0) {
+      const { len } = readLEB128(fileBytes, pos);
+      pos += len;
+    } else if (wt === 1) pos += 8;
+    else if (wt === 5) pos += 4;
+    else break;
 
+    lastFieldNum = fn;
+  }
+  // Push the last column
+  if (currentCol.pages.length > 0) colProtos.push(currentCol);
+
+  // Now map physical columns to logical schema columns.
+  // For fixed-width types: 1 physical column per logical column
+  // For utf8/binary: 2 physical columns (offsets column + data column) per logical column
+  const colInfos: LanceV2ColumnInfo[] = [];
+  let physIdx = 0;
+
+  for (let logIdx = 0; logIdx < (leafFields.length || numCols); logIdx++) {
+    if (physIdx >= colProtos.length) break;
+
+    const name = leafFields[logIdx]?.name ?? `column_${logIdx}`;
+    const dtype: DataType = leafFields[logIdx]
+      ? logicalTypeToDataType(leafFields[logIdx].logicalType)
+      : "int64";
+
+    // Get row count from first available page descriptor
+    let rowCount = 0;
+    for (const p of colProtos[physIdx].pages) {
+      if (p.rowCount > 0) { rowCount = p.rowCount; break; }
+    }
     if (rowCount === 0 && fallbackTotalRows) rowCount = fallbackTotalRows;
 
-    // Resolve name/type from manifest schema
-    let name = `column_${col}`;
-    let dtype: DataType = "int64";
-    if (leafFields[col]) {
-      name = leafFields[col].name;
-      dtype = logicalTypeToDataType(leafFields[col].logicalType);
-    }
+    if (dtype === "utf8" || dtype === "binary") {
+      // UTF8 columns can be encoded two ways in Lance v2:
+      // A) Single physical column with 2 buffer positions: [offsets_pos, data_pos]
+      // B) Two physical columns: offsets column + data column
+      const proto = colProtos[physIdx];
+      const firstPage = proto.pages[0];
+      const bufPositions = firstPage?.bufferPositions ?? [];
 
-    const bpv = (dtype === "int32" || dtype === "float32" || dtype === "uint32") ? 4
-      : (dtype === "int8" || dtype === "uint8" || dtype === "bool") ? 1
-      : (dtype === "int16" || dtype === "uint16" || dtype === "float16") ? 2
-      : 8;
-    colInfos.push({ name, dtype, rowCount, bytesPerValue: bpv });
+      let offsetsBufPos: number;
+      let dataBufPos: number;
+      let dataBufLen: number;
+
+      if (bufPositions.length >= 2) {
+        // Case A: single proto with both positions
+        offsetsBufPos = bufPositions[0];
+        dataBufPos = bufPositions[1];
+        dataBufLen = firstPage?.dataLength ?? 0;
+        physIdx += 1;
+      } else {
+        // Case B: two physical columns
+        offsetsBufPos = bufPositions[0] ?? 0;
+        const dataProto = physIdx + 1 < colProtos.length ? colProtos[physIdx + 1] : null;
+        if (dataProto) {
+          const dp = dataProto.pages[0];
+          dataBufPos = dp?.bufferPositions[0] ?? (offsetsBufPos + rowCount * 8);
+          dataBufLen = dp?.dataLength ?? 0;
+          // Get row count from data proto if not available
+          if (rowCount === 0) {
+            for (const p of dataProto.pages) {
+              if (p.rowCount > 0) { rowCount = p.rowCount; break; }
+            }
+          }
+          physIdx += 2;
+        } else {
+          dataBufPos = offsetsBufPos + rowCount * 8;
+          dataBufLen = 0;
+          physIdx += 1;
+        }
+      }
+
+      if (rowCount === 0 && fallbackTotalRows) rowCount = fallbackTotalRows;
+      const offsetsLen = rowCount * 8;
+
+      colInfos.push({
+        name, dtype, rowCount,
+        byteOffset: offsetsBufPos,
+        byteLength: dataBufLen > 0 ? (dataBufPos - offsetsBufPos + dataBufLen) : offsetsLen,
+        offsetsOffset: offsetsBufPos,
+        offsetsLength: offsetsLen,
+        dataOffset: dataBufPos,
+        dataLength: dataBufLen,
+      });
+
+    } else {
+      // Fixed-width column — may be nullable (2 buffer positions: bitmap + data)
+      const proto = colProtos[physIdx];
+      const firstPage = proto.pages[0];
+      const bufPositions = firstPage?.bufferPositions ?? [];
+      const dataLengths = firstPage?.dataLengths ?? [];
+      const bpv = bytesPerValue(dtype);
+
+      if (bufPositions.length >= 2) {
+        // Nullable column: [bitmap_offset, data_offset]
+        const bitmapOff = bufPositions[0];
+        const dataOff = bufPositions[1];
+        const bitmapLen = dataLengths[0] ?? Math.ceil(rowCount / 8);
+        const dataLen = dataLengths[1] ?? (rowCount * bpv);
+
+        colInfos.push({
+          name, dtype, rowCount,
+          byteOffset: dataOff,
+          byteLength: dataLen,
+          bitmapOffset: bitmapOff,
+          bitmapLength: bitmapLen,
+        });
+      } else {
+        // Non-nullable: single buffer position
+        const bufPos = bufPositions[0] ?? 0;
+        colInfos.push({
+          name, dtype, rowCount,
+          byteOffset: bufPos,
+          byteLength: rowCount * bpv,
+        });
+      }
+
+      physIdx += 1;
+    }
   }
 
   return colInfos;
 }
 
+function bytesPerValue(dtype: DataType): number {
+  switch (dtype) {
+    case "int8": case "uint8": case "bool": return 1;
+    case "int16": case "uint16": case "float16": return 2;
+    case "int32": case "uint32": case "float32": return 4;
+    default: return 8;
+  }
+}
+
 /**
  * Convert Lance v2 column info to ColumnMeta with page info.
- * Assumes data is stored sequentially from the beginning of the file.
+ * Uses actual byte offsets extracted from the protobuf metadata.
+ *
+ * For utf8/binary columns with offsets+data layout, the page covers
+ * both the offsets array and data buffer contiguously by spanning from
+ * offsetsOffset to dataOffset+dataLength. The decodeLanceV2Utf8 function
+ * separates them during decoding using the known offsets array size.
  */
 export function lanceV2ToColumnMeta(colInfos: LanceV2ColumnInfo[]): ColumnMeta[] {
-  let dataPos = 0;
   const columns: ColumnMeta[] = [];
 
   for (const col of colInfos) {
-    const dataSize = col.rowCount * col.bytesPerValue;
-    columns.push({
-      name: col.name,
-      dtype: col.dtype,
-      nullCount: 0,
-      pages: [{
-        byteOffset: BigInt(dataPos),
-        byteLength: dataSize,
-        rowCount: col.rowCount,
+    if ((col.dtype === "utf8" || col.dtype === "binary") &&
+        col.offsetsOffset !== undefined && col.dataOffset !== undefined &&
+        col.dataLength !== undefined && col.dataLength > 0) {
+      // For utf8: create page spanning from offsets start through data end.
+      // The decoder uses rowCount to find the offsets/data boundary.
+      const totalStart = col.offsetsOffset;
+      const totalEnd = col.dataOffset + col.dataLength;
+      columns.push({
+        name: col.name,
+        dtype: col.dtype,
         nullCount: 0,
-      }],
-    });
-    dataPos += dataSize;
+        pages: [{
+          byteOffset: BigInt(totalStart),
+          byteLength: totalEnd - totalStart,
+          rowCount: col.rowCount,
+          nullCount: 0,
+        }],
+      });
+    } else if (col.bitmapOffset !== undefined && col.bitmapLength !== undefined && col.bitmapLength > 0) {
+      // Nullable fixed-width: page spans from bitmap start through data end.
+      // Lance v2 uses 64-byte alignment between bitmap and data, so we store
+      // the actual data offset within the page buffer so decodePage can skip
+      // the alignment padding correctly.
+      const dataOffsetInPage = col.byteOffset - col.bitmapOffset;
+      columns.push({
+        name: col.name,
+        dtype: col.dtype,
+        nullCount: 1, // non-zero signals nullable; actual count computed from bitmap during decode
+        pages: [{
+          byteOffset: BigInt(col.bitmapOffset),
+          byteLength: col.byteLength + dataOffsetInPage,
+          rowCount: col.rowCount,
+          nullCount: 1,
+          dataOffsetInPage,
+        }],
+      });
+    } else {
+      columns.push({
+        name: col.name,
+        dtype: col.dtype,
+        nullCount: 0,
+        pages: [{
+          byteOffset: BigInt(col.byteOffset),
+          byteLength: col.byteLength,
+          rowCount: col.rowCount,
+          nullCount: 0,
+        }],
+      });
+    }
   }
 
   return columns;
+}
+
+/**
+ * Decode Lance v2 utf8 data from a buffer containing [offsets_array | padding | string_data].
+ * The offsets array is (rowCount) i64 values representing cumulative end positions.
+ * String data follows at the position after offsets + alignment padding.
+ */
+export function decodeLanceV2Utf8(buf: ArrayBuffer, rowCount: number): string[] {
+  const view = new DataView(buf);
+  const offsetsBytes = rowCount * 8; // rowCount i64 offsets (not rowCount+1)
+  if (buf.byteLength < offsetsBytes) return [];
+
+  // Read cumulative end offsets
+  const endOffsets: number[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    endOffsets.push(Number(view.getBigInt64(i * 8, true)));
+  }
+
+  // Total string data length is the last offset
+  const totalStringLen = endOffsets.length > 0 ? endOffsets[endOffsets.length - 1] : 0;
+  // String data starts after offsets + padding. Find it by searching backward from end of buffer.
+  const dataStart = buf.byteLength - totalStringLen;
+
+  const decoder = new TextDecoder();
+  const bytes = new Uint8Array(buf);
+  const strings: string[] = [];
+  let prevEnd = 0;
+  for (let i = 0; i < rowCount; i++) {
+    const end = endOffsets[i];
+    strings.push(decoder.decode(bytes.subarray(dataStart + prevEnd, dataStart + end)));
+    prevEnd = end;
+  }
+  return strings;
 }

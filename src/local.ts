@@ -45,6 +45,7 @@ export class QueryMode {
 export { LocalExecutor } from "./local-executor.js";
 export { TableQuery } from "./client.js";
 export { QueryModeError } from "./errors.js";
+export { bigIntReplacer } from "./decode.js";
 export type { QueryExecutor, QueryDescriptor } from "./client.js";
 export type {
   Footer,

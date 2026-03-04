@@ -324,13 +324,15 @@ export class LocalExecutor implements QueryExecutor {
 
         const rows = assembleRows(columnData, projectedColumns, query, wasm);
 
-        if (rows.length > 0) {
-          if (query.limit && totalYielded + rows.length > query.limit) {
-            yield rows.slice(0, query.limit - totalYielded);
+        // Chunk rows into batchSize-sized batches
+        for (let ri = 0; ri < rows.length; ri += batchSize) {
+          const chunk = rows.slice(ri, ri + batchSize);
+          if (query.limit && totalYielded + chunk.length > query.limit) {
+            yield chunk.slice(0, query.limit - totalYielded);
             return;
           }
-          yield rows;
-          totalYielded += rows.length;
+          yield chunk;
+          totalYielded += chunk.length;
         }
       }
     } finally {
@@ -407,6 +409,9 @@ export class LocalExecutor implements QueryExecutor {
       if (!columnNames.has(f.column)) {
         throw new QueryModeError("COLUMN_NOT_FOUND", `Filter column "${f.column}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
       }
+    }
+    if (query.sortColumn && !columnNames.has(query.sortColumn)) {
+      throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
     }
 
     // Step 2: Determine projected columns
@@ -555,9 +560,11 @@ export class LocalExecutor implements QueryExecutor {
           const cachedMeta = await this.loadMetaFromFile(fragPath);
           let { columns } = cachedMeta;
 
-          // If standard parser returned 0 pages (Lance v2), try v2 parser with manifest schema
-          const hasPages = columns.some(c => c.pages.length > 0);
-          if (!hasPages) {
+          // Always try v2 parser with manifest schema for Lance files.
+          // The schema provides correct column names and types that the
+          // no-schema fallback in loadMetaFromFile cannot determine.
+          const isLanceV2 = columns.some(c => c.name.startsWith("column_")) || columns.every(c => c.dtype === "int64");
+          if (isLanceV2 || !columns.some(c => c.pages.length > 0)) {
             const fragBuf = await fs.readFile(fragPath);
             const fragAb = fragBuf.buffer.slice(fragBuf.byteOffset, fragBuf.byteOffset + fragBuf.byteLength);
             const v2Cols = parseLanceV2Columns(fragAb, manifest.schema, frag.physicalRows);
@@ -607,6 +614,22 @@ export class LocalExecutor implements QueryExecutor {
         const firstKey = this.datasetCache.keys().next().value;
         if (firstKey) this.datasetCache.delete(firstKey);
       }
+    }
+
+    // Validate column references against schema
+    const schemaColumnNames = new Set(dataset.manifest.schema.map(f => f.name));
+    for (const p of query.projections) {
+      if (!schemaColumnNames.has(p)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Column "${p}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
+      }
+    }
+    for (const f of query.filters) {
+      if (!schemaColumnNames.has(f.column)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Filter column "${f.column}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
+      }
+    }
+    if (query.sortColumn && !schemaColumnNames.has(query.sortColumn)) {
+      throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
     }
 
     // Execute query across all fragments

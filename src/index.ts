@@ -10,6 +10,7 @@ export { FragmentDO } from "./fragment-do.js";
 export { TableQuery } from "./client.js";
 export { QueryModeError } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
+export { bigIntReplacer } from "./decode.js";
 export type { QueryExecutor, QueryDescriptor } from "./client.js";
 export type {
   Env,

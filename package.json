@@ -18,9 +18,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "prepublishOnly": "pnpm run build",
-    "build": "pnpm run build:wasm && tsc",
+    "build": "pnpm run build:wasm && pnpm run build:ts",
     "build:wasm": "cd wasm && zig build wasm && mkdir -p ../src/wasm && cp zig-out/bin/querymode.wasm ../src/wasm/",
-    "build:ts": "tsc",
+    "build:ts": "tsc && mkdir -p dist/wasm && cp src/wasm/querymode.wasm dist/wasm/",
     "test": "vitest run",
     "test:watch": "vitest",
     "deploy": "pnpm run build && wrangler deploy",

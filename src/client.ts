@@ -14,7 +14,7 @@ import type {
  * Usage:
  *   const results = await querymode
  *     .table("users")
- *     .filter(r => r.age > 25)
+ *     .filter("age", "gt", 25)
  *     .select("name", "email")
  *     .sort("age", "desc")
  *     .limit(100)

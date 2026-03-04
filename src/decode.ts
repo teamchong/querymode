@@ -2,6 +2,7 @@ import type { ColumnMeta, PageInfo, Row, DataType } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { decodeParquetColumnChunk, decodePlainValues } from "./parquet-decode.js";
+import { decodeLanceV2Utf8 } from "./lance-v2.js";
 
 /** Check if a page can be skipped via min/max stats. */
 export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"], columnName: string): boolean {
@@ -94,7 +95,7 @@ function decodeAllColumns(
         const pi = col.pages[i];
         const decoded = pi?.encoding
           ? decodeParquetColumnChunk(pages[i], pi.encoding, col.dtype, pi.rowCount, wasm)
-          : decodePage(pages[i], col.dtype, pi?.nullCount ?? 0, pi?.rowCount ?? 0);
+          : decodePage(pages[i], col.dtype, pi?.nullCount ?? 0, pi?.rowCount ?? 0, pi?.dataOffsetInPage);
         for (const v of decoded) {
           values.push(v);
         }
@@ -121,12 +122,15 @@ function decodeFixedSizeListPages(pages: ArrayBuffer[], dim: number): Float32Arr
 }
 
 
-/** Decode a raw page buffer into typed values. Handles null bitmaps when nullCount > 0. */
+/** Decode a raw page buffer into typed values. Handles null bitmaps when nullCount > 0.
+ * @param dataOffsetInPage - For Lance v2 nullable pages: byte offset where data starts (after bitmap + alignment padding)
+ */
 export function decodePage(
   buf: ArrayBuffer,
   dtype: string,
   nullCount = 0,
   rowCount = 0,
+  dataOffsetInPage?: number,
 ): (number | bigint | string | null)[] {
   let nulls: Set<number> | null = null;
   if (nullCount > 0 && rowCount > 0) {
@@ -140,14 +144,55 @@ export function decodePage(
         if (((bytes[b] >> bit) & 1) === 0) nulls.add(idx);
       }
     }
-    buf = buf.slice(bitmapBytes);
+    // Lance v2 uses alignment padding between bitmap and data.
+    // dataOffsetInPage gives the exact data start; otherwise strip only bitmap bytes.
+    const stripBytes = dataOffsetInPage ?? bitmapBytes;
+    buf = buf.slice(stripBytes);
   }
 
   const bytes = new Uint8Array(buf);
-  const numValues = rowCount > 0 ? rowCount - (nulls?.size ?? 0) : Number.MAX_SAFE_INTEGER;
+  // Lance v2 stores ALL row slots (including zeros at null positions).
+  // When dataOffsetInPage is set, decode all rowCount values and mask nulls.
+  // Parquet-style packs only non-null values, so decode rowCount - nulls.size.
+  const isLanceV2Nullable = dataOffsetInPage !== undefined;
+  const numValues = rowCount > 0
+    ? (isLanceV2Nullable ? rowCount : rowCount - (nulls?.size ?? 0))
+    : Number.MAX_SAFE_INTEGER;
+
+  // For utf8/binary with rowCount known and buffer large enough to contain an offsets array,
+  // try Lance v2 format (i64 offsets + string data) first.
+  if ((dtype === "utf8" || dtype === "binary") && rowCount > 0 && buf.byteLength >= rowCount * 8) {
+    const decodeCount = isLanceV2Nullable ? rowCount : numValues;
+    const v2Strings = decodeLanceV2Utf8(buf, decodeCount);
+    if (v2Strings.length === decodeCount && v2Strings.every(s => typeof s === "string")) {
+      const looksValid = v2Strings.every(s => s.length < buf.byteLength);
+      if (looksValid) {
+        if (nulls && nulls.size > 0) {
+          if (isLanceV2Nullable) {
+            // Lance v2: all slots present, just null-mask them
+            return v2Strings.map((s, i) => nulls!.has(i) ? null : s);
+          }
+          // Parquet-style: packed non-null values, interleave with nulls
+          const withNulls: (string | null)[] = [];
+          let vi = 0;
+          for (let i = 0; i < rowCount; i++) {
+            withNulls.push(nulls.has(i) ? null : (vi < v2Strings.length ? v2Strings[vi++] : null));
+          }
+          return withNulls;
+        }
+        return v2Strings;
+      }
+    }
+  }
+
   const values = decodePlainValues(bytes, dtype as DataType, numValues) as (number | bigint | string | null)[];
 
   if (nulls && nulls.size > 0) {
+    if (isLanceV2Nullable) {
+      // Lance v2: all row slots present, replace null positions with null
+      return values.map((v, i) => nulls!.has(i) ? null : v);
+    }
+    // Parquet-style: packed non-null values, interleave with nulls
     const withNulls: (number | bigint | string | null)[] = [];
     let vi = 0;
     for (let i = 0; i < rowCount; i++) {

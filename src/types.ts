@@ -44,6 +44,8 @@ export interface PageInfo {
   maxValue?: number | bigint | string;
   /** Present only for Parquet pages */
   encoding?: PageEncoding;
+  /** For Lance v2 nullable pages: byte offset where data starts within the page buffer (after bitmap + alignment padding) */
+  dataOffsetInPage?: number;
 }
 
 export type DataType =

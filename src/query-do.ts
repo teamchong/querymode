@@ -403,6 +403,7 @@ export class QueryDO implements DurableObject {
         pagesScanned: pagesTotal - pagesSkipped,
         estimatedBytes,
         estimatedR2Reads: coalesced.length,
+        estimatedRows: meta.totalRows,
         fragments,
         filters: query.filters.map(f => ({
           column: f.column,
