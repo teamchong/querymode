@@ -161,7 +161,21 @@ export class QueryDO implements DurableObject {
       table: string; r2Key: string; footerBytes: number[];
       columns?: ColumnMeta[]; fileSize?: string; timestamp: number;
       format?: "lance" | "parquet" | "iceberg";
+      totalRows?: number; r2Prefix?: string;
     };
+
+    // If broadcast includes r2Prefix, this is a dataset — lazy-load full dataset from R2
+    if (body.r2Prefix) {
+      this.datasetCache.delete(body.table);
+      this.wasmEngine.clearTable(body.table);
+      this.wasmEngine.cacheClear();
+      // Trigger lazy-load of the full dataset (reads manifest + all fragments)
+      const dataset = await this.loadDatasetFromR2(body.table);
+      if (dataset) {
+        return this.json({ updated: true, table: body.table, fragments: dataset.fragmentMetas.size });
+      }
+      // Fall through to single-fragment cache if dataset load fails
+    }
 
     const fmt = body.format ?? "lance";
     let columns: ColumnMeta[];
@@ -178,9 +192,13 @@ export class QueryDO implements DurableObject {
       columns = body.columns ?? await this.readColumnMeta(body.r2Key, parsed);
     }
 
+    // Use totalRows from broadcast if available and > 0, otherwise fall back to column computation
+    const computedRows = columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+    const totalRows = (body.totalRows != null && body.totalRows > 0) ? body.totalRows : computedRows;
+
     const meta: TableMeta = {
       name: body.table, footer, format: fmt, columns,
-      totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+      totalRows,
       fileSize: body.fileSize ? BigInt(body.fileSize) : 0n,
       r2Key: body.r2Key, updatedAt: body.timestamp,
     };

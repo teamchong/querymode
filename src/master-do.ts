@@ -63,13 +63,13 @@ export class MasterDO implements DurableObject {
     if (!result) return this.json({ error: "Failed to read footer" }, 500);
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
+    const totalRows = result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
     const meta: TableMeta = {
       name: tableName, footer: result.parsed, format: result.format, columns: result.columns,
-      totalRows: result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
-      fileSize: result.fileSize, r2Key, updatedAt: Date.now(),
+      totalRows, fileSize: result.fileSize, r2Key, updatedAt: Date.now(),
     };
     await this.state.storage.put(`table:${tableName}`, meta);
-    await this.broadcast(tableName, r2Key, result);
+    await this.broadcast(tableName, r2Key, result, { totalRows });
     return this.json({ success: true, table: tableName });
   }
 
@@ -102,7 +102,7 @@ export class MasterDO implements DurableObject {
         result = await this.readFooterAndColumns(fragKey);
       }
       if (result) {
-        await this.broadcast(tableName, fragKey, result);
+        await this.broadcast(tableName, fragKey, result, { totalRows: manifest.totalRows, r2Prefix });
       }
     }
 
@@ -251,7 +251,8 @@ export class MasterDO implements DurableObject {
         // Success — broadcast invalidation
         const footerResult = await this.readFooterAndColumns(dataR2Key);
         if (footerResult) {
-          await this.broadcast(table.replace(/\.lance\/?$/, "").split("/").pop() ?? table, dataR2Key, footerResult);
+          const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
+          await this.broadcast(table.replace(/\.lance\/?$/, "").split("/").pop() ?? table, dataR2Key, footerResult, { totalRows });
         }
 
         // Update stored table meta
@@ -415,12 +416,15 @@ export class MasterDO implements DurableObject {
   private async broadcast(
     table: string, r2Key: string,
     footer: { raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[]; format?: "lance" | "parquet" },
+    opts?: { totalRows?: number; r2Prefix?: string },
   ): Promise<void> {
     const regions = (await this.state.storage.get<Record<string, string>>("regions")) ?? {};
     const payload = JSON.stringify({
       table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
       footerBytes: Array.from(new Uint8Array(footer.raw)),
       fileSize: footer.fileSize.toString(), timestamp: Date.now(),
+      ...(opts?.totalRows != null ? { totalRows: opts.totalRows } : {}),
+      ...(opts?.r2Prefix != null ? { r2Prefix: opts.r2Prefix } : {}),
     }, bigIntReplacer);
 
     const deadRegions: string[] = [];

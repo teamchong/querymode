@@ -167,6 +167,7 @@ async function main(): Promise<void> {
     "simple.parquet", "simple_plain.parquet", "simple_snappy.parquet",
     "benchmark_100k.parquet", "benchmark_100k_uncompressed.parquet",
     "bench_100k_3col.parquet", "bench_100k_numeric.parquet", "bench_1m_numeric.parquet",
+    "bench_iceberg_100k",
   ];
 
   console.log("Refreshing tables...");
@@ -185,6 +186,27 @@ async function main(): Promise<void> {
       }
     } catch {
       console.log(`  Skip: ${r2Key}`);
+    }
+  }
+  await new Promise(r => setTimeout(r, 500));
+
+  // Pre-register Iceberg tables by triggering lazy-load via a query
+  const icebergTables = ["bench_iceberg_100k"];
+  for (const tbl of icebergTables) {
+    try {
+      const resp = await fetch(`${BASE_URL}/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ table: tbl, filters: [], projections: ["id"], limit: 1 }),
+      });
+      if (resp.ok) {
+        console.log(`  Iceberg OK: ${tbl}`);
+      } else {
+        const text = await resp.text();
+        console.log(`  Iceberg Skip: ${tbl} (${resp.status}: ${text.slice(0, 100)})`);
+      }
+    } catch {
+      console.log(`  Iceberg Skip: ${tbl}`);
     }
   }
   await new Promise(r => setTimeout(r, 500));
