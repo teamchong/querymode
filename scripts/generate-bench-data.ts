@@ -2,8 +2,8 @@
 /**
  * Generate benchmark data files (Parquet + Iceberg) for QueryMode benchmarking.
  *
- * Creates synthetic Parquet files using Apache Arrow IPC format written by hand,
- * then seeds them to local R2 via wrangler CLI.
+ * Creates multi-row-group Parquet files with column statistics so that
+ * page-level skipping via footer min/max works in benchmarks.
  *
  * Usage: npx tsx scripts/generate-bench-data.ts
  */
@@ -12,102 +12,9 @@ import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const OUT_DIR = join(import.meta.dirname, "../wasm/tests/fixtures/generated");
-
-// --- Parquet writer (minimal, PLAIN encoding, no compression) ---
-
-function writeParquet(
-  columns: { name: string; type: "int64" | "float64" | "utf8"; values: (number | bigint | string)[] }[],
-): Buffer {
-  const numRows = columns[0].values.length;
-  const parts: Buffer[] = [];
-
-  // PAR1 magic
-  parts.push(Buffer.from("PAR1"));
-
-  // Write column chunks
-  const columnChunkMetas: {
-    type: number; codec: number; numValues: number;
-    dataPageOffset: number; totalCompressed: number; totalUncompressed: number;
-    pathInSchema: string[];
-  }[] = [];
-
-  for (const col of columns) {
-    const dataPageOffset = parts.reduce((s, b) => s + b.length, 0);
-
-    // Build data page: page header (Thrift) + values
-    const valBuf = encodeColumnValues(col.type, col.values);
-
-    // Data page header (Thrift compact protocol)
-    const pageHeader = encodeDataPageHeader(valBuf.length, numRows);
-    parts.push(pageHeader);
-    parts.push(valBuf);
-
-    const totalSize = pageHeader.length + valBuf.length;
-    columnChunkMetas.push({
-      type: col.type === "int64" ? 2 : col.type === "float64" ? 5 : 6,
-      codec: 0, // UNCOMPRESSED
-      numValues: numRows,
-      dataPageOffset,
-      totalCompressed: totalSize,
-      totalUncompressed: totalSize,
-      pathInSchema: [col.name],
-    });
-  }
-
-  // Build Thrift footer
-  const footer = encodeParquetFooter(columns, columnChunkMetas, numRows);
-  parts.push(footer);
-
-  // Footer length + PAR1
-  const footerLenBuf = Buffer.alloc(4);
-  footerLenBuf.writeUInt32LE(footer.length, 0);
-  parts.push(footerLenBuf);
-  parts.push(Buffer.from("PAR1"));
-
-  return Buffer.concat(parts);
-}
-
-function encodeColumnValues(type: string, values: (number | bigint | string)[]): Buffer {
-  if (type === "int64") {
-    const buf = Buffer.alloc(values.length * 8);
-    for (let i = 0; i < values.length; i++) {
-      buf.writeBigInt64LE(BigInt(values[i] as number), i * 8);
-    }
-    return buf;
-  }
-  if (type === "float64") {
-    const buf = Buffer.alloc(values.length * 8);
-    for (let i = 0; i < values.length; i++) {
-      buf.writeDoubleLE(values[i] as number, i * 8);
-    }
-    return buf;
-  }
-  if (type === "utf8") {
-    // BYTE_ARRAY encoding: each value is 4-byte length + bytes
-    const parts: Buffer[] = [];
-    for (const v of values) {
-      const str = Buffer.from(v as string, "utf8");
-      const lenBuf = Buffer.alloc(4);
-      lenBuf.writeUInt32LE(str.length, 0);
-      parts.push(lenBuf, str);
-    }
-    return Buffer.concat(parts);
-  }
-  throw new Error(`Unsupported type: ${type}`);
-}
+const ROW_GROUP_SIZE = 10_000; // 10K rows per row group → page-level skipping
 
 // --- Thrift compact protocol encoder ---
-
-function thriftField(fieldId: number, lastFieldId: number, typeId: number): { bytes: number[]; newLastId: number } {
-  const delta = fieldId - lastFieldId;
-  if (delta > 0 && delta < 16) {
-    return { bytes: [(delta << 4) | typeId], newLastId: fieldId };
-  }
-  // Full field ID
-  const zigzag = (fieldId << 1) ^ (fieldId >> 31);
-  const varint = encodeVarintArr(zigzag);
-  return { bytes: [typeId, ...varint], newLastId: fieldId };
-}
 
 function encodeVarintArr(value: number): number[] {
   const bytes: number[] = [];
@@ -135,63 +42,190 @@ function encodeBigVarint(value: bigint): number[] {
   return bytes;
 }
 
+function thriftField(fieldId: number, lastFieldId: number, typeId: number): { bytes: number[]; newLastId: number } {
+  const delta = fieldId - lastFieldId;
+  if (delta > 0 && delta < 16) {
+    return { bytes: [(delta << 4) | typeId], newLastId: fieldId };
+  }
+  const zigzag = (fieldId << 1) ^ (fieldId >> 31);
+  const varint = encodeVarintArr(zigzag);
+  return { bytes: [typeId, ...varint], newLastId: fieldId };
+}
+
+function thriftListHeader(size: number, elemType: number): number[] {
+  if (size < 15) return [(size << 4) | elemType];
+  return [0xf0 | elemType, ...encodeVarintArr(size)];
+}
+
+function thriftBinary(data: Buffer): number[] {
+  return [...encodeVarintArr(data.length), ...data];
+}
+
+// --- Column value encoding ---
+
+function encodeColumnValues(type: string, values: (number | bigint | string)[]): Buffer {
+  if (type === "int64") {
+    const buf = Buffer.alloc(values.length * 8);
+    for (let i = 0; i < values.length; i++) buf.writeBigInt64LE(BigInt(values[i] as number), i * 8);
+    return buf;
+  }
+  if (type === "float64") {
+    const buf = Buffer.alloc(values.length * 8);
+    for (let i = 0; i < values.length; i++) buf.writeDoubleLE(values[i] as number, i * 8);
+    return buf;
+  }
+  if (type === "utf8") {
+    const parts: Buffer[] = [];
+    for (const v of values) {
+      const str = Buffer.from(v as string, "utf8");
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32LE(str.length, 0);
+      parts.push(lenBuf, str);
+    }
+    return Buffer.concat(parts);
+  }
+  throw new Error(`Unsupported type: ${type}`);
+}
+
+function encodeStatValue(type: string, value: number | bigint | string): Buffer {
+  if (type === "int64") { const b = Buffer.alloc(8); b.writeBigInt64LE(BigInt(value as number), 0); return b; }
+  if (type === "float64") { const b = Buffer.alloc(8); b.writeDoubleLE(value as number, 0); return b; }
+  return Buffer.from(String(value), "utf8");
+}
+
+function physicalType(type: string): number {
+  return type === "int64" ? 2 : type === "float64" ? 5 : 6;
+}
+
+// --- Data page header ---
+
 function encodeDataPageHeader(uncompressedSize: number, numValues: number): Buffer {
-  // PageHeader Thrift struct:
-  //   field 1 (i32): type = 0 (DATA_PAGE)
-  //   field 2 (i32): uncompressed_page_size
-  //   field 3 (i32): compressed_page_size
-  //   field 5 (struct): DataPageHeader
-  //     field 1 (i32): num_values
-  //     field 2 (i32): encoding = 0 (PLAIN)
-  //     field 3 (i32): definition_level_encoding = 0 (PLAIN)
-  //     field 4 (i32): repetition_level_encoding = 0 (PLAIN)
   const bytes: number[] = [];
   let lastId = 0;
-
-  // field 1: type = DATA_PAGE (0)
   let f = thriftField(1, lastId, 5); lastId = f.newLastId;
-  bytes.push(...f.bytes, ...encodeZigzagVarint(0));
-
-  // field 2: uncompressed_page_size
+  bytes.push(...f.bytes, ...encodeZigzagVarint(0)); // type = DATA_PAGE
   f = thriftField(2, lastId, 5); lastId = f.newLastId;
   bytes.push(...f.bytes, ...encodeZigzagVarint(uncompressedSize));
-
-  // field 3: compressed_page_size
   f = thriftField(3, lastId, 5); lastId = f.newLastId;
   bytes.push(...f.bytes, ...encodeZigzagVarint(uncompressedSize));
-
-  // field 5: DataPageHeader struct
   f = thriftField(5, lastId, 12); lastId = f.newLastId;
   bytes.push(...f.bytes);
   {
-    let innerLast = 0;
-    // num_values
-    let fi = thriftField(1, innerLast, 5); innerLast = fi.newLastId;
+    let il = 0;
+    let fi = thriftField(1, il, 5); il = fi.newLastId;
     bytes.push(...fi.bytes, ...encodeZigzagVarint(numValues));
-    // encoding = PLAIN (0)
-    fi = thriftField(2, innerLast, 5); innerLast = fi.newLastId;
+    fi = thriftField(2, il, 5); il = fi.newLastId;
+    bytes.push(...fi.bytes, ...encodeZigzagVarint(0)); // PLAIN
+    fi = thriftField(3, il, 5); il = fi.newLastId;
     bytes.push(...fi.bytes, ...encodeZigzagVarint(0));
-    // def level encoding = PLAIN (0)
-    fi = thriftField(3, innerLast, 5); innerLast = fi.newLastId;
+    fi = thriftField(4, il, 5); il = fi.newLastId;
     bytes.push(...fi.bytes, ...encodeZigzagVarint(0));
-    // rep level encoding = PLAIN (0)
-    fi = thriftField(4, innerLast, 5); innerLast = fi.newLastId;
-    bytes.push(...fi.bytes, ...encodeZigzagVarint(0));
-    bytes.push(0x00); // struct end
+    bytes.push(0x00);
   }
-
-  bytes.push(0x00); // struct end
+  bytes.push(0x00);
   return Buffer.from(bytes);
 }
 
+// --- Statistics encoding (Thrift struct inside ColumnMetaData) ---
+
+function encodeStatistics(minVal: Buffer, maxVal: Buffer, numValues: number): number[] {
+  const bytes: number[] = [];
+  let sl = 0;
+  // field 3 (i64): num_values (legacy but some readers want it)
+  // field 5 (binary): max_value
+  let sf = thriftField(5, sl, 8); sl = sf.newLastId;
+  bytes.push(...sf.bytes, ...thriftBinary(maxVal));
+  // field 6 (binary): min_value
+  sf = thriftField(6, sl, 8); sl = sf.newLastId;
+  bytes.push(...sf.bytes, ...thriftBinary(minVal));
+  bytes.push(0x00);
+  return bytes;
+}
+
+// --- Multi-row-group Parquet writer ---
+
+interface Column {
+  name: string;
+  type: "int64" | "float64" | "utf8";
+  values: (number | bigint | string)[];
+}
+
+function writeParquet(columns: Column[], rowGroupSize = ROW_GROUP_SIZE): Buffer {
+  const numRows = columns[0].values.length;
+  const numRowGroups = Math.ceil(numRows / rowGroupSize);
+  const parts: Buffer[] = [];
+
+  parts.push(Buffer.from("PAR1"));
+
+  // Track per-row-group column chunk metadata
+  const rowGroupMetas: {
+    numRows: number;
+    chunks: {
+      type: number; codec: number; numValues: number;
+      dataPageOffset: number; totalCompressed: number; totalUncompressed: number;
+      pathInSchema: string[];
+      minValue: Buffer; maxValue: Buffer;
+    }[];
+  }[] = [];
+
+  for (let rg = 0; rg < numRowGroups; rg++) {
+    const startRow = rg * rowGroupSize;
+    const endRow = Math.min(startRow + rowGroupSize, numRows);
+    const rgRows = endRow - startRow;
+    const chunks: typeof rowGroupMetas[0]["chunks"] = [];
+
+    for (const col of columns) {
+      const slice = col.values.slice(startRow, endRow);
+      const dataPageOffset = parts.reduce((s, b) => s + b.length, 0);
+      const valBuf = encodeColumnValues(col.type, slice);
+      const pageHeader = encodeDataPageHeader(valBuf.length, rgRows);
+      parts.push(pageHeader, valBuf);
+      const totalSize = pageHeader.length + valBuf.length;
+
+      // Compute min/max for this slice
+      let minV = slice[0], maxV = slice[0];
+      for (let i = 1; i < slice.length; i++) {
+        if (slice[i] < minV) minV = slice[i];
+        if (slice[i] > maxV) maxV = slice[i];
+      }
+
+      chunks.push({
+        type: physicalType(col.type),
+        codec: 0,
+        numValues: rgRows,
+        dataPageOffset,
+        totalCompressed: totalSize,
+        totalUncompressed: totalSize,
+        pathInSchema: [col.name],
+        minValue: encodeStatValue(col.type, minV),
+        maxValue: encodeStatValue(col.type, maxV),
+      });
+    }
+    rowGroupMetas.push({ numRows: rgRows, chunks });
+  }
+
+  // Build Thrift footer
+  const footer = encodeParquetFooter(columns, rowGroupMetas, numRows);
+  parts.push(footer);
+  const footerLenBuf = Buffer.alloc(4);
+  footerLenBuf.writeUInt32LE(footer.length, 0);
+  parts.push(footerLenBuf, Buffer.from("PAR1"));
+
+  return Buffer.concat(parts);
+}
+
 function encodeParquetFooter(
-  columns: { name: string; type: string }[],
-  chunkMetas: {
-    type: number; codec: number; numValues: number;
-    dataPageOffset: number; totalCompressed: number; totalUncompressed: number;
-    pathInSchema: string[];
+  columns: Column[],
+  rowGroups: {
+    numRows: number;
+    chunks: {
+      type: number; codec: number; numValues: number;
+      dataPageOffset: number; totalCompressed: number; totalUncompressed: number;
+      pathInSchema: string[];
+      minValue: Buffer; maxValue: Buffer;
+    }[];
   }[],
-  numRows: number,
+  totalRows: number,
 ): Buffer {
   const bytes: number[] = [];
   let lastId = 0;
@@ -202,22 +236,14 @@ function encodeParquetFooter(
 
   // field 2 (list<SchemaElement>): schema
   f = thriftField(2, lastId, 9); lastId = f.newLastId;
-  bytes.push(...f.bytes);
-  // list header: size = columns.length + 1 (root + leaves), elemType = 12 (struct)
-  const schemaSize = columns.length + 1;
-  if (schemaSize < 15) {
-    bytes.push((schemaSize << 4) | 12);
-  } else {
-    bytes.push(0xfc, ...encodeVarintArr(schemaSize));
-  }
+  bytes.push(...f.bytes, ...thriftListHeader(columns.length + 1, 12));
+
   // Root schema element
   {
     let sl = 0;
-    // field 4 (binary): name = "schema"
     let sf = thriftField(4, sl, 8); sl = sf.newLastId;
     const nameBytes = Buffer.from("schema");
-    bytes.push(...sf.bytes, ...encodeVarintArr(nameBytes.length), ...nameBytes);
-    // field 5 (i32): num_children
+    bytes.push(...sf.bytes, ...thriftBinary(nameBytes));
     sf = thriftField(5, sl, 5); sl = sf.newLastId;
     bytes.push(...sf.bytes, ...encodeZigzagVarint(columns.length));
     bytes.push(0x00);
@@ -225,18 +251,12 @@ function encodeParquetFooter(
   // Leaf schema elements
   for (const col of columns) {
     let sl = 0;
-    // field 1 (i32): type
-    const physType = col.type === "int64" ? 2 : col.type === "float64" ? 5 : 6;
     let sf = thriftField(1, sl, 5); sl = sf.newLastId;
-    bytes.push(...sf.bytes, ...encodeZigzagVarint(physType));
-    // field 3 (i32): repetition_type = REQUIRED (0)
+    bytes.push(...sf.bytes, ...encodeZigzagVarint(physicalType(col.type)));
     sf = thriftField(3, sl, 5); sl = sf.newLastId;
-    bytes.push(...sf.bytes, ...encodeZigzagVarint(0));
-    // field 4 (binary): name
+    bytes.push(...sf.bytes, ...encodeZigzagVarint(0)); // REQUIRED
     sf = thriftField(4, sl, 8); sl = sf.newLastId;
-    const nameB = Buffer.from(col.name);
-    bytes.push(...sf.bytes, ...encodeVarintArr(nameB.length), ...nameB);
-    // field 6 (i32): converted_type (0 = UTF8 for BYTE_ARRAY)
+    bytes.push(...sf.bytes, ...thriftBinary(Buffer.from(col.name)));
     if (col.type === "utf8") {
       sf = thriftField(6, sl, 5); sl = sf.newLastId;
       bytes.push(...sf.bytes, ...encodeZigzagVarint(0)); // UTF8
@@ -246,27 +266,19 @@ function encodeParquetFooter(
 
   // field 3 (i64): num_rows
   f = thriftField(3, lastId, 6); lastId = f.newLastId;
-  bytes.push(...f.bytes, ...encodeZigzag64(BigInt(numRows)));
+  bytes.push(...f.bytes, ...encodeZigzag64(BigInt(totalRows)));
 
-  // field 4 (list<RowGroup>): row_groups — 1 row group
+  // field 4 (list<RowGroup>): row_groups
   f = thriftField(4, lastId, 9); lastId = f.newLastId;
-  bytes.push(...f.bytes);
-  bytes.push((1 << 4) | 12); // list of 1 struct
+  bytes.push(...f.bytes, ...thriftListHeader(rowGroups.length, 12));
 
-  // RowGroup
-  {
+  for (const rg of rowGroups) {
     let rgl = 0;
-    // field 1 (list<ColumnChunk>): columns
+    // field 1 (list<ColumnChunk>)
     let rgf = thriftField(1, rgl, 9); rgl = rgf.newLastId;
-    bytes.push(...rgf.bytes);
-    if (chunkMetas.length < 15) {
-      bytes.push((chunkMetas.length << 4) | 12);
-    } else {
-      bytes.push(0xfc, ...encodeVarintArr(chunkMetas.length));
-    }
+    bytes.push(...rgf.bytes, ...thriftListHeader(rg.chunks.length, 12));
 
-    for (const cm of chunkMetas) {
-      // ColumnChunk struct
+    for (const cm of rg.chunks) {
       let ccl = 0;
       // field 2 (i64): file_offset
       let ccf = thriftField(2, ccl, 6); ccl = ccf.newLastId;
@@ -276,48 +288,38 @@ function encodeParquetFooter(
       bytes.push(...ccf.bytes);
       {
         let cml = 0;
-        // field 1 (i32): type
         let cmf = thriftField(1, cml, 5); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, ...encodeZigzagVarint(cm.type));
-        // field 2 (list<i32>): encodings = [PLAIN]
         cmf = thriftField(2, cml, 9); cml = cmf.newLastId;
-        bytes.push(...cmf.bytes, (1 << 4) | 5, ...encodeZigzagVarint(0));
-        // field 3 (list<string>): path_in_schema
+        bytes.push(...cmf.bytes, (1 << 4) | 5, ...encodeZigzagVarint(0)); // PLAIN
         cmf = thriftField(3, cml, 9); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, (cm.pathInSchema.length << 4) | 8);
-        for (const p of cm.pathInSchema) {
-          const pb = Buffer.from(p);
-          bytes.push(...encodeVarintArr(pb.length), ...pb);
-        }
-        // field 4 (i32): codec = UNCOMPRESSED
+        for (const p of cm.pathInSchema) bytes.push(...thriftBinary(Buffer.from(p)));
         cmf = thriftField(4, cml, 5); cml = cmf.newLastId;
-        bytes.push(...cmf.bytes, ...encodeZigzagVarint(0));
-        // field 5 (i64): num_values
+        bytes.push(...cmf.bytes, ...encodeZigzagVarint(0)); // UNCOMPRESSED
         cmf = thriftField(5, cml, 6); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, ...encodeZigzag64(BigInt(cm.numValues)));
-        // field 6 (i64): total_uncompressed_size
         cmf = thriftField(6, cml, 6); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, ...encodeZigzag64(BigInt(cm.totalUncompressed)));
-        // field 7 (i64): total_compressed_size
         cmf = thriftField(7, cml, 6); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, ...encodeZigzag64(BigInt(cm.totalCompressed)));
-        // field 9 (i64): data_page_offset
         cmf = thriftField(9, cml, 6); cml = cmf.newLastId;
         bytes.push(...cmf.bytes, ...encodeZigzag64(BigInt(cm.dataPageOffset)));
+        // field 12 (struct): statistics — min/max values
+        cmf = thriftField(12, cml, 12); cml = cmf.newLastId;
+        bytes.push(...cmf.bytes, ...encodeStatistics(cm.minValue, cm.maxValue, cm.numValues));
         bytes.push(0x00); // end ColumnMetaData
       }
       bytes.push(0x00); // end ColumnChunk
     }
 
-    // field 2 (i64): total_byte_size (approximate)
-    const totalBytes = chunkMetas.reduce((s, c) => s + c.totalCompressed, 0);
+    // field 2 (i64): total_byte_size
+    const totalBytes = rg.chunks.reduce((s, c) => s + c.totalCompressed, 0);
     rgf = thriftField(2, rgl, 6); rgl = rgf.newLastId;
     bytes.push(...rgf.bytes, ...encodeZigzag64(BigInt(totalBytes)));
-
     // field 3 (i64): num_rows
     rgf = thriftField(3, rgl, 6); rgl = rgf.newLastId;
-    bytes.push(...rgf.bytes, ...encodeZigzag64(BigInt(numRows)));
-
+    bytes.push(...rgf.bytes, ...encodeZigzag64(BigInt(rg.numRows)));
     bytes.push(0x00); // end RowGroup
   }
 
@@ -363,8 +365,6 @@ function generateIcebergMetadata(
     "default-sort-order-id": 0,
   };
 
-  // Minimal Avro manifest list — embed the parquet path as a recognizable string
-  // The extractParquetPathsFromManifest function uses regex to find .parquet paths
   const pathStr = `data/${parquetPath}`;
   const avroContent = Buffer.from(
     `Obj\x01\x04\x16avro.schema\xb2\x01{"type":"record","name":"manifest_file","fields":[{"name":"manifest_path","type":"string"}]}\x00` +
@@ -384,12 +384,10 @@ async function main(): Promise<void> {
   const ROWS_100K = 100_000;
   const ROWS_1M = 1_000_000;
 
-  // --- Generate 100K row Parquet (3 columns: id int64, value float64, category utf8) ---
-  console.log("Generating bench_100k_3col.parquet ...");
+  // 100K rows, 3 columns, 10 row groups of 10K each
+  console.log("Generating bench_100k_3col.parquet (10 row groups × 10K rows)...");
   {
-    const ids: bigint[] = [];
-    const values: number[] = [];
-    const categories: string[] = [];
+    const ids: bigint[] = [], values: number[] = [], categories: string[] = [];
     const cats = ["alpha", "beta", "gamma", "delta", "epsilon"];
     for (let i = 0; i < ROWS_100K; i++) {
       ids.push(BigInt(i));
@@ -405,11 +403,10 @@ async function main(): Promise<void> {
     console.log(`  Written: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
   }
 
-  // --- Generate 100K row Parquet (2 numeric columns only — scan speed test) ---
-  console.log("Generating bench_100k_numeric.parquet ...");
+  // 100K rows, 2 numeric columns, 10 row groups
+  console.log("Generating bench_100k_numeric.parquet (10 row groups × 10K rows)...");
   {
-    const ids: bigint[] = [];
-    const values: number[] = [];
+    const ids: bigint[] = [], values: number[] = [];
     for (let i = 0; i < ROWS_100K; i++) {
       ids.push(BigInt(i));
       values.push(Math.random() * 10000);
@@ -422,11 +419,10 @@ async function main(): Promise<void> {
     console.log(`  Written: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
   }
 
-  // --- Generate 1M row Parquet (2 numeric columns — stress test) ---
-  console.log("Generating bench_1m_numeric.parquet ...");
+  // 1M rows, 2 numeric columns, 100 row groups of 10K each
+  console.log("Generating bench_1m_numeric.parquet (100 row groups × 10K rows)...");
   {
-    const ids: bigint[] = [];
-    const values: number[] = [];
+    const ids: bigint[] = [], values: number[] = [];
     for (let i = 0; i < ROWS_1M; i++) {
       ids.push(BigInt(i));
       values.push(Math.random() * 100000);
@@ -439,15 +435,14 @@ async function main(): Promise<void> {
     console.log(`  Written: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
   }
 
-  // --- Generate Iceberg table (100K rows) ---
-  console.log("Generating bench_iceberg_100k/ ...");
+  // Iceberg table (100K rows, 10 row groups)
+  console.log("Generating bench_iceberg_100k/ (10 row groups × 10K rows)...");
   {
     const iceDir = join(OUT_DIR, "bench_iceberg_100k");
     mkdirSync(join(iceDir, "metadata"), { recursive: true });
     mkdirSync(join(iceDir, "data"), { recursive: true });
 
-    const ids: bigint[] = [];
-    const values: number[] = [];
+    const ids: bigint[] = [], values: number[] = [];
     for (let i = 0; i < ROWS_100K; i++) {
       ids.push(BigInt(i));
       values.push(Math.random() * 1000);
@@ -468,11 +463,7 @@ async function main(): Promise<void> {
       ROWS_100K,
     );
     writeFileSync(join(iceDir, "metadata", "v1.metadata.json"), metadataJson);
-    writeFileSync(
-      join(iceDir, "metadata", `snap-${Date.now()}-0.avro`),
-      manifestListAvro,
-    );
-
+    writeFileSync(join(iceDir, "metadata", `snap-${Date.now()}-0.avro`), manifestListAvro);
     console.log(`  Parquet: ${(parquetBuf.length / 1024 / 1024).toFixed(1)} MB`);
   }
 
