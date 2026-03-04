@@ -80,6 +80,10 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
     }
   }
 
+  if (outPos < uncompressedLen) {
+    // Decompression terminated early — return only the valid portion
+    return output.subarray(0, outPos);
+  }
   return output;
 }
 
@@ -93,7 +97,7 @@ function decodeRleBitPacked(
 ): { values: number[]; bytesRead: number } {
   const values: number[] = [];
   let pos = offset;
-  const mask = (1 << bitWidth) - 1;
+  const mask = bitWidth >= 32 ? 0xFFFFFFFF : (1 << bitWidth) - 1;
 
   while (pos < bytes.length && values.length < maxValues) {
     const { value: header, bytesRead } = readVarint(bytes, pos);
@@ -433,9 +437,12 @@ export function decodeParquetColumnChunk(
       dataStart += header.defLevelsByteLength;
 
       // Actual data (may be compressed)
+      // V2 spec: uncompressed_page_size includes rep/def level bytes which are NOT compressed,
+      // so subtract them to get the actual data payload uncompressed size.
       let dataPayload: Uint8Array = pageData.subarray(dataStart);
       if (header.isCompressed) {
-        dataPayload = decompressPage(dataPayload, pageEncoding.compression, header.uncompressedSize, wasm);
+        const dataUncompressedSize = header.uncompressedSize - header.repLevelsByteLength - header.defLevelsByteLength;
+        dataPayload = decompressPage(dataPayload, pageEncoding.compression, dataUncompressedSize, wasm);
       }
 
       // Decode def levels to find nulls

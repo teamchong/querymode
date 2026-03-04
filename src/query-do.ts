@@ -517,14 +517,19 @@ export class QueryDO implements DurableObject {
       }
     }
 
-    // Build per-page ranges, applying page-level skip
+    // Build per-page ranges, applying page-level skip.
+    // Track non-skipped page infos per column so buffer indices stay aligned.
     const ranges: { column: string; offset: number; length: number }[] = [];
+    const columnPageInfos = new Map<string, typeof cols[0]["pages"]>();
     let pagesSkipped = 0;
     for (const col of cols) {
+      const keptPages: typeof col.pages = [];
       for (const page of col.pages) {
         if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) { pagesSkipped++; continue; }
+        keptPages.push(page);
         ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
       }
+      columnPageInfos.set(col.name, keptPages);
     }
 
     // Cache-before-fetch: check WASM buffer pool for each range
@@ -613,10 +618,13 @@ export class QueryDO implements DurableObject {
         const pages = columnData.get(col.name);
         if (!pages?.length) { decodedColumns.set(col.name, []); continue; }
 
+        // Use non-skipped page infos (aligned with columnData buffers, not col.pages)
+        const keptPageInfos = columnPageInfos.get(col.name) ?? col.pages;
+
         // Concatenate all page buffers for this column (may span multiple row groups)
         const allValues: (number | bigint | string | boolean | null)[] = [];
         for (let pi = 0; pi < pages.length; pi++) {
-          const pageInfo = col.pages[pi];
+          const pageInfo = keptPageInfos[pi];
           const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" };
 
           // Include dictionary page if present: fetch it from R2 and prepend
@@ -673,19 +681,23 @@ export class QueryDO implements DurableObject {
         rows.push(row);
       }
 
-      // Apply filters in JS
+      // Apply filters in JS (coerce bigint↔number for cross-type comparison)
       if (query.filters.length > 0) {
         rows = rows.filter(row => {
           for (const f of query.filters) {
             const val = row[f.column];
             if (val == null) return false;
+            // Coerce bigint↔number: int64 columns decode as bigint, JSON filter values are numbers
+            let cv = val, cf = f.value;
+            if (typeof cv === "bigint" && typeof cf === "number") cf = BigInt(Math.trunc(cf));
+            else if (typeof cv === "number" && typeof cf === "bigint") cv = BigInt(Math.trunc(cv));
             switch (f.op) {
-              case "eq": if (val !== f.value) return false; break;
-              case "neq": if (val === f.value) return false; break;
-              case "gt": if (!(val > f.value)) return false; break;
-              case "gte": if (!(val >= f.value)) return false; break;
-              case "lt": if (!(val < f.value)) return false; break;
-              case "lte": if (!(val <= f.value)) return false; break;
+              case "eq": if (cv !== cf) return false; break;
+              case "neq": if (cv === cf) return false; break;
+              case "gt": if (!(cv > (cf as number | bigint | string))) return false; break;
+              case "gte": if (!(cv >= (cf as number | bigint | string))) return false; break;
+              case "lt": if (!(cv < (cf as number | bigint | string))) return false; break;
+              case "lte": if (!(cv <= (cf as number | bigint | string))) return false; break;
             }
           }
           return true;
@@ -722,7 +734,8 @@ export class QueryDO implements DurableObject {
     for (const col of cols) {
       const pages = columnData.get(col.name);
       if (!pages?.length) continue;
-      if (!this.wasmEngine.registerColumn(query.table, col.name, col.dtype, pages, col.pages, col.listDimension)) {
+      const keptPageInfos = columnPageInfos.get(col.name) ?? col.pages;
+      if (!this.wasmEngine.registerColumn(query.table, col.name, col.dtype, pages, keptPageInfos, col.listDimension)) {
         throw new Error(`WASM OOM: failed to register column "${col.name}" for table "${query.table}"`);
       }
     }

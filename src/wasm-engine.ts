@@ -171,19 +171,24 @@ export class WasmEngine {
     return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
   }
 
-  /** Decompress GZIP data using the Zig std.compress.gzip implementation. */
+  /** Decompress GZIP data using the Zig std.compress.gzip implementation. Retries with larger buffer if needed. */
   decompressGzip(compressed: Uint8Array): Uint8Array {
     const inPtr = this.exports.alloc(compressed.length);
     if (!inPtr) throw new Error("WASM OOM allocating gzip input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
-    const capacity = compressed.length * 4;
-    const outPtr = this.exports.alloc(capacity);
-    if (!outPtr) throw new Error("WASM OOM allocating gzip output");
+    // Try increasing capacities: 4x, 16x, 64x (handles high compression ratios)
+    for (const multiplier of [4, 16, 64]) {
+      const capacity = compressed.length * multiplier;
+      const outPtr = this.exports.alloc(capacity);
+      if (!outPtr) throw new Error("WASM OOM allocating gzip output");
 
-    const written = this.exports.gzip_decompress(inPtr, compressed.length, outPtr, capacity);
-    if (written === 0 && compressed.length > 0) throw new Error("gzip decompression failed");
-    return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
+      const written = this.exports.gzip_decompress(inPtr, compressed.length, outPtr, capacity);
+      if (written > 0) return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
+      // written === 0 && capacity may have been too small — retry with larger buffer
+      if (written === 0 && compressed.length === 0) return new Uint8Array(0);
+    }
+    throw new Error("gzip decompression failed (output exceeds 64x compressed size)");
   }
 
   /** Decompress LZ4 block data (Parquet hadoop codec). */
@@ -485,7 +490,11 @@ export class WasmEngine {
   }
 
   executeQuery(query: QueryDescriptor): Row[] | null {
+    const MAX_SQL_LENGTH = 64 * 1024; // 64KB — WASM SQL input buffer is fixed-size
     const sqlBytes = textEncoder.encode(queryToSql(query));
+    if (sqlBytes.length > MAX_SQL_LENGTH) {
+      throw new Error(`SQL query too large (${sqlBytes.length} bytes, max ${MAX_SQL_LENGTH})`);
+    }
     const sqlBufPtr = this.exports.getSqlInputBuffer();
     new Uint8Array(this.exports.memory.buffer, sqlBufPtr, sqlBytes.length).set(sqlBytes);
     this.exports.setSqlInputLength(sqlBytes.length);
@@ -855,17 +864,21 @@ function parseWasmResult(memoryBuffer: ArrayBuffer, ptr: number, size: number): 
 
   const rows: Row[] = Array.from({ length: numRows }, () => ({}));
   let dp = dataStart;
+  const end = ptr + size;
 
   for (const col of columns) {
     for (let r = 0; r < numRows; r++) {
+      if (dp + 1 > end) return rows.slice(0, r > 0 ? r : 0); // truncated result
       switch (col.type) {
-        case WasmColumnType.Int64:   rows[r][col.name] = view.getBigInt64(dp, true); dp += 8; break;
-        case WasmColumnType.Float64: rows[r][col.name] = view.getFloat64(dp, true); dp += 8; break;
-        case WasmColumnType.Int32:   rows[r][col.name] = view.getInt32(dp, true); dp += 4; break;
-        case WasmColumnType.Float32: rows[r][col.name] = view.getFloat32(dp, true); dp += 4; break;
+        case WasmColumnType.Int64:   if (dp + 8 > end) return rows; rows[r][col.name] = view.getBigInt64(dp, true); dp += 8; break;
+        case WasmColumnType.Float64: if (dp + 8 > end) return rows; rows[r][col.name] = view.getFloat64(dp, true); dp += 8; break;
+        case WasmColumnType.Int32:   if (dp + 4 > end) return rows; rows[r][col.name] = view.getInt32(dp, true); dp += 4; break;
+        case WasmColumnType.Float32: if (dp + 4 > end) return rows; rows[r][col.name] = view.getFloat32(dp, true); dp += 4; break;
         case WasmColumnType.Bool:    rows[r][col.name] = buf[dp] !== 0; dp += 1; break;
         case WasmColumnType.String: {
+          if (dp + 4 > end) return rows;
           const len = view.getUint32(dp, true); dp += 4;
+          if (dp + len > end) return rows;
           rows[r][col.name] = textDecoder.decode(buf.subarray(dp, dp + len)); dp += len;
           break;
         }

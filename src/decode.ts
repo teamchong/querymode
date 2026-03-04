@@ -9,9 +9,13 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
     if (filter.column !== columnName) continue;
     if (page.minValue === undefined || page.maxValue === undefined) continue;
 
-    const { minValue: min, maxValue: max } = page;
-    const val = filter.value;
+    let { minValue: min, maxValue: max } = page;
+    let val = filter.value;
     if (typeof val === "object") continue;
+
+    // Coerce bigint↔number for cross-type comparisons
+    if (typeof min === "bigint" && typeof val === "number") val = BigInt(Math.trunc(val as number));
+    else if (typeof min === "number" && typeof val === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
 
     switch (filter.op) {
       case "gt":  if (max <= val) return true; break;
@@ -282,6 +286,13 @@ function vectorSearch(
 
 // --- Filters ---
 
+/** Coerce bigint↔number for cross-type comparisons (JSON filter values are numbers, int64 columns decode as bigint). */
+function coerceCompare(a: unknown, b: unknown): [unknown, unknown] {
+  if (typeof a === "bigint" && typeof b === "number") return [a, BigInt(Math.trunc(b))];
+  if (typeof a === "number" && typeof b === "bigint") return [BigInt(Math.trunc(a)), b];
+  return [a, b];
+}
+
 export function matchesFilter(
   val: number | bigint | string | boolean | Float32Array | null,
   filter: QueryDescriptor["filters"][0],
@@ -289,13 +300,13 @@ export function matchesFilter(
   if (val === null) return false;
   const t = filter.value;
   switch (filter.op) {
-    case "eq":  return val === t;
-    case "neq": return val !== t;
-    case "gt":  return val > (t as number | bigint | string);
-    case "gte": return val >= (t as number | bigint | string);
-    case "lt":  return val < (t as number | bigint | string);
-    case "lte": return val <= (t as number | bigint | string);
-    case "in":  return Array.isArray(t) && t.includes(val as number | bigint | string);
+    case "eq":  { const [a, b] = coerceCompare(val, t); return a === b; }
+    case "neq": { const [a, b] = coerceCompare(val, t); return a !== b; }
+    case "gt":  { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) > (b as number | bigint | string); }
+    case "gte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) >= (b as number | bigint | string); }
+    case "lt":  { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) < (b as number | bigint | string); }
+    case "lte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) <= (b as number | bigint | string); }
+    case "in":  return Array.isArray(t) && t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
     default:    return true;
   }
 }
