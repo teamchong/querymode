@@ -441,7 +441,11 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
     if (query.sortColumn && !columnNames.has(query.sortColumn)) {
-      throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
+      const aggAliases = new Set((query.aggregates ?? []).map(a => a.alias ?? `${a.fn}_${a.column}`));
+      const groupCols = new Set(query.groupBy ?? []);
+      if (!aggAliases.has(query.sortColumn) && !groupCols.has(query.sortColumn)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
+      }
     }
 
     // Step 2: Determine columns to fetch (projection + filter + sort columns)
@@ -667,7 +671,12 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
     if (query.sortColumn && !schemaColumnNames.has(query.sortColumn)) {
-      throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
+      // Allow sorting by aggregate output aliases (e.g., "avg_amount", "sum_revenue")
+      const aggAliases = new Set((query.aggregates ?? []).map(a => a.alias ?? `${a.fn}_${a.column}`));
+      const groupCols = new Set(query.groupBy ?? []);
+      if (!aggAliases.has(query.sortColumn) && !groupCols.has(query.sortColumn)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
+      }
     }
 
     // Execute query across all fragments
