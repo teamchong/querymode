@@ -392,6 +392,150 @@ export function lanceV2ToColumnMeta(colInfos: LanceV2ColumnInfo[]): ColumnMeta[]
 }
 
 /**
+ * Compute min/max statistics for Lance v2 columns by reading page data.
+ * Lance v2 protobuf doesn't store page-level stats, so we compute them
+ * on first access and populate the ColumnMeta pages in place.
+ *
+ * Only computes stats for numeric types (int8-int64, uint8-uint64, float32, float64)
+ * since those benefit most from page skipping.
+ *
+ * @param columns - ColumnMeta array to populate with stats (mutated in place)
+ * @param readPage - Function to read a page's raw bytes given offset and length
+ */
+export async function computeLanceV2Stats(
+  columns: ColumnMeta[],
+  readPage: (byteOffset: number, byteLength: number) => Promise<ArrayBuffer>,
+): Promise<void> {
+  const numericTypes = new Set([
+    "int8", "int16", "int32", "int64",
+    "uint8", "uint16", "uint32", "uint64",
+    "float32", "float64",
+  ]);
+
+  for (const col of columns) {
+    if (!numericTypes.has(col.dtype)) continue;
+
+    for (const page of col.pages) {
+      // Skip if stats already populated
+      if (page.minValue !== undefined) continue;
+
+      try {
+        const buf = await readPage(Number(page.byteOffset), page.byteLength);
+        const stats = computePageStats(buf, col.dtype, page.rowCount, page.nullCount, page.dataOffsetInPage);
+        if (stats) {
+          page.minValue = stats.min;
+          page.maxValue = stats.max;
+        }
+      } catch {
+        // Silently skip — stats are an optimization, not required
+      }
+    }
+  }
+}
+
+/** Compute min/max from a raw page buffer for a numeric dtype. */
+function computePageStats(
+  buf: ArrayBuffer,
+  dtype: string,
+  rowCount: number,
+  nullCount: number,
+  dataOffsetInPage?: number,
+): { min: number | bigint; max: number | bigint } | null {
+  let dataBuf = buf;
+
+  // Strip null bitmap for nullable columns
+  if (nullCount > 0 && rowCount > 0) {
+    const stripBytes = dataOffsetInPage ?? Math.ceil(rowCount / 8);
+    dataBuf = buf.slice(stripBytes);
+  }
+
+  const view = new DataView(dataBuf);
+  const numValues = dataOffsetInPage !== undefined ? rowCount : rowCount - nullCount;
+  if (numValues <= 0) return null;
+
+  // Read null bitmap to skip null positions
+  let nullSet: Set<number> | null = null;
+  if (nullCount > 0 && rowCount > 0) {
+    const bitmapBytes = Math.ceil(rowCount / 8);
+    if (buf.byteLength >= bitmapBytes) {
+      const bytes = new Uint8Array(buf, 0, bitmapBytes);
+      nullSet = new Set<number>();
+      let idx = 0;
+      for (let b = 0; b < bitmapBytes && idx < rowCount; b++) {
+        for (let bit = 0; bit < 8 && idx < rowCount; bit++, idx++) {
+          if (((bytes[b] >> bit) & 1) === 0) nullSet.add(idx);
+        }
+      }
+    }
+  }
+
+  switch (dtype) {
+    case "float64": {
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getFloat64(i * 8, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "float32": {
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getFloat32(i * 4, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "int64": {
+      let min = BigInt("9223372036854775807"), max = BigInt("-9223372036854775808");
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getBigInt64(i * 8, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "int32": {
+      let min = 2147483647, max = -2147483648;
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getInt32(i * 4, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "int16": {
+      let min = 32767, max = -32768;
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getInt16(i * 2, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "int8": {
+      let min = 127, max = -128;
+      for (let i = 0; i < numValues; i++) {
+        if (nullSet?.has(i)) continue;
+        const v = view.getInt8(i);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * Decode Lance v2 utf8 data from a buffer containing [offsets_array | padding | string_data].
  * The offsets array is (rowCount) i64 values representing cumulative end positions.
  * String data follows at the position after offsets + alignment padding.

@@ -3,6 +3,7 @@ import type {
   AppendResult,
   ExplainResult,
   FilterOp,
+  JoinDescriptor,
   QueryResult,
   Row,
   VectorSearchParams,
@@ -32,6 +33,7 @@ export class TableQuery<T extends Row = Row> {
   private _aggregates: AggregateOp[] = [];
   private _groupBy: string[] = [];
   private _cacheTTL?: number;
+  private _join?: JoinDescriptor;
   private _executor: QueryExecutor;
 
   constructor(table: string, executor: QueryExecutor) {
@@ -99,6 +101,24 @@ export class TableQuery<T extends Row = Row> {
   /** SIMD vector similarity search on a fixed_size_list column. */
   vector(column: string, queryVector: Float32Array, topK: number): this {
     this._vectorSearch = { column, queryVector, topK };
+    return this;
+  }
+
+  /**
+   * Join with another table query. Build side (right) is hashed, probe side (left) streams through.
+   *
+   * Usage:
+   *   const orders = qm.table("orders");
+   *   const users = qm.table("users");
+   *   const result = await orders.join(users, { left: "user_id", right: "id" }).exec();
+   */
+  join(other: TableQuery, on: { left: string; right: string }, type?: "inner" | "left"): this {
+    this._join = {
+      right: other.toDescriptor(),
+      leftKey: on.left,
+      rightKey: on.right,
+      type: type ?? "inner",
+    };
     return this;
   }
 
@@ -186,6 +206,7 @@ export class TableQuery<T extends Row = Row> {
       aggregates: this._aggregates.length > 0 ? this._aggregates : undefined,
       groupBy: this._groupBy.length > 0 ? this._groupBy : undefined,
       cacheTTL: this._cacheTTL,
+      join: this._join,
     };
   }
 }
@@ -203,6 +224,7 @@ export interface QueryDescriptor {
   aggregates?: AggregateOp[];
   groupBy?: string[];
   cacheTTL?: number;
+  join?: JoinDescriptor;
 }
 
 /** Interface for query execution backends (local, DO, browser) */

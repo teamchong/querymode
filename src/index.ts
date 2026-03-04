@@ -25,6 +25,7 @@ export type {
   FragmentInfo,
   FilterOp,
   AggregateOp,
+  JoinDescriptor,
   QueryResult,
   Row,
   VectorSearchParams,
@@ -74,8 +75,8 @@ export class QueryMode {
   }
 
   /** Create an QueryMode client for local use (Node/Bun, reads files from disk or URLs). */
-  static local(wasmModule?: WebAssembly.Module): QueryMode {
-    const executor = new LocalExecutor(wasmModule);
+  static local(opts?: { wasmModule?: WebAssembly.Module; memoryBudgetBytes?: number }): QueryMode {
+    const executor = opts ? new LocalExecutor(opts) : new LocalExecutor();
     return new QueryMode(executor);
   }
 

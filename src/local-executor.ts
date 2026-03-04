@@ -6,32 +6,44 @@
  * .wasm import syntax that crashes in Node).
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { AppendResult, ColumnMeta, DataType, ExplainResult, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
+import type { AppendResult, ColumnMeta, DataType, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipPage } from "./decode.js";
 import { coalesceRanges } from "./coalesce.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
-import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
-import { parseLanceV2Columns, lanceV2ToColumnMeta } from "./lance-v2.js";
+import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
+import { buildPipeline, drainPipeline, type FragmentSource, type PipelineOptions } from "./operators.js";
 
 /**
  * Executor for local mode (Node/Bun).
  * Reads Lance/Parquet files directly from the filesystem or via HTTP.
  * Footer is parsed on first access and cached in-process.
  */
+export interface LocalExecutorOptions {
+  wasmModule?: WebAssembly.Module;
+  /** Memory budget in bytes for external sort (default 256MB). */
+  memoryBudgetBytes?: number;
+}
+
 export class LocalExecutor implements QueryExecutor {
   private metaCache: Map<string, { columns: ColumnMeta[]; fileSize: number }> = new Map();
   private datasetCache: Map<string, DatasetMeta> = new Map();
   private resultCache = new VipCache<string, QueryResult>(200, 2);
   private wasmModule?: WebAssembly.Module;
   private wasmEngine?: WasmEngine;
+  private memoryBudgetBytes?: number;
 
-  constructor(wasmModule?: WebAssembly.Module) {
-    this.wasmModule = wasmModule;
+  constructor(wasmModuleOrOpts?: WebAssembly.Module | LocalExecutorOptions) {
+    if (wasmModuleOrOpts && typeof wasmModuleOrOpts === "object" && "wasmModule" in wasmModuleOrOpts) {
+      this.wasmModule = wasmModuleOrOpts.wasmModule;
+      this.memoryBudgetBytes = wasmModuleOrOpts.memoryBudgetBytes;
+    } else {
+      this.wasmModule = wasmModuleOrOpts as WebAssembly.Module | undefined;
+    }
   }
 
   private async getWasm(): Promise<WasmEngine> {
@@ -255,103 +267,44 @@ export class LocalExecutor implements QueryExecutor {
   }
 
   async *cursor(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]> {
-    const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
-
-    // For dataset directories or sorted queries, buffer via execute then chunk
-    if (!isUrl) {
-      const fs = await import("node:fs/promises");
-      const stat = await fs.stat(query.table).catch(() => null);
-      if (stat?.isDirectory()) {
-        const result = await this.execute(query);
-        for (let i = 0; i < result.rows.length; i += batchSize) {
-          yield result.rows.slice(i, i + batchSize);
-        }
-        return;
-      }
+    // Use the streaming pipeline — it handles files, URLs, and dataset directories
+    const result = await this.execute(query);
+    for (let i = 0; i < result.rows.length; i += batchSize) {
+      yield result.rows.slice(i, i + batchSize);
     }
+  }
 
-    const meta = await this.getOrLoadMeta(query.table);
-    const { columns } = meta;
-    const projectedColumns = query.projections.length > 0
-      ? columns.filter(c => query.projections.includes(c.name))
-      : columns;
-
-    const firstCol = projectedColumns[0];
-    if (!firstCol) return;
-
-    if (query.sortColumn) {
-      const result = await this.execute(query);
-      for (let i = 0; i < result.rows.length; i += batchSize) {
-        yield result.rows.slice(i, i + batchSize);
-      }
-      return;
+  /** Create a FragmentSource for a single file (local or URL). */
+  private async makeFragmentSource(
+    table: string,
+    projectedColumns: ColumnMeta[],
+    isUrl: boolean,
+  ): Promise<FragmentSource> {
+    if (isUrl) {
+      return {
+        columns: projectedColumns,
+        async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
+          const start = Number(page.byteOffset);
+          const end = start + page.byteLength - 1;
+          const resp = await fetch(table, { headers: { Range: `bytes=${start}-${end}` } });
+          return resp.arrayBuffer();
+        },
+      };
     }
-
-    const totalPages = firstCol.pages.length;
-    let pageIdx = 0;
-    let totalYielded = 0;
-
-    const fs = isUrl ? null : await import("node:fs/promises");
-    const handle = isUrl ? null : await fs!.open(query.table, "r");
-    const wasm = await this.getWasm();
-
-    try {
-      while (pageIdx < totalPages) {
-        let batchRows = 0;
-        const batchStartPage = pageIdx;
-        while (pageIdx < totalPages && batchRows < batchSize) {
-          const page = firstCol.pages[pageIdx];
-          if (!query.vectorSearch && canSkipPage(page, query.filters, firstCol.name)) {
-            pageIdx++;
-            continue;
-          }
-          batchRows += page.rowCount;
-          pageIdx++;
+    const fsMod = await import("node:fs/promises");
+    return {
+      columns: projectedColumns,
+      async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
+        const handle = await fsMod.open(table, "r");
+        try {
+          const buf = Buffer.alloc(page.byteLength);
+          await handle.read(buf, 0, page.byteLength, Number(page.byteOffset));
+          return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        } finally {
+          await handle.close();
         }
-
-        if (batchRows === 0) continue;
-
-        const columnData = new Map<string, ArrayBuffer[]>();
-        for (const col of projectedColumns) {
-          for (let pi = batchStartPage; pi < pageIdx; pi++) {
-            const page = col.pages[pi];
-            if (!page) continue;
-            if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) continue;
-
-            let ab: ArrayBuffer;
-            if (isUrl) {
-              const start = Number(page.byteOffset);
-              const end = start + page.byteLength - 1;
-              const resp = await fetch(query.table, { headers: { Range: `bytes=${start}-${end}` } });
-              ab = await resp.arrayBuffer();
-            } else {
-              const buf = Buffer.alloc(page.byteLength);
-              await handle!.read(buf, 0, page.byteLength, Number(page.byteOffset));
-              ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-            }
-
-            const arr = columnData.get(col.name) ?? [];
-            arr.push(ab);
-            columnData.set(col.name, arr);
-          }
-        }
-
-        const rows = assembleRows(columnData, projectedColumns, query, wasm);
-
-        // Chunk rows into batchSize-sized batches
-        for (let ri = 0; ri < rows.length; ri += batchSize) {
-          const chunk = rows.slice(ri, ri + batchSize);
-          if (query.limit && totalYielded + chunk.length > query.limit) {
-            yield chunk.slice(0, query.limit - totalYielded);
-            return;
-          }
-          yield chunk;
-          totalYielded += chunk.length;
-        }
-      }
-    } finally {
-      if (handle) await handle.close();
-    }
+      },
+    };
   }
 
   /** Get or load table metadata (footer + columns). Caches in-memory. Handles both files and dataset directories. */
@@ -454,13 +407,58 @@ export class LocalExecutor implements QueryExecutor {
     if (query.sortColumn) neededColumns.add(query.sortColumn);
     const projectedColumns = columns.filter(c => neededColumns.has(c.name));
 
-    // Step 3: Determine which pages to fetch using filter pushdown
+    // Vector search still uses the legacy all-at-once path (needs full embeddings for WASM SIMD)
+    if (query.vectorSearch) {
+      return this.executeVectorSearch(query, projectedColumns, isUrl, startTime);
+    }
+
+    // Step 3: Build streaming pipeline
+    const wasm = await this.getWasm();
+    const fragment = await this.makeFragmentSource(query.table, projectedColumns, isUrl);
+    const pipeOpts: PipelineOptions | undefined = this.memoryBudgetBytes
+      ? { memoryBudgetBytes: this.memoryBudgetBytes } : undefined;
+
+    // If join is specified, build left + right pipelines and combine with HashJoinOperator
+    if (query.join) {
+      return this.executeJoin(query, [fragment], wasm, pipeOpts, startTime);
+    }
+
+    const outputColumns = query.projections.length > 0 ? query.projections : projectedColumns.map(c => c.name);
+    const { pipeline, scan, wasmAgg } = buildPipeline([fragment], query, wasm, outputColumns, pipeOpts);
+
+    // Step 4: Drain pipeline
+    const rows = await drainPipeline(pipeline);
+
+    const result: QueryResult = {
+      rows,
+      rowCount: rows.length,
+      columns: outputColumns,
+      bytesRead: wasmAgg?.bytesRead ?? scan?.bytesRead ?? 0,
+      pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+    };
+
+    if (query.cacheTTL) {
+      this.resultCache.setWithTTL(this.queryCacheKey(query), result, query.cacheTTL);
+    }
+
+    return result;
+  }
+
+  /** Legacy vector search path — needs all embeddings materialized for WASM SIMD. */
+  private async executeVectorSearch(
+    query: QueryDescriptor,
+    projectedColumns: ColumnMeta[],
+    isUrl: boolean,
+    startTime: number,
+  ): Promise<QueryResult> {
     const pageRanges: { column: string; offset: bigint; length: number }[] = [];
     let pagesSkipped = 0;
 
     for (const col of projectedColumns) {
       for (const page of col.pages) {
-        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+        if (canSkipPage(page, query.filters, col.name)) {
           pagesSkipped++;
           continue;
         }
@@ -468,12 +466,10 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
-    // Step 4: Read page data
     const columnData = new Map<string, ArrayBuffer[]>();
     let bytesRead = 0;
 
     if (isUrl) {
-      // Parallel HTTP Range reads
       const pageBuffers = await Promise.all(
         pageRanges.map(async (range) => {
           const start = Number(range.offset);
@@ -493,7 +489,6 @@ export class LocalExecutor implements QueryExecutor {
         columnData.set(buf.column, existing);
       }
     } else {
-      // Sequential reads from local filesystem
       const fs = await import("node:fs/promises");
       const handle = await fs.open(query.table, "r");
       try {
@@ -511,38 +506,8 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
-    // Step 5: Decode and assemble rows
     const wasm = await this.getWasm();
-    const hasAggregates = query.aggregates && query.aggregates.length > 0;
-    // When aggregating, defer sort/limit — they apply to aggregated output, not raw rows
-    const assembleQuery = hasAggregates
-      ? { ...query, sortColumn: undefined, sortDirection: undefined, limit: undefined, offset: undefined }
-      : query;
-    let rows = assembleRows(columnData, projectedColumns, assembleQuery, wasm);
-
-    // Step 6: Apply aggregation if requested, then sort/limit the result
-    if (hasAggregates) {
-      const partial = computePartialAgg(rows, query);
-      rows = finalizePartialAgg(partial, query);
-      // Apply sort and limit to aggregated rows
-      if (query.sortColumn) {
-        const dir = query.sortDirection === "desc" ? -1 : 1;
-        const sc = query.sortColumn;
-        rows.sort((a, b) => {
-          const av = a[sc], bv = b[sc];
-          if (av == null && bv == null) return 0;
-          if (av == null) return 1;
-          if (bv == null) return -1;
-          return av < bv ? -dir : av > bv ? dir : 0;
-        });
-      }
-      const offset = query.offset ?? 0;
-      if (offset > 0 || query.limit !== undefined) {
-        rows = rows.slice(offset, query.limit !== undefined ? offset + query.limit : undefined);
-      }
-    }
-
-    // Strip columns that were fetched for filter/sort but not in user's projection
+    const rows = assembleRows(columnData, projectedColumns, query, wasm);
     const outputColumns = query.projections.length > 0 ? query.projections : projectedColumns.map(c => c.name);
     if (query.projections.length > 0) {
       const keep = new Set(query.projections);
@@ -553,7 +518,7 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
-    const result: QueryResult = {
+    return {
       rows,
       rowCount: rows.length,
       columns: outputColumns,
@@ -562,12 +527,95 @@ export class LocalExecutor implements QueryExecutor {
       durationMs: Date.now() - startTime,
       cacheHit: false,
     };
+  }
 
-    if (query.cacheTTL && !query.vectorSearch) {
-      this.resultCache.setWithTTL(this.queryCacheKey(query), result, query.cacheTTL);
+  /** Execute a join query using HashJoinOperator. */
+  private async executeJoin(
+    query: QueryDescriptor,
+    leftFragments: FragmentSource[],
+    wasm: WasmEngine,
+    pipeOpts: PipelineOptions | undefined,
+    startTime: number,
+  ): Promise<QueryResult> {
+    const join = query.join!;
+
+    // Build left pipeline (no sort/limit/agg — those apply after join)
+    const leftQuery: QueryDescriptor = {
+      table: query.table,
+      filters: query.filters,
+      projections: [], // fetch all columns for join
+      join: undefined,
+    };
+    const leftScan = new (await import("./operators.js")).ScanOperator(leftFragments, leftQuery, wasm);
+    let leftPipeline: import("./operators.js").Operator = leftScan;
+    if (leftQuery.filters.length > 0) {
+      leftPipeline = new (await import("./operators.js")).FilterOperator(leftPipeline, leftQuery.filters);
     }
 
-    return result;
+    // Build right side — execute the right query to get a fragment source
+    const rightIsUrl = join.right.table.startsWith("http://") || join.right.table.startsWith("https://");
+    const rightMeta = await this.getOrLoadMeta(join.right.table);
+    const rightNeeded = new Set(
+      join.right.projections.length > 0 ? join.right.projections : rightMeta.columns.map(c => c.name),
+    );
+    for (const f of join.right.filters) rightNeeded.add(f.column);
+    rightNeeded.add(join.rightKey);
+    const rightProjected = rightMeta.columns.filter(c => rightNeeded.has(c.name));
+    const rightFragment = await this.makeFragmentSource(join.right.table, rightProjected, rightIsUrl);
+
+    const rightScan = new (await import("./operators.js")).ScanOperator([rightFragment], join.right, wasm);
+    let rightPipeline: import("./operators.js").Operator = rightScan;
+    if (join.right.filters.length > 0) {
+      rightPipeline = new (await import("./operators.js")).FilterOperator(rightPipeline, join.right.filters);
+    }
+
+    // Hash join: right is build side, left is probe side
+    const { HashJoinOperator } = await import("./operators.js");
+    let pipeline: import("./operators.js").Operator = new HashJoinOperator(
+      leftPipeline, rightPipeline, join.leftKey, join.rightKey, join.type ?? "inner",
+    );
+
+    // Apply post-join sort/limit/aggregates
+    const { buildPipeline: _, TopKOperator, InMemorySortOperator, LimitOperator, ProjectOperator, AggregateOperator, ExternalSortOperator, DEFAULT_MEMORY_BUDGET } = await import("./operators.js");
+    const hasAgg = query.aggregates && query.aggregates.length > 0;
+
+    if (hasAgg) {
+      pipeline = new AggregateOperator(pipeline, query);
+      if (query.sortColumn && query.limit !== undefined) {
+        pipeline = new TopKOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.limit, query.offset ?? 0);
+      } else if (query.sortColumn) {
+        pipeline = new InMemorySortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0);
+      } else if (query.offset || query.limit !== undefined) {
+        pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
+      }
+    } else if (query.sortColumn) {
+      if (query.limit !== undefined) {
+        pipeline = new TopKOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.limit, query.offset ?? 0);
+      } else {
+        pipeline = new ExternalSortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0, pipeOpts?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET);
+      }
+    } else if (query.offset || query.limit !== undefined) {
+      pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
+    }
+
+    // Project
+    if (query.projections.length > 0) {
+      pipeline = new ProjectOperator(pipeline, query.projections);
+    }
+
+    const rows = await drainPipeline(pipeline);
+
+    return {
+      rows,
+      rowCount: rows.length,
+      columns: query.projections.length > 0
+        ? query.projections
+        : [...new Set([...Object.keys(rows[0] ?? {})])],
+      bytesRead: leftScan.bytesRead + rightScan.bytesRead,
+      pagesSkipped: leftScan.pagesSkipped + rightScan.pagesSkipped,
+      durationMs: Date.now() - startTime,
+      cacheHit: false,
+    };
   }
 
   /** Load or retrieve cached dataset metadata for a Lance directory. */
@@ -608,6 +656,18 @@ export class LocalExecutor implements QueryExecutor {
           const v2Cols = parseLanceV2Columns(fragAb, manifest.schema, frag.physicalRows);
           if (v2Cols && v2Cols.length > 0) {
             columns = lanceV2ToColumnMeta(v2Cols);
+            // Compute and cache min/max stats for page skipping
+            const filePath = fragPath;
+            await computeLanceV2Stats(columns, async (offset, length) => {
+              const handle = await fs.open(filePath, "r");
+              try {
+                const buf = Buffer.alloc(length);
+                await handle.read(buf, 0, length, offset);
+                return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+              } finally {
+                await handle.close();
+              }
+            });
           }
         }
 
@@ -671,7 +731,6 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
     if (query.sortColumn && !schemaColumnNames.has(query.sortColumn)) {
-      // Allow sorting by aggregate output aliases (e.g., "avg_amount", "sum_revenue")
       const aggAliases = new Set((query.aggregates ?? []).map(a => a.alias ?? `${a.fn}_${a.column}`));
       const groupCols = new Set(query.groupBy ?? []);
       if (!aggAliases.has(query.sortColumn) && !groupCols.has(query.sortColumn)) {
@@ -679,95 +738,48 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
-    // Execute query across all fragments
+    // Build fragment sources for all fragments
     const fsMod = await import("node:fs/promises");
-    let allRows: Row[] = [];
-    let totalBytesRead = 0;
-    let totalPagesSkipped = 0;
+    const wasm = await this.getWasm();
+    const fragments: FragmentSource[] = [];
 
     for (const [, meta] of dataset.fragmentMetas) {
       const neededCols = new Set(query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name));
       for (const f of query.filters) neededCols.add(f.column);
       if (query.sortColumn) neededCols.add(query.sortColumn);
       const projectedColumns = meta.columns.filter(c => neededCols.has(c.name));
+      const filePath = meta.r2Key;
 
-      const pageRanges: { column: string; offset: bigint; length: number }[] = [];
-      for (const col of projectedColumns) {
-        for (const page of col.pages) {
-          if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-            totalPagesSkipped++;
-            continue;
+      fragments.push({
+        columns: projectedColumns,
+        async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
+          const handle = await fsMod.open(filePath, "r");
+          try {
+            const buf = Buffer.alloc(page.byteLength);
+            await handle.read(buf, 0, page.byteLength, Number(page.byteOffset));
+            return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+          } finally {
+            await handle.close();
           }
-          pageRanges.push({ column: col.name, offset: page.byteOffset, length: page.byteLength });
-        }
-      }
-
-      const columnData = new Map<string, ArrayBuffer[]>();
-      const handle = await fsMod.open(meta.r2Key, "r");
-      try {
-        for (const range of pageRanges) {
-          const buf = Buffer.alloc(range.length);
-          await handle.read(buf, 0, range.length, Number(range.offset));
-          totalBytesRead += range.length;
-          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-          const existing = columnData.get(range.column) ?? [];
-          existing.push(ab);
-          columnData.set(range.column, existing);
-        }
-      } finally {
-        await handle.close();
-      }
-
-      const wasm = await this.getWasm();
-      const rows = assembleRows(columnData, projectedColumns, query, wasm);
-      for (let ri = 0; ri < rows.length; ri++) allRows.push(rows[ri]);
+        },
+      });
     }
 
-    // Apply limit if no sort and no aggregates
-    const hasAgg = query.aggregates && query.aggregates.length > 0;
-    if (query.limit && !query.sortColumn && !hasAgg && allRows.length > query.limit) {
-      allRows = allRows.slice(0, query.limit);
-    }
+    const outputColumns = query.projections.length > 0
+      ? query.projections
+      : (dataset.fragmentMetas.values().next().value?.columns.map((c: ColumnMeta) => c.name) ?? []);
 
-    // Apply aggregation if requested, then sort/limit the result
-    if (hasAgg) {
-      const partial = computePartialAgg(allRows, query);
-      allRows = finalizePartialAgg(partial, query);
-      if (query.sortColumn) {
-        const dir = query.sortDirection === "desc" ? -1 : 1;
-        const sc = query.sortColumn;
-        allRows.sort((a, b) => {
-          const av = a[sc], bv = b[sc];
-          if (av == null && bv == null) return 0;
-          if (av == null) return 1;
-          if (bv == null) return -1;
-          return av < bv ? -dir : av > bv ? dir : 0;
-        });
-      }
-      const offset = query.offset ?? 0;
-      if (offset > 0 || query.limit !== undefined) {
-        allRows = allRows.slice(offset, query.limit !== undefined ? offset + query.limit : undefined);
-      }
-    }
-
-    // Strip columns fetched for filter/sort but not in user's projection
-    if (query.projections.length > 0) {
-      const keep = new Set(query.projections);
-      for (const row of allRows) {
-        for (const key of Object.keys(row)) {
-          if (!keep.has(key)) delete row[key];
-        }
-      }
-    }
+    const pipeOpts: PipelineOptions | undefined = this.memoryBudgetBytes
+      ? { memoryBudgetBytes: this.memoryBudgetBytes } : undefined;
+    const { pipeline, scan, wasmAgg } = buildPipeline(fragments, query, wasm, outputColumns, pipeOpts);
+    const rows = await drainPipeline(pipeline);
 
     return {
-      rows: allRows,
-      rowCount: allRows.length,
-      columns: query.projections.length > 0
-        ? query.projections
-        : (dataset.fragmentMetas.values().next().value?.columns.map((c: ColumnMeta) => c.name) ?? []),
-      bytesRead: totalBytesRead,
-      pagesSkipped: totalPagesSkipped,
+      rows,
+      rowCount: rows.length,
+      columns: outputColumns,
+      bytesRead: wasmAgg?.bytesRead ?? scan?.bytesRead ?? 0,
+      pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
       durationMs: Date.now() - startTime,
     };
   }
@@ -832,7 +844,15 @@ export class LocalExecutor implements QueryExecutor {
         const fullAb = fullBuf.buffer.slice(fullBuf.byteOffset, fullBuf.byteOffset + fullBuf.byteLength);
         const v2Cols = parseLanceV2Columns(fullAb);
         if (v2Cols && v2Cols.length > 0) {
-          return { columns: lanceV2ToColumnMeta(v2Cols), fileSize };
+          const v2Columns = lanceV2ToColumnMeta(v2Cols);
+          // Compute min/max stats for page skipping
+          const fileHandle = handle;
+          await computeLanceV2Stats(v2Columns, async (offset, length) => {
+            const buf = Buffer.alloc(length);
+            await fileHandle.read(buf, 0, length, offset);
+            return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+          });
+          return { columns: v2Columns, fileSize };
         }
       }
 

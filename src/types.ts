@@ -97,6 +97,18 @@ export interface AggregateOp {
   alias?: string;
 }
 
+/** Join specification for code-first JOINs */
+export interface JoinDescriptor {
+  /** Query descriptor for the right side of the join */
+  right: import("./client.js").QueryDescriptor;
+  /** Left join key column */
+  leftKey: string;
+  /** Right join key column */
+  rightKey: string;
+  /** Join type (default: "inner") */
+  type?: "inner" | "left";
+}
+
 /** Vector search parameters */
 export interface VectorSearchParams {
   column: string;
