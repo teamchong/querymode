@@ -112,8 +112,29 @@ async function seedIcebergTable(dir: string): Promise<void> {
     console.log(`  PUT ${r2Key} (${(data.length / 1024).toFixed(0)} KB)`);
     uploadFile(r2Key, data);
   }
-  // Iceberg tables are auto-discovered by Query DO via loadIcebergFromR2
-  console.log(`  (Iceberg tables lazy-load on first query)`);
+  // Trigger Iceberg discovery immediately after upload (R2 list() needs objects to be visible).
+  // Retry with delays since miniflare R2 list() has eventual consistency.
+  let ok = false;
+  for (let attempt = 0; attempt < 8 && !ok; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+    try {
+      const resp = await fetch(`${BASE_URL}/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ table: name, filters: [], projections: ["id"], limit: 1 }),
+      });
+      if (resp.ok) {
+        console.log(`  Iceberg registered: ${name}`);
+        ok = true;
+      } else if (attempt >= 2) {
+        // Only log after a few attempts to reduce noise
+        console.log(`  Iceberg attempt ${attempt + 1}: ${resp.status}`);
+      }
+    } catch {
+      if (attempt >= 2) console.log(`  Iceberg attempt ${attempt + 1}: fetch error`);
+    }
+  }
+  if (!ok) console.log(`  Iceberg lazy-load deferred (will retry in bench)`);
 }
 
 async function main(): Promise<void> {
