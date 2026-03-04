@@ -56,6 +56,16 @@ export default {
       });
     }
 
+    // Direct R2 upload (local dev only — used by seed script to avoid miniflare list() inconsistency)
+    if (url.pathname === "/upload" && request.method === "POST") {
+      const key = url.searchParams.get("key");
+      if (!key) return new Response("Missing ?key=", { status: 400 });
+      await env.DATA_BUCKET.put(key, request.body);
+      return new Response(JSON.stringify({ uploaded: key }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     // Write operations go to the Master DO (single writer)
     if (url.pathname === "/write" || url.pathname === "/refresh") {
       const masterId = env.MASTER_DO.idFromName("master");

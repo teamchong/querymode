@@ -102,39 +102,43 @@ async function seedParquetFile(filePath: string, r2Key?: string): Promise<void> 
   }
 }
 
+/** Upload file via Worker's /upload endpoint (writes through R2 binding, avoids miniflare list() inconsistency). */
+async function uploadViaWorker(r2Key: string, data: Uint8Array): Promise<void> {
+  const resp = await fetch(`${BASE_URL}/upload?key=${encodeURIComponent(r2Key)}`, {
+    method: "POST",
+    body: data,
+  });
+  if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+}
+
 async function seedIcebergTable(dir: string): Promise<void> {
   const name = basename(dir);
   console.log(`\nSeeding Iceberg table: ${name}`);
+  // Upload via Worker's R2 binding (not wrangler CLI) so R2 list() sees the objects
   for (const file of walkDir(dir)) {
     const relPath = relative(dir, file);
     const r2Key = `${name}/${relPath}`;
     const data = readFileSync(file);
     console.log(`  PUT ${r2Key} (${(data.length / 1024).toFixed(0)} KB)`);
-    uploadFile(r2Key, data);
+    await uploadViaWorker(r2Key, data);
   }
-  // Trigger Iceberg discovery immediately after upload (R2 list() needs objects to be visible).
-  // Retry with delays since miniflare R2 list() has eventual consistency.
-  let ok = false;
-  for (let attempt = 0; attempt < 8 && !ok; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
-    try {
-      const resp = await fetch(`${BASE_URL}/query`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ table: name, filters: [], projections: ["id"], limit: 1 }),
-      });
-      if (resp.ok) {
-        console.log(`  Iceberg registered: ${name}`);
-        ok = true;
-      } else if (attempt >= 2) {
-        // Only log after a few attempts to reduce noise
-        console.log(`  Iceberg attempt ${attempt + 1}: ${resp.status}`);
-      }
-    } catch {
-      if (attempt >= 2) console.log(`  Iceberg attempt ${attempt + 1}: fetch error`);
+  // Trigger Iceberg discovery via query (should work immediately since R2 list() sees objects)
+  await new Promise(r => setTimeout(r, 500));
+  try {
+    const resp = await fetch(`${BASE_URL}/query`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ table: name, filters: [], projections: ["id"], limit: 1 }),
+    });
+    if (resp.ok) {
+      console.log(`  Iceberg registered: ${name}`);
+    } else {
+      const text = await resp.text();
+      console.log(`  Iceberg registration: ${resp.status} (${text.slice(0, 80)})`);
     }
+  } catch (err) {
+    console.log(`  Iceberg registration error: ${String(err).slice(0, 80)}`);
   }
-  if (!ok) console.log(`  Iceberg lazy-load deferred (will retry in bench)`);
 }
 
 async function main(): Promise<void> {
