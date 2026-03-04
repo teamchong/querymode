@@ -80,6 +80,7 @@ export class QueryDO implements DurableObject {
       case "/tables":       return this.handleListTables();
       case "/meta":         return this.handleGetMeta(request);
       case "/diagnostics":  return this.handleDiagnostics();
+      case "/register-iceberg": return this.handleRegisterIceberg(request);
       default:              return new Response("Not found", { status: 404 });
     }
   }
@@ -997,6 +998,84 @@ export class QueryDO implements DurableObject {
       return dataset;
     }
     return null;
+  }
+
+  /** Register an Iceberg table by explicit metadata path (bypasses R2 list()). */
+  private async handleRegisterIceberg(request: Request): Promise<Response> {
+    const { table, metadataKey } = (await request.json()) as { table: string; metadataKey: string };
+    if (!table || !metadataKey) return this.json({ error: "Missing table or metadataKey" }, 400);
+
+    const result = await this.loadIcebergByKey(table, metadataKey);
+    if (!result) return this.json({ error: "Failed to load Iceberg metadata" }, 500);
+    return this.json({ registered: true, table, totalRows: result.totalRows, files: result.parquetFiles.length });
+  }
+
+  /** Load an Iceberg table from an explicit metadata.json key (no R2 list() needed). */
+  private async loadIcebergByKey(tableName: string, metadataKey: string): Promise<IcebergDatasetMeta | null> {
+    const metaObj = await this.env.DATA_BUCKET.get(metadataKey);
+    if (!metaObj) return null;
+
+    const metaJson = await metaObj.text();
+    const icebergMeta = parseIcebergMetadata(metaJson);
+    if (!icebergMeta) return null;
+
+    // Derive prefix from metadataKey (e.g., "bench_iceberg_100k/metadata/v1.metadata.json" → "bench_iceberg_100k/")
+    const prefix = metadataKey.replace(/metadata\/.*$/, "");
+
+    const manifestListKey = `${prefix}${icebergMeta.manifestListPath}`;
+    const manifestListObj = await this.env.DATA_BUCKET.get(manifestListKey);
+    if (!manifestListObj) return null;
+
+    const manifestListBytes = await manifestListObj.arrayBuffer();
+    const parquetPaths = extractParquetPathsFromManifest(manifestListBytes);
+    if (parquetPaths.length === 0) return null;
+
+    // Load each Parquet file's metadata
+    const fragmentMetas = new Map<number, TableMeta>();
+    let totalRows = 0;
+    for (let i = 0; i < parquetPaths.length; i++) {
+      const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
+      const head = await this.env.DATA_BUCKET.head(parquetKey);
+      if (!head) continue;
+
+      const fileSize = BigInt(head.size);
+      const tailObj = await this.env.DATA_BUCKET.get(parquetKey, {
+        range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
+      });
+      if (!tailObj) continue;
+
+      const tailBuf = await tailObj.arrayBuffer();
+      const footerLen = getParquetFooterLength(tailBuf);
+      if (!footerLen) continue;
+
+      const footerObj = await this.env.DATA_BUCKET.get(parquetKey, {
+        range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
+      });
+      if (!footerObj) continue;
+
+      const parquetFileMeta = parseParquetFooter(await footerObj.arrayBuffer());
+      if (!parquetFileMeta) continue;
+
+      const meta = parquetMetaToTableMeta(parquetFileMeta, parquetKey, fileSize);
+      meta.name = parquetPaths[i];
+      fragmentMetas.set(i, meta);
+      totalRows += meta.totalRows;
+    }
+
+    if (fragmentMetas.size === 0) return null;
+
+    const dataset: IcebergDatasetMeta = {
+      name: tableName, r2Prefix: prefix,
+      schema: icebergMeta.schema, snapshotId: icebergMeta.currentSnapshotId,
+      parquetFiles: parquetPaths, fragmentMetas, totalRows, updatedAt: Date.now(),
+    };
+    this.datasetCache.set(tableName, {
+      name: tableName, r2Prefix: prefix,
+      manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
+      fragmentMetas, totalRows, updatedAt: Date.now(),
+    });
+    this.evictDatasetCache();
+    return dataset;
   }
 
   /** Discover an Iceberg table in R2 by listing metadata/ for .metadata.json files. */

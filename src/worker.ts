@@ -78,7 +78,8 @@ export default {
       url.pathname === "/query" ||
       url.pathname === "/query/stream" ||
       url.pathname === "/tables" ||
-      url.pathname === "/meta"
+      url.pathname === "/meta" ||
+      url.pathname === "/register-iceberg"
     ) {
       // Use a deterministic name per region so each region gets one Query DO.
       // The CF-Ray header contains the datacenter code (e.g., "SJC", "NRT").

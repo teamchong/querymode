@@ -122,22 +122,28 @@ async function seedIcebergTable(dir: string): Promise<void> {
     console.log(`  PUT ${r2Key} (${(data.length / 1024).toFixed(0)} KB)`);
     await uploadViaWorker(r2Key, data);
   }
-  // Trigger Iceberg discovery via query (should work immediately since R2 list() sees objects)
-  await new Promise(r => setTimeout(r, 500));
-  try {
-    const resp = await fetch(`${BASE_URL}/query`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ table: name, filters: [], projections: ["id"], limit: 1 }),
-    });
-    if (resp.ok) {
-      console.log(`  Iceberg registered: ${name}`);
-    } else {
-      const text = await resp.text();
-      console.log(`  Iceberg registration: ${resp.status} (${text.slice(0, 80)})`);
+  // Register Iceberg table explicitly (bypasses R2 list() which is unreliable in miniflare)
+  // Find the metadata.json key we just uploaded
+  const metadataFiles = walkDir(dir)
+    .map(f => `${name}/${relative(dir, f)}`)
+    .filter(k => k.endsWith(".metadata.json"));
+  const metadataKey = metadataFiles[metadataFiles.length - 1]; // latest
+  if (metadataKey) {
+    try {
+      const resp = await fetch(`${BASE_URL}/register-iceberg`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ table: name, metadataKey }),
+      });
+      if (resp.ok) {
+        console.log(`  Iceberg registered:`, await resp.json());
+      } else {
+        const text = await resp.text();
+        console.log(`  Iceberg registration: ${resp.status} (${text.slice(0, 80)})`);
+      }
+    } catch (err) {
+      console.log(`  Iceberg registration error: ${String(err).slice(0, 80)}`);
     }
-  } catch (err) {
-    console.log(`  Iceberg registration error: ${String(err).slice(0, 80)}`);
   }
 }
 
