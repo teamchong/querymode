@@ -37,12 +37,14 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
         length += 1;
       } else {
         const extraBytes = length - 59;
+        if (pos + extraBytes > input.length) break; // malformed
         length = 0;
         for (let i = 0; i < extraBytes; i++) {
           length |= input[pos++] << (i * 8);
         }
         length = (length >>> 0) + 1; // unsigned + 1
       }
+      if (pos + length > input.length || outPos + length > output.length) break;
       output.set(input.subarray(pos, pos + length), outPos);
       pos += length;
       outPos += length;
@@ -50,6 +52,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       // Copy with 1-byte offset
       const length = ((tag >> 2) & 0x07) + 4;
       const offset = ((tag & 0xe0) << 3) | input[pos++];
+      if (offset === 0 || offset > outPos) break; // invalid offset
       let srcPos = outPos - offset;
       for (let i = 0; i < length; i++) {
         output[outPos++] = output[srcPos++];
@@ -59,6 +62,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       const length = ((tag >> 2) & 0x3f) + 1;
       const offset = input[pos] | (input[pos + 1] << 8);
       pos += 2;
+      if (offset === 0 || offset > outPos) break; // invalid offset
       let srcPos = outPos - offset;
       for (let i = 0; i < length; i++) {
         output[outPos++] = output[srcPos++];
@@ -68,6 +72,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       const length = ((tag >> 2) & 0x3f) + 1;
       const offset = (input[pos] | (input[pos + 1] << 8) | (input[pos + 2] << 16) | (input[pos + 3] << 24)) >>> 0;
       pos += 4;
+      if (offset === 0 || offset > outPos) break; // invalid offset
       let srcPos = outPos - offset;
       for (let i = 0; i < length; i++) {
         output[outPos++] = output[srcPos++];

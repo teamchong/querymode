@@ -390,6 +390,11 @@ export class QueryDO implements DurableObject {
         }
       }
 
+      // Fall back to manifest totalRows if protobuf didn't encode row count
+      if (rowCount === 0 && meta.totalRows > 0) {
+        rowCount = meta.totalRows;
+      }
+
       // Column name/type from footer-level metadata or manifest schema
       const colMeta = meta.columns[col];
       let colName = colMeta?.name ?? `column_${col}`;
@@ -406,7 +411,8 @@ export class QueryDO implements DurableObject {
         }
       }
 
-      colInfos.push({ name: colName, dtype, rowCount, dataOffset: 0, dataSize: rowCount * 8 });
+      const bytesPerValue = (dtype === "int32" || dtype === "float32") ? 4 : 8;
+      colInfos.push({ name: colName, dtype, rowCount, dataOffset: 0, dataSize: rowCount * bytesPerValue });
     }
 
     this.log("info", "lance_fragment_parsed", {
@@ -445,7 +451,8 @@ export class QueryDO implements DurableObject {
 
     // Assemble rows
     const colNames = [...decodedColumns.keys()];
-    const numRows = Math.max(...[...decodedColumns.values()].map(v => v.length), 0);
+    let numRows = 0;
+    for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
     let rows: Row[] = [];
     for (let i = 0; i < numRows; i++) {
       const row: Row = {};

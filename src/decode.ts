@@ -123,6 +123,7 @@ export function decodePage(
   let nulls: Set<number> | null = null;
   if (nullCount > 0 && rowCount > 0) {
     const bitmapBytes = Math.ceil(rowCount / 8);
+    if (buf.byteLength < bitmapBytes) return [];
     const bytes = new Uint8Array(buf, 0, bitmapBytes);
     nulls = new Set<number>();
     let idx = 0;
@@ -245,7 +246,7 @@ function vectorSearch(
   if (!embCol || embCol.dtype !== "fixed_size_list") return [];
 
   const dim = embCol.listDimension ?? vs.queryVector.length;
-  if (dim === 0) return [];
+  if (dim <= 0) return [];
 
   const embPages = columnData.get(vs.column);
   if (!embPages?.length) return [];

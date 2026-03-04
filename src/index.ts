@@ -173,6 +173,7 @@ class RemoteExecutor implements QueryExecutor {
     if (!response.body) throw new Error("No response body for stream");
 
     const decoder = new TextDecoder();
+    const MAX_STREAM_BUFFER = 10 * 1024 * 1024; // 10MB
     let buffer = "";
 
     return new ReadableStream<Row>({
@@ -183,6 +184,11 @@ class RemoteExecutor implements QueryExecutor {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
+            if (buffer.length > MAX_STREAM_BUFFER) {
+              controller.error(new Error("Stream buffer exceeded 10MB"));
+              reader.cancel();
+              return;
+            }
             const lines = buffer.split("\n");
             buffer = lines.pop()!;
             for (const line of lines) {
@@ -321,13 +327,14 @@ class LocalExecutor implements QueryExecutor {
 
     // Check if this is a Lance dataset directory (has _versions/ subdir)
     if (!isUrl) {
-      try {
-        const fs = await import("node:fs/promises");
-        const stat = await fs.stat(query.table).catch(() => null);
-        if (stat?.isDirectory()) {
-          return this.executeDatasetQuery(query, startTime);
-        }
-      } catch { /* stat failed — not a directory, fall through to single-file path */ }
+      const fs = await import("node:fs/promises");
+      const stat = await fs.stat(query.table).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+      });
+      if (stat?.isDirectory()) {
+        return this.executeDatasetQuery(query, startTime);
+      }
     }
 
     // Step 1: Get or cache table metadata (footer + column meta)
@@ -337,6 +344,10 @@ class LocalExecutor implements QueryExecutor {
         ? await this.loadMetaFromUrl(query.table)
         : await this.loadMetaFromFile(query.table);
       this.metaCache.set(query.table, cached);
+      if (this.metaCache.size > 1000) {
+        const firstKey = this.metaCache.keys().next().value;
+        if (firstKey) this.metaCache.delete(firstKey);
+      }
     }
 
     const { columns, fileSize } = cached;
@@ -483,6 +494,10 @@ class LocalExecutor implements QueryExecutor {
         updatedAt: Date.now(),
       };
       this.datasetCache.set(query.table, dataset);
+      if (this.datasetCache.size > 100) {
+        const firstKey = this.datasetCache.keys().next().value;
+        if (firstKey) this.datasetCache.delete(firstKey);
+      }
     }
 
     // Execute query across all fragments
