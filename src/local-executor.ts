@@ -217,7 +217,7 @@ export class LocalExecutor implements QueryExecutor {
       estimatedBytes,
       estimatedR2Reads: coalesced.length,
       estimatedRows,
-      fragments: 1,
+      fragments: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
       filters: query.filters.map(f => ({
         column: f.column,
         op: f.op,
@@ -240,6 +240,7 @@ export class LocalExecutor implements QueryExecutor {
     }
     const fs = await import("node:fs/promises");
     const stat = await fs.stat(table);
+    if (stat.isDirectory()) return "lance"; // Lance dataset directories are always Lance format
     const fileSize = Number(stat.size);
     const tailSize = Math.min(fileSize, FOOTER_SIZE);
     const handle = await fs.open(table, "r");
@@ -254,17 +255,30 @@ export class LocalExecutor implements QueryExecutor {
   }
 
   async *cursor(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]> {
+    const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
+
+    // For dataset directories or sorted queries, buffer via execute then chunk
+    if (!isUrl) {
+      const fs = await import("node:fs/promises");
+      const stat = await fs.stat(query.table).catch(() => null);
+      if (stat?.isDirectory()) {
+        const result = await this.execute(query);
+        for (let i = 0; i < result.rows.length; i += batchSize) {
+          yield result.rows.slice(i, i + batchSize);
+        }
+        return;
+      }
+    }
+
     const meta = await this.getOrLoadMeta(query.table);
     const { columns } = meta;
     const projectedColumns = query.projections.length > 0
       ? columns.filter(c => query.projections.includes(c.name))
       : columns;
 
-    const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
     const firstCol = projectedColumns[0];
     if (!firstCol) return;
 
-    // If sorted, must buffer all rows then chunk
     if (query.sortColumn) {
       const result = await this.execute(query);
       for (let i = 0; i < result.rows.length; i += batchSize) {
@@ -340,11 +354,27 @@ export class LocalExecutor implements QueryExecutor {
     }
   }
 
-  /** Get or load table metadata (footer + columns). Caches in-memory. */
+  /** Get or load table metadata (footer + columns). Caches in-memory. Handles both files and dataset directories. */
   private async getOrLoadMeta(table: string): Promise<{ columns: ColumnMeta[]; fileSize: number }> {
     let cached = this.metaCache.get(table);
     if (cached) return cached;
     const isUrl = table.startsWith("http://") || table.startsWith("https://");
+    if (!isUrl) {
+      const fs = await import("node:fs/promises");
+      const stat = await fs.stat(table).catch((err: unknown) => {
+        throw QueryModeError.from(err, { table });
+      });
+      if (stat.isDirectory()) {
+        // Lance dataset directory — load via executeDatasetQuery path to populate cache
+        const dataset = await this.getOrLoadDataset(table);
+        const firstMeta = dataset.fragmentMetas.values().next().value;
+        const columns = firstMeta?.columns ?? [];
+        const fileSize = Number(firstMeta?.fileSize ?? 0n);
+        cached = { columns, fileSize };
+        this.metaCache.set(table, cached);
+        return cached;
+      }
+    }
     cached = isUrl ? await this.loadMetaFromUrl(table) : await this.loadMetaFromFile(table);
     this.metaCache.set(table, cached);
     if (this.metaCache.size > 1000) {
@@ -414,11 +444,11 @@ export class LocalExecutor implements QueryExecutor {
       throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
     }
 
-    // Step 2: Determine projected columns
-    const projectedColumns =
-      query.projections.length > 0
-        ? columns.filter((c) => query.projections.includes(c.name))
-        : columns;
+    // Step 2: Determine columns to fetch (projection + filter + sort columns)
+    const neededColumns = new Set(query.projections.length > 0 ? query.projections : columns.map(c => c.name));
+    for (const f of query.filters) neededColumns.add(f.column);
+    if (query.sortColumn) neededColumns.add(query.sortColumn);
+    const projectedColumns = columns.filter(c => neededColumns.has(c.name));
 
     // Step 3: Determine which pages to fetch using filter pushdown
     const pageRanges: { column: string; offset: bigint; length: number }[] = [];
@@ -508,17 +538,27 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
+    // Strip columns that were fetched for filter/sort but not in user's projection
+    const outputColumns = query.projections.length > 0 ? query.projections : projectedColumns.map(c => c.name);
+    if (query.projections.length > 0) {
+      const keep = new Set(query.projections);
+      for (const row of rows) {
+        for (const key of Object.keys(row)) {
+          if (!keep.has(key)) delete row[key];
+        }
+      }
+    }
+
     const result: QueryResult = {
       rows,
       rowCount: rows.length,
-      columns: projectedColumns.map((c) => c.name),
+      columns: outputColumns,
       bytesRead,
       pagesSkipped,
       durationMs: Date.now() - startTime,
       cacheHit: false,
     };
 
-    // Store in result cache if TTL specified
     if (query.cacheTTL && !query.vectorSearch) {
       this.resultCache.setWithTTL(this.queryCacheKey(query), result, query.cacheTTL);
     }
@@ -526,95 +566,93 @@ export class LocalExecutor implements QueryExecutor {
     return result;
   }
 
-  /** Execute a query against a multi-fragment Lance dataset directory. */
-  private async executeDatasetQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
+  /** Load or retrieve cached dataset metadata for a Lance directory. */
+  private async getOrLoadDataset(table: string): Promise<DatasetMeta> {
+    let dataset = this.datasetCache.get(table);
+    if (dataset) return dataset;
+
     const fs = await import("node:fs/promises");
     const pathMod = await import("node:path");
 
-    // Discover or reuse cached dataset metadata
-    let dataset = this.datasetCache.get(query.table);
-    if (!dataset) {
-      // Find latest manifest
-      const versionsDir = pathMod.join(query.table, "_versions");
-      const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
-      const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
-      if (manifests.length === 0) {
-        throw new Error(`No manifests found in ${versionsDir}`);
+    const versionsDir = pathMod.join(table, "_versions");
+    const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
+    const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
+    if (manifests.length === 0) {
+      throw new Error(`No manifests found in ${versionsDir}`);
+    }
+
+    const latestManifest = manifests[manifests.length - 1];
+    const manifestBuf = await fs.readFile(pathMod.join(versionsDir, latestManifest));
+    const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
+    const manifest = parseManifest(ab);
+    if (!manifest) throw new Error(`Failed to parse manifest ${latestManifest}`);
+
+    const fragmentMetas = new Map<number, TableMeta>();
+    for (const frag of manifest.fragments) {
+      let fragPath = pathMod.join(table, frag.filePath);
+      try { await fs.stat(fragPath); } catch {
+        fragPath = pathMod.join(table, "data", frag.filePath);
       }
+      try {
+        const cachedMeta = await this.loadMetaFromFile(fragPath);
+        let { columns } = cachedMeta;
 
-      const latestManifest = manifests[manifests.length - 1];
-      const manifestBuf = await fs.readFile(pathMod.join(versionsDir, latestManifest));
-      const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
-      const manifest = parseManifest(ab);
-      if (!manifest) throw new Error(`Failed to parse manifest ${latestManifest}`);
-
-      // Read footer + column metadata for each fragment
-      const fragmentMetas = new Map<number, TableMeta>();
-      for (const frag of manifest.fragments) {
-        // Lance stores relative paths without data/ prefix — try both
-        let fragPath = pathMod.join(query.table, frag.filePath);
-        try { await fs.stat(fragPath); } catch {
-          fragPath = pathMod.join(query.table, "data", frag.filePath);
+        const isLanceV2 = columns.some(c => c.name.startsWith("column_")) || columns.every(c => c.dtype === "int64");
+        if (isLanceV2 || !columns.some(c => c.pages.length > 0)) {
+          const fragBuf = await fs.readFile(fragPath);
+          const fragAb = fragBuf.buffer.slice(fragBuf.byteOffset, fragBuf.byteOffset + fragBuf.byteLength);
+          const v2Cols = parseLanceV2Columns(fragAb, manifest.schema, frag.physicalRows);
+          if (v2Cols && v2Cols.length > 0) {
+            columns = lanceV2ToColumnMeta(v2Cols);
+          }
         }
+
+        const fragStat = await fs.stat(fragPath);
+        const fragHandle = await fs.open(fragPath, "r");
+        let footer: import("./types.js").Footer;
         try {
-          const cachedMeta = await this.loadMetaFromFile(fragPath);
-          let { columns } = cachedMeta;
-
-          // Always try v2 parser with manifest schema for Lance files.
-          // The schema provides correct column names and types that the
-          // no-schema fallback in loadMetaFromFile cannot determine.
-          const isLanceV2 = columns.some(c => c.name.startsWith("column_")) || columns.every(c => c.dtype === "int64");
-          if (isLanceV2 || !columns.some(c => c.pages.length > 0)) {
-            const fragBuf = await fs.readFile(fragPath);
-            const fragAb = fragBuf.buffer.slice(fragBuf.byteOffset, fragBuf.byteOffset + fragBuf.byteLength);
-            const v2Cols = parseLanceV2Columns(fragAb, manifest.schema, frag.physicalRows);
-            if (v2Cols && v2Cols.length > 0) {
-              columns = lanceV2ToColumnMeta(v2Cols);
-            }
-          }
-
-          // Read the actual footer from the fragment file
-          const fragStat = await fs.stat(fragPath);
-          const fragHandle = await fs.open(fragPath, "r");
-          let footer: import("./types.js").Footer;
-          try {
-            const footerBuf = Buffer.alloc(FOOTER_SIZE);
-            await fragHandle.read(footerBuf, 0, FOOTER_SIZE, fragStat.size - FOOTER_SIZE);
-            const footerAb = footerBuf.buffer.slice(footerBuf.byteOffset, footerBuf.byteOffset + footerBuf.byteLength);
-            const parsed = parseFooter(footerAb);
-            if (!parsed) continue;
-            footer = parsed;
-          } finally {
-            await fragHandle.close();
-          }
-          fragmentMetas.set(frag.id, {
-            name: frag.filePath,
-            footer,
-            columns,
-            totalRows: frag.physicalRows,
-            fileSize: BigInt(cachedMeta.fileSize),
-            r2Key: fragPath,
-            updatedAt: Date.now(),
-          });
-        } catch (err) {
-          throw new Error(`Failed to load fragment ${frag.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+          const footerBuf = Buffer.alloc(FOOTER_SIZE);
+          await fragHandle.read(footerBuf, 0, FOOTER_SIZE, fragStat.size - FOOTER_SIZE);
+          const footerAb = footerBuf.buffer.slice(footerBuf.byteOffset, footerBuf.byteOffset + footerBuf.byteLength);
+          const parsed = parseFooter(footerAb);
+          if (!parsed) continue;
+          footer = parsed;
+        } finally {
+          await fragHandle.close();
         }
-      }
-
-      dataset = {
-        name: query.table,
-        r2Prefix: query.table + "/",
-        manifest,
-        fragmentMetas,
-        totalRows: manifest.totalRows,
-        updatedAt: Date.now(),
-      };
-      this.datasetCache.set(query.table, dataset);
-      if (this.datasetCache.size > 100) {
-        const firstKey = this.datasetCache.keys().next().value;
-        if (firstKey) this.datasetCache.delete(firstKey);
+        fragmentMetas.set(frag.id, {
+          name: frag.filePath,
+          footer,
+          columns,
+          totalRows: frag.physicalRows,
+          fileSize: BigInt(cachedMeta.fileSize),
+          r2Key: fragPath,
+          updatedAt: Date.now(),
+        });
+      } catch (err) {
+        throw new Error(`Failed to load fragment ${frag.filePath}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+
+    dataset = {
+      name: table,
+      r2Prefix: table + "/",
+      manifest,
+      fragmentMetas,
+      totalRows: manifest.totalRows,
+      updatedAt: Date.now(),
+    };
+    this.datasetCache.set(table, dataset);
+    if (this.datasetCache.size > 100) {
+      const firstKey = this.datasetCache.keys().next().value;
+      if (firstKey) this.datasetCache.delete(firstKey);
+    }
+    return dataset;
+  }
+
+  /** Execute a query against a multi-fragment Lance dataset directory. */
+  private async executeDatasetQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
+    const dataset = await this.getOrLoadDataset(query.table);
 
     // Validate column references against schema
     const schemaColumnNames = new Set(dataset.manifest.schema.map(f => f.name));
@@ -639,9 +677,10 @@ export class LocalExecutor implements QueryExecutor {
     let totalPagesSkipped = 0;
 
     for (const [, meta] of dataset.fragmentMetas) {
-      const projectedColumns = query.projections.length > 0
-        ? meta.columns.filter(c => query.projections.includes(c.name))
-        : meta.columns;
+      const neededCols = new Set(query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name));
+      for (const f of query.filters) neededCols.add(f.column);
+      if (query.sortColumn) neededCols.add(query.sortColumn);
+      const projectedColumns = meta.columns.filter(c => neededCols.has(c.name));
 
       const pageRanges: { column: string; offset: bigint; length: number }[] = [];
       for (const col of projectedColumns) {
@@ -699,6 +738,16 @@ export class LocalExecutor implements QueryExecutor {
       const offset = query.offset ?? 0;
       if (offset > 0 || query.limit !== undefined) {
         allRows = allRows.slice(offset, query.limit !== undefined ? offset + query.limit : undefined);
+      }
+    }
+
+    // Strip columns fetched for filter/sort but not in user's projection
+    if (query.projections.length > 0) {
+      const keep = new Set(query.projections);
+      for (const row of allRows) {
+        for (const key of Object.keys(row)) {
+          if (!keep.has(key)) delete row[key];
+        }
       }
     }
 
