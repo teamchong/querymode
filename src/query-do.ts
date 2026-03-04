@@ -1,4 +1,4 @@
-import type { ColumnMeta, Env, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
+import type { ColumnMeta, DataType, Env, ExplainResult, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
@@ -18,6 +18,8 @@ const FRAGMENT_TIMEOUT_MS = 25_000;
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
 const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from eviction)
 const DATASET_CACHE_MAX = 100; // Max cached datasets before eviction
+const RESULT_CACHE_MAX = 200; // Max cached query results
+const RESULT_VIP_THRESHOLD = 2; // Accesses needed for VIP result cache
 
 /**
  * Query DO — per-region reader with cached footers.
@@ -28,6 +30,7 @@ export class QueryDO implements DurableObject {
   private env: Env;
   private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
   private datasetCache = new Map<string, DatasetMeta>();
+  private resultCache = new VipCache<string, QueryResult>(RESULT_CACHE_MAX, RESULT_VIP_THRESHOLD);
   private wasmEngine!: WasmEngine;
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
   private initialized = false;
@@ -77,6 +80,10 @@ export class QueryDO implements DurableObject {
       case "/invalidate":   return this.handleInvalidation(request);
       case "/query":        return this.handleQuery(request);
       case "/query/stream": return this.handleQueryStream(request);
+      case "/query/count":  return this.handleCount(request);
+      case "/query/exists": return this.handleExists(request);
+      case "/query/first":  return this.handleFirst(request);
+      case "/query/explain": return this.handleExplain(request);
       case "/tables":       return this.handleListTables();
       case "/meta":         return this.handleGetMeta(request);
       case "/diagnostics":  return this.handleDiagnostics();
@@ -191,6 +198,7 @@ export class QueryDO implements DurableObject {
     // If broadcast includes r2Prefix, this is a dataset — lazy-load full dataset from R2
     if (body.r2Prefix) {
       this.datasetCache.delete(body.table);
+      this.resultCache.invalidateByPrefix(`qr:${body.table}:`);
       this.wasmEngine.clearTable(body.table);
       this.wasmEngine.cacheClear();
       // Trigger lazy-load of the full dataset (reads manifest + all fragments)
@@ -228,6 +236,7 @@ export class QueryDO implements DurableObject {
     };
 
     this.footerCache.set(body.table, meta);
+    this.resultCache.invalidateByPrefix(`qr:${body.table}:`);
     this.wasmEngine.clearTable(body.table);
     this.wasmEngine.cacheClear();
     await this.state.storage.put(`table:${body.table}`, meta);
@@ -240,17 +249,7 @@ export class QueryDO implements DurableObject {
     if (!body.table || typeof body.table !== "string") {
       return this.json({ error: "Missing or invalid 'table' field" }, 400);
     }
-    const query: QueryDescriptor = {
-      table: body.table as string,
-      filters: (body.filters ?? []) as QueryDescriptor["filters"],
-      projections: (body.projections ?? body.select ?? []) as string[],
-      sortColumn: body.sortColumn as string | undefined,
-      sortDirection: body.sortDirection as "asc" | "desc" | undefined,
-      limit: body.limit as number | undefined,
-      vectorSearch: body.vectorSearch as QueryDescriptor["vectorSearch"],
-      aggregates: body.aggregates as QueryDescriptor["aggregates"],
-      groupBy: body.groupBy as string[] | undefined,
-    };
+    const query = this.parseQuery(body);
     try {
       const result = await this.executeQuery(query);
       result.requestId = requestId;
@@ -272,13 +271,179 @@ export class QueryDO implements DurableObject {
     }
   }
 
+  private queryKey(query: QueryDescriptor): string {
+    const normalized = {
+      t: query.table,
+      f: [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op)),
+      p: [...query.projections].sort(),
+      s: query.sortColumn, sd: query.sortDirection,
+      l: query.limit,
+      a: query.aggregates, g: query.groupBy,
+    };
+    const str = JSON.stringify(normalized, bigIntReplacer);
+    // FNV-1a hash
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return `qr:${query.table}:${(h >>> 0).toString(36)}`;
+  }
+
+  private parseQuery(request_body: Record<string, unknown>): QueryDescriptor {
+    return {
+      table: request_body.table as string,
+      filters: (request_body.filters ?? []) as QueryDescriptor["filters"],
+      projections: (request_body.projections ?? request_body.select ?? []) as string[],
+      sortColumn: request_body.sortColumn as string | undefined,
+      sortDirection: request_body.sortDirection as "asc" | "desc" | undefined,
+      limit: request_body.limit as number | undefined,
+      vectorSearch: request_body.vectorSearch as QueryDescriptor["vectorSearch"],
+      aggregates: request_body.aggregates as QueryDescriptor["aggregates"],
+      groupBy: request_body.groupBy as string[] | undefined,
+      cacheTTL: request_body.cacheTTL as number | undefined,
+    };
+  }
+
+  private async handleCount(request: Request): Promise<Response> {
+    const body = await request.json() as Record<string, unknown>;
+    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
+    const query = this.parseQuery(body);
+    try {
+      // Fast path: no filters — sum page rowCounts from cached metadata
+      if (query.filters.length === 0) {
+        const meta = this.footerCache.get(query.table)
+          ?? (await this.loadTableFromR2(query.table)) ?? undefined;
+        if (meta) {
+          const count = meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
+          return this.json({ count });
+        }
+      }
+      // With filters: use aggregate path
+      query.aggregates = [{ fn: "count", column: "*" }];
+      const result = await this.executeQuery(query);
+      const count = (result.rows[0]?.["count_*"] as number) ?? 0;
+      return this.json({ count });
+    } catch (err) {
+      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  private async handleExists(request: Request): Promise<Response> {
+    const body = await request.json() as Record<string, unknown>;
+    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
+    const query = this.parseQuery(body);
+    query.limit = 1;
+    try {
+      const result = await this.executeQuery(query);
+      return this.json({ exists: result.rowCount > 0 });
+    } catch (err) {
+      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  private async handleFirst(request: Request): Promise<Response> {
+    const body = await request.json() as Record<string, unknown>;
+    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
+    const query = this.parseQuery(body);
+    query.limit = 1;
+    try {
+      const result = await this.executeQuery(query);
+      return this.json({ row: result.rows[0] ?? null });
+    } catch (err) {
+      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  private async handleExplain(request: Request): Promise<Response> {
+    const body = await request.json() as Record<string, unknown>;
+    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
+    const query = this.parseQuery(body);
+    try {
+      let meta: TableMeta | undefined = this.footerCache.get(query.table);
+      const metaCached = !!meta;
+      if (!meta) {
+        meta = (await this.loadTableFromR2(query.table)) ?? undefined;
+        if (!meta) throw new Error(`Table "${query.table}" not found`);
+      }
+
+      const { columns } = meta;
+      const projectedColumns = query.projections.length > 0
+        ? columns.filter(c => query.projections.includes(c.name))
+        : columns;
+
+      let pagesTotal = 0;
+      let pagesSkipped = 0;
+      const ranges: { column: string; offset: number; length: number }[] = [];
+      const colDetails: ExplainResult["columns"] = [];
+
+      for (const col of projectedColumns) {
+        let colBytes = 0;
+        let colPages = 0;
+        for (const page of col.pages) {
+          pagesTotal++;
+          if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+            pagesSkipped++;
+            continue;
+          }
+          colPages++;
+          colBytes += page.byteLength;
+          ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
+        }
+        colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
+      }
+
+      const coalesced = coalesceRanges(ranges, 64 * 1024);
+      const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
+
+      // Check dataset for fragment count
+      const dataset = this.datasetCache.get(query.table);
+      const fragments = dataset ? dataset.fragmentMetas.size : 1;
+
+      const result: ExplainResult = {
+        table: query.table,
+        format: meta.format ?? "lance",
+        totalRows: meta.totalRows,
+        columns: colDetails,
+        pagesTotal,
+        pagesSkipped,
+        pagesScanned: pagesTotal - pagesSkipped,
+        estimatedBytes,
+        estimatedR2Reads: coalesced.length,
+        fragments,
+        filters: query.filters.map(f => ({
+          column: f.column,
+          op: f.op,
+          pushable: f.op !== "in" && f.op !== "neq",
+        })),
+        metaCached,
+      };
+      return this.json(result);
+    } catch (err) {
+      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
   /** Execute query using page-level R2 Range reads + WASM compute. Never downloads full files. */
   private async executeQuery(query: QueryDescriptor): Promise<QueryResult> {
     const t0 = Date.now();
 
+    // Result cache check (skip for vector search)
+    if (query.cacheTTL && !query.vectorSearch) {
+      const cacheKey = this.queryKey(query);
+      const cached = this.resultCache.get(cacheKey);
+      if (cached) return { ...cached, durationMs: 0 };
+    }
+
     // Multi-fragment dataset path
     const dataset = this.datasetCache.get(query.table);
-    if (dataset) return this.executeMultiFragment(query, dataset, t0);
+    if (dataset) {
+      const result = await this.executeMultiFragment(query, dataset, t0);
+      if (query.cacheTTL && !query.vectorSearch) {
+        this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+      }
+      return result;
+    }
 
     let meta: TableMeta | undefined = this.footerCache.get(query.table);
     if (!meta) {
@@ -289,10 +454,18 @@ export class QueryDO implements DurableObject {
     // Lance whole-file path: if no page byte ranges, load entire file into WASM
     const hasPages = meta.columns.some(c => c.pages.length > 0);
     if (!hasPages && meta.format === "lance" && meta.r2Key) {
-      return this.executeLanceWholeFile(query, meta, t0);
+      const result = await this.executeLanceWholeFile(query, meta, t0);
+      if (query.cacheTTL && !query.vectorSearch) {
+        this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+      }
+      return result;
     }
 
-    return this.scanPages(query, meta, t0);
+    const result = await this.scanPages(query, meta, t0);
+    if (query.cacheTTL && !query.vectorSearch) {
+      this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+    }
+    return result;
   }
 
   /** Load entire Lance fragment into WASM and execute SQL. Used when page-level metadata is unavailable. */

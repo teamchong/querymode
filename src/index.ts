@@ -1,10 +1,11 @@
 import { TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { AppendResult, ColumnMeta, Env, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
+import type { AppendResult, ColumnMeta, DataType, Env, ExplainResult, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest, type ManifestInfo } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipPage, bigIntReplacer } from "./decode.js";
+import { coalesceRanges } from "./coalesce.js";
 import { instantiateWasm, WasmEngine } from "./wasm-engine.js";
 
 export { MasterDO } from "./master-do.js";
@@ -31,6 +32,7 @@ export type {
   IcebergSchema,
   IcebergDatasetMeta,
   AppendResult,
+  ExplainResult,
   VectorIndexInfo,
 } from "./types.js";
 
@@ -203,6 +205,39 @@ class RemoteExecutor implements QueryExecutor {
       },
     });
   }
+
+  private async postQuery<T>(path: string, query: QueryDescriptor): Promise<T> {
+    const queryDo = this.getQueryDo();
+    const response = await queryDo.fetch(new Request(`http://internal${path}`, {
+      method: "POST",
+      body: JSON.stringify(query, bigIntReplacer),
+      headers: { "content-type": "application/json" },
+    }));
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`QueryMode ${path} failed: ${error}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  async count(query: QueryDescriptor): Promise<number> {
+    const body = await this.postQuery<{ count: number }>("/query/count", query);
+    return body.count;
+  }
+
+  async exists(query: QueryDescriptor): Promise<boolean> {
+    const body = await this.postQuery<{ exists: boolean }>("/query/exists", query);
+    return body.exists;
+  }
+
+  async first(query: QueryDescriptor): Promise<Row | null> {
+    const body = await this.postQuery<{ row: Row | null }>("/query/first", query);
+    return body.row;
+  }
+
+  async explain(query: QueryDescriptor): Promise<ExplainResult> {
+    return this.postQuery<ExplainResult>("/query/explain", query);
+  }
 }
 
 /**
@@ -319,6 +354,181 @@ class LocalExecutor implements QueryExecutor {
       retries: 0,
       rowsWritten: rows.length,
     };
+  }
+
+  /** Count matching rows. No-filter case uses metadata only (zero I/O). */
+  async count(query: QueryDescriptor): Promise<number> {
+    const meta = await this.getOrLoadMeta(query.table);
+    if (query.filters.length === 0) {
+      return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+    }
+    // With filters: fall through to aggregate path
+    const desc = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
+    const result = await this.execute(desc);
+    return (result.rows[0]?.["count_*"] as number) ?? 0;
+  }
+
+  async exists(query: QueryDescriptor): Promise<boolean> {
+    const desc = { ...query, limit: 1 };
+    const result = await this.execute(desc);
+    return result.rowCount > 0;
+  }
+
+  async first(query: QueryDescriptor): Promise<Row | null> {
+    const desc = { ...query, limit: 1 };
+    const result = await this.execute(desc);
+    return result.rows[0] ?? null;
+  }
+
+  async explain(query: QueryDescriptor): Promise<ExplainResult> {
+    const meta = await this.getOrLoadMeta(query.table);
+    const { columns } = meta;
+    const projectedColumns = query.projections.length > 0
+      ? columns.filter(c => query.projections.includes(c.name))
+      : columns;
+
+    let pagesTotal = 0;
+    let pagesSkipped = 0;
+    const ranges: { column: string; offset: number; length: number }[] = [];
+    const colDetails: ExplainResult["columns"] = [];
+
+    for (const col of projectedColumns) {
+      let colBytes = 0;
+      let colPages = 0;
+      for (const page of col.pages) {
+        pagesTotal++;
+        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+          pagesSkipped++;
+          continue;
+        }
+        colPages++;
+        colBytes += page.byteLength;
+        ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
+      }
+      colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
+    }
+
+    const coalesced = coalesceRanges(ranges, 64 * 1024);
+    const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
+    const totalRows = columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+
+    return {
+      table: query.table,
+      format: "lance",
+      totalRows,
+      columns: colDetails,
+      pagesTotal,
+      pagesSkipped,
+      pagesScanned: pagesTotal - pagesSkipped,
+      estimatedBytes,
+      estimatedR2Reads: coalesced.length,
+      fragments: 1,
+      filters: query.filters.map(f => ({
+        column: f.column,
+        op: f.op,
+        pushable: f.op !== "in" && f.op !== "neq",
+      })),
+      metaCached: this.metaCache.has(query.table),
+    };
+  }
+
+  async *cursor(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]> {
+    const meta = await this.getOrLoadMeta(query.table);
+    const { columns } = meta;
+    const projectedColumns = query.projections.length > 0
+      ? columns.filter(c => query.projections.includes(c.name))
+      : columns;
+
+    const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
+    const firstCol = projectedColumns[0];
+    if (!firstCol) return;
+
+    // If sorted, must buffer all rows then chunk
+    if (query.sortColumn) {
+      const result = await this.execute(query);
+      for (let i = 0; i < result.rows.length; i += batchSize) {
+        yield result.rows.slice(i, i + batchSize);
+      }
+      return;
+    }
+
+    const totalPages = firstCol.pages.length;
+    let pageIdx = 0;
+    let totalYielded = 0;
+
+    const fs = isUrl ? null : await import("node:fs/promises");
+    const handle = isUrl ? null : await fs!.open(query.table, "r");
+    const wasm = await this.getWasm();
+
+    try {
+      while (pageIdx < totalPages) {
+        let batchRows = 0;
+        const batchStartPage = pageIdx;
+        while (pageIdx < totalPages && batchRows < batchSize) {
+          const page = firstCol.pages[pageIdx];
+          if (!query.vectorSearch && canSkipPage(page, query.filters, firstCol.name)) {
+            pageIdx++;
+            continue;
+          }
+          batchRows += page.rowCount;
+          pageIdx++;
+        }
+
+        if (batchRows === 0) continue;
+
+        const columnData = new Map<string, ArrayBuffer[]>();
+        for (const col of projectedColumns) {
+          for (let pi = batchStartPage; pi < pageIdx; pi++) {
+            const page = col.pages[pi];
+            if (!page) continue;
+            if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) continue;
+
+            let ab: ArrayBuffer;
+            if (isUrl) {
+              const start = Number(page.byteOffset);
+              const end = start + page.byteLength - 1;
+              const resp = await fetch(query.table, { headers: { Range: `bytes=${start}-${end}` } });
+              ab = await resp.arrayBuffer();
+            } else {
+              const buf = Buffer.alloc(page.byteLength);
+              await handle!.read(buf, 0, page.byteLength, Number(page.byteOffset));
+              ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+            }
+
+            const arr = columnData.get(col.name) ?? [];
+            arr.push(ab);
+            columnData.set(col.name, arr);
+          }
+        }
+
+        const rows = assembleRows(columnData, projectedColumns, query, wasm);
+
+        if (rows.length > 0) {
+          if (query.limit && totalYielded + rows.length > query.limit) {
+            yield rows.slice(0, query.limit - totalYielded);
+            return;
+          }
+          yield rows;
+          totalYielded += rows.length;
+        }
+      }
+    } finally {
+      if (handle) await handle.close();
+    }
+  }
+
+  /** Get or load table metadata (footer + columns). Caches in-memory. */
+  private async getOrLoadMeta(table: string): Promise<{ columns: ColumnMeta[]; fileSize: number }> {
+    let cached = this.metaCache.get(table);
+    if (cached) return cached;
+    const isUrl = table.startsWith("http://") || table.startsWith("https://");
+    cached = isUrl ? await this.loadMetaFromUrl(table) : await this.loadMetaFromFile(table);
+    this.metaCache.set(table, cached);
+    if (this.metaCache.size > 1000) {
+      const firstKey = this.metaCache.keys().next().value;
+      if (firstKey) this.metaCache.delete(firstKey);
+    }
+    return cached;
   }
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {

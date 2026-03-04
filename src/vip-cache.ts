@@ -9,7 +9,7 @@
  * stay in cache even under pressure from cold one-off accesses.
  */
 export class VipCache<K, V> {
-  private map = new Map<K, { value: V; accessCount: number; lastAccess: number }>();
+  private map = new Map<K, { value: V; accessCount: number; lastAccess: number; expiresAt?: number }>();
   private maxEntries: number;
   private vipThreshold: number;
 
@@ -21,6 +21,10 @@ export class VipCache<K, V> {
   get(key: K): V | undefined {
     const entry = this.map.get(key);
     if (!entry) return undefined;
+    if (entry.expiresAt && Date.now() > entry.expiresAt) {
+      this.map.delete(key);
+      return undefined;
+    }
     entry.accessCount++;
     entry.lastAccess = Date.now();
     return entry.value;
@@ -40,6 +44,34 @@ export class VipCache<K, V> {
     }
 
     this.map.set(key, { value, accessCount: 1, lastAccess: Date.now() });
+  }
+
+  setWithTTL(key: K, value: V, ttlMs: number): void {
+    const existing = this.map.get(key);
+    if (existing) {
+      existing.value = value;
+      existing.accessCount++;
+      existing.lastAccess = Date.now();
+      existing.expiresAt = Date.now() + ttlMs;
+      return;
+    }
+
+    if (this.map.size >= this.maxEntries) {
+      this.evict();
+    }
+
+    this.map.set(key, { value, accessCount: 1, lastAccess: Date.now(), expiresAt: Date.now() + ttlMs });
+  }
+
+  invalidateByPrefix(prefix: string): number {
+    let count = 0;
+    for (const key of this.map.keys()) {
+      if (String(key).startsWith(prefix)) {
+        this.map.delete(key);
+        count++;
+      }
+    }
+    return count;
   }
 
   has(key: K): boolean {
@@ -68,6 +100,15 @@ export class VipCache<K, V> {
   }
 
   private evict(): void {
+    // First try to evict any expired entry
+    const now = Date.now();
+    for (const [key, entry] of this.map) {
+      if (entry.expiresAt && now > entry.expiresAt) {
+        this.map.delete(key);
+        return;
+      }
+    }
+
     // Try to evict coldest (below VIP threshold) entry first
     let coldestKey: K | undefined;
     let coldestTime = Infinity;

@@ -197,6 +197,22 @@ export interface VectorIndexInfo {
   config?: { nPartitions: number; nSubvectors: number; nProbe: number };
 }
 
+/** Query plan inspection result returned by .explain() */
+export interface ExplainResult {
+  table: string;
+  format: "lance" | "parquet" | "iceberg";
+  totalRows: number;
+  columns: { name: string; dtype: DataType; pages: number; bytes: number }[];
+  pagesTotal: number;
+  pagesSkipped: number;
+  pagesScanned: number;
+  estimatedBytes: number;
+  estimatedR2Reads: number;
+  fragments: number;
+  filters: { column: string; op: string; pushable: boolean }[];
+  metaCached: boolean;
+}
+
 /** Environment bindings for Cloudflare Workers */
 export interface Env {
   DATA_BUCKET: R2Bucket;

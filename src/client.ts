@@ -1,6 +1,7 @@
 import type {
   AggregateOp,
   AppendResult,
+  ExplainResult,
   FilterOp,
   QueryResult,
   Row,
@@ -29,6 +30,7 @@ export class TableQuery {
   private _vectorSearch?: VectorSearchParams;
   private _aggregates: AggregateOp[] = [];
   private _groupBy: string[] = [];
+  private _cacheTTL?: number;
   private _executor: QueryExecutor;
 
   constructor(table: string, executor: QueryExecutor) {
@@ -84,6 +86,56 @@ export class TableQuery {
     return this;
   }
 
+  /** Enable query result caching with a TTL in milliseconds. Remote executor only. */
+  cache(opts: { ttl: number }): this {
+    this._cacheTTL = opts.ttl;
+    return this;
+  }
+
+  /** Return the count of matching rows without full materialization. */
+  async count(): Promise<number> {
+    if (this._executor.count) return this._executor.count(this.toDescriptor());
+    const desc = this.toDescriptor();
+    desc.aggregates = [{ fn: "count", column: "*" }];
+    const result = await this._executor.execute(desc);
+    return (result.rows[0]?.["count_*"] as number) ?? 0;
+  }
+
+  /** Return true if at least one row matches. */
+  async exists(): Promise<boolean> {
+    if (this._executor.exists) return this._executor.exists(this.toDescriptor());
+    const desc = this.toDescriptor();
+    desc.limit = 1;
+    if (desc.projections.length === 0) desc.projections = [];
+    const result = await this._executor.execute(desc);
+    return result.rowCount > 0;
+  }
+
+  /** Return the first matching row, or null. */
+  async first(): Promise<Row | null> {
+    if (this._executor.first) return this._executor.first(this.toDescriptor());
+    const desc = this.toDescriptor();
+    desc.limit = 1;
+    const result = await this._executor.execute(desc);
+    return result.rows[0] ?? null;
+  }
+
+  /** Inspect the query plan without executing. No data I/O is performed. */
+  async explain(): Promise<ExplainResult> {
+    if (!this._executor.explain) {
+      throw new Error("explain() requires an executor with plan inspection support");
+    }
+    return this._executor.explain(this.toDescriptor());
+  }
+
+  /** Iterate over results in batches. Processes pages lazily — stops when consumer breaks. */
+  cursor(opts?: { batchSize?: number }): AsyncIterable<Row[]> {
+    if (!this._executor.cursor) {
+      throw new Error("cursor() requires an executor with cursor support");
+    }
+    return this._executor.cursor(this.toDescriptor(), opts?.batchSize ?? 1000);
+  }
+
   /** Append rows to this table. Uses CAS coordination for safe concurrent writes. */
   async append(rows: Record<string, unknown>[]): Promise<AppendResult> {
     if (!this._executor.append) {
@@ -116,6 +168,7 @@ export class TableQuery {
       vectorSearch: this._vectorSearch,
       aggregates: this._aggregates.length > 0 ? this._aggregates : undefined,
       groupBy: this._groupBy.length > 0 ? this._groupBy : undefined,
+      cacheTTL: this._cacheTTL,
     };
   }
 }
@@ -131,6 +184,7 @@ export interface QueryDescriptor {
   vectorSearch?: VectorSearchParams;
   aggregates?: AggregateOp[];
   groupBy?: string[];
+  cacheTTL?: number;
 }
 
 /** Interface for query execution backends (local, DO, browser) */
@@ -140,4 +194,14 @@ export interface QueryExecutor {
   append?(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
   /** Optional: streaming execution (available on remote executors) */
   executeStream?(query: QueryDescriptor): Promise<ReadableStream<Row>>;
+  /** Optional: count without full materialization */
+  count?(query: QueryDescriptor): Promise<number>;
+  /** Optional: existence check with limit(1) */
+  exists?(query: QueryDescriptor): Promise<boolean>;
+  /** Optional: return first matching row */
+  first?(query: QueryDescriptor): Promise<Row | null>;
+  /** Optional: plan inspection without execution */
+  explain?(query: QueryDescriptor): Promise<ExplainResult>;
+  /** Optional: lazy batch iteration */
+  cursor?(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]>;
 }
