@@ -7,15 +7,12 @@ import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import wasmModule from "./wasm-module.js";
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
-export class MasterDO implements DurableObject {
-  private state: DurableObjectState;
-  private env: Env;
+export class MasterDO extends DurableObject<Env> {
   private broadcastFailures = new Map<string, number>(); // region → consecutive failure count
   private wasmEngine?: WasmEngine;
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
   }
 
   private json(body: unknown, status = 200): Response {
@@ -37,12 +34,12 @@ export class MasterDO implements DurableObject {
 
   private async handleRegister(request: Request): Promise<Response> {
     const { queryDoId, region } = (await request.json()) as { queryDoId: string; region: string };
-    const regions = (await this.state.storage.get<Record<string, string>>("regions")) ?? {};
+    const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
     regions[region] = queryDoId;
-    await this.state.storage.put("regions", regions);
+    await this.ctx.storage.put("regions", regions);
 
     // Return current table timestamps so waking Query DOs can detect stale caches
-    const tables = await this.state.storage.list<TableMeta>({ prefix: "table:" });
+    const tables = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
     const tableVersions: Record<string, { r2Key: string; updatedAt: number }> = {};
     for (const [key, meta] of tables) {
       const name = key.replace("table:", "");
@@ -71,7 +68,7 @@ export class MasterDO implements DurableObject {
       name: tableName, footer: result.parsed, format: result.format, columns: result.columns,
       totalRows, fileSize: result.fileSize, r2Key, updatedAt: Date.now(),
     };
-    await this.state.storage.put(`table:${tableName}`, meta);
+    await this.ctx.storage.put(`table:${tableName}`, meta);
     await this.broadcast(tableName, r2Key, result, { totalRows });
     return this.json({ success: true, table: tableName });
   }
@@ -109,7 +106,7 @@ export class MasterDO implements DurableObject {
       }
     }
 
-    await this.state.storage.put(`table:${tableName}`, {
+    await this.ctx.storage.put(`table:${tableName}`, {
       name: tableName, r2Prefix, manifest, totalRows: manifest.totalRows, updatedAt: Date.now(),
     });
 
@@ -134,6 +131,19 @@ export class MasterDO implements DurableObject {
     };
 
     if (!rows?.length) return this.json({ error: "No rows provided" }, 400);
+    try {
+      const result = await this.executeAppend(table, rows);
+      return this.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = msg.includes("CAS failed") ? 409 : 400;
+      return this.json({ error: msg }, status);
+    }
+  }
+
+  /** Core append logic shared by HTTP fetch handler and RPC. */
+  private async executeAppend(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+    if (!rows?.length) throw new Error("No rows provided");
 
     const wasm = await this.getWasm();
 
@@ -185,7 +195,7 @@ export class MasterDO implements DurableObject {
       }
     }
 
-    if (columnArrays.length === 0) return this.json({ error: "No valid columns found" }, 400);
+    if (columnArrays.length === 0) throw new Error("No valid columns found");
 
     // Build Lance fragment via WASM
     const fragmentBytes = wasm.buildFragment(columnArrays);
@@ -252,32 +262,31 @@ export class MasterDO implements DurableObject {
         }
 
         // Success — broadcast invalidation
+        const tableName = table.replace(/\.lance\/?$/, "").split("/").pop() ?? table;
+        const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
         const footerResult = await this.readFooterAndColumns(dataR2Key);
         if (footerResult) {
-          const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
-          await this.broadcast(table.replace(/\.lance\/?$/, "").split("/").pop() ?? table, dataR2Key, footerResult, { totalRows });
+          await this.broadcast(tableName, dataR2Key, footerResult, { totalRows });
         }
 
         // Update stored table meta
-        const tableName = table.replace(/\.lance\/?$/, "").split("/").pop() ?? table;
-        const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
-        await this.state.storage.put(`table:${tableName}`, {
+        await this.ctx.storage.put(`table:${tableName}`, {
           name: tableName, r2Prefix, totalRows, updatedAt: Date.now(),
         });
 
-        return this.json({
+        return {
           version: newVersion,
           dataFilePath,
           retries: attempt,
           rowsWritten: rows.length,
-        } satisfies AppendResult);
+        } satisfies AppendResult;
       } catch {
         // R2 conditional put failure — retry
         continue;
       }
     }
 
-    return this.json({ error: "CAS failed after max retries" }, 409);
+    throw new Error("CAS failed after max retries");
   }
 
   /** Build a simple binary manifest for the _versions/ directory. */
@@ -360,7 +369,7 @@ export class MasterDO implements DurableObject {
   }
 
   private async handleListTables(): Promise<Response> {
-    const tables = await this.state.storage.list<TableMeta>({ prefix: "table:" });
+    const tables = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
     return this.json({ tables: [...tables.keys()].map(k => k.replace("table:", "")) });
   }
 
@@ -424,7 +433,7 @@ export class MasterDO implements DurableObject {
     footer: { raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[]; format?: "lance" | "parquet" },
     opts?: { totalRows?: number; r2Prefix?: string },
   ): Promise<void> {
-    const regions = (await this.state.storage.get<Record<string, string>>("regions")) ?? {};
+    const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
     const payload = JSON.stringify({
       table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
       footerBytes: Array.from(new Uint8Array(footer.raw)),
@@ -458,7 +467,12 @@ export class MasterDO implements DurableObject {
         delete regions[r];
         this.broadcastFailures.delete(r);
       }
-      await this.state.storage.put("regions", regions);
+      await this.ctx.storage.put("regions", regions);
     }
+  }
+
+  /** RPC: Append rows — zero-serialization call from RemoteExecutor. */
+  async appendRpc(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+    return this.executeAppend(table, rows);
   }
 }

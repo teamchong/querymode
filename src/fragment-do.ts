@@ -18,17 +18,14 @@ interface ScanRequest {
  * across queries and datasets. Footer cache persists across scans,
  * and the DO hibernates when idle — next query wakes it with cache warm.
  */
-export class FragmentDO implements DurableObject {
-  private state: DurableObjectState;
-  private env: Env;
+export class FragmentDO extends DurableObject<Env> {
   private wasmEngine!: WasmEngine;
   /** Footer cache keyed by r2Key — survives across scans while the DO is alive. */
   private footerCache = new Map<string, TableMeta>();
   private initialized = false;
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
   }
 
   private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
@@ -50,7 +47,7 @@ export class FragmentDO implements DurableObject {
     this.initialized = true;
 
     // Restore footer cache from SQLite (survives hibernation)
-    const stored = await this.state.storage.list<TableMeta>({ prefix: "frag:" });
+    const stored = await this.ctx.storage.list<TableMeta>({ prefix: "frag:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("frag:", ""), meta);
 
     this.wasmEngine = await instantiateWasm(wasmModule);
@@ -64,6 +61,20 @@ export class FragmentDO implements DurableObject {
 
   private async handleScan(request: Request): Promise<Response> {
     const { fragments, query } = (await request.json()) as ScanRequest;
+    const result = await this.executeScan(fragments, query);
+
+    this.log("info", "scan_complete", {
+      fragmentCount: fragments.length, rowCount: result.rowCount,
+      bytesRead: result.bytesRead, durationMs: result.durationMs,
+      r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
+      cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
+    });
+
+    return this.json(result);
+  }
+
+  /** Core scan logic shared by HTTP fetch handler and RPC. */
+  private async executeScan(fragments: ScanRequest["fragments"], query: QueryDescriptor): Promise<QueryResult> {
     const t0 = Date.now();
     let totalBytesRead = 0;
     let totalPagesSkipped = 0;
@@ -79,7 +90,7 @@ export class FragmentDO implements DurableObject {
       const effectiveMeta = (cachedMeta && cachedMeta.updatedAt >= meta.updatedAt) ? cachedMeta : meta;
       if (!cachedMeta || cachedMeta.updatedAt < meta.updatedAt) {
         this.footerCache.set(r2Key, meta);
-        this.state.storage.put(`frag:${r2Key}`, meta);
+        this.ctx.storage.put(`frag:${r2Key}`, meta);
       }
 
       let cols = query.projections.length > 0
@@ -182,7 +193,7 @@ export class FragmentDO implements DurableObject {
       totalWasmExecMs += Date.now() - wasmStart;
     }
 
-    const result: QueryResult = {
+    return {
       rows: allRows,
       rowCount: allRows.length,
       columns: query.projections.length > 0
@@ -196,14 +207,11 @@ export class FragmentDO implements DurableObject {
       cacheHits: totalCacheHits,
       cacheMisses: totalCacheMisses,
     };
+  }
 
-    this.log("info", "scan_complete", {
-      fragmentCount: fragments.length, rowCount: result.rowCount,
-      bytesRead: totalBytesRead, durationMs: result.durationMs,
-      r2ReadMs: totalR2ReadMs, wasmExecMs: totalWasmExecMs,
-      cacheHits: totalCacheHits, cacheMisses: totalCacheMisses,
-    });
-
-    return this.json(result);
+  /** RPC: Scan fragments — zero-serialization call from QueryDO. */
+  async scanRpc(fragments: ScanRequest["fragments"], query: QueryDescriptor): Promise<QueryResult> {
+    await this.ensureInitialized();
+    return this.executeScan(fragments, query);
   }
 }

@@ -4,7 +4,7 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage, bigIntReplacer, assembleRows } from "./decode.js";
+import { canSkipPage, bigIntReplacer } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -27,9 +27,7 @@ const RESULT_VIP_THRESHOLD = 2; // Accesses needed for VIP result cache
  * Query DO — per-region reader with cached footers.
  * WASM (Zig SIMD) handles all compute; TS handles I/O orchestration only.
  */
-export class QueryDO implements DurableObject {
-  private state: DurableObjectState;
-  private env: Env;
+export class QueryDO extends DurableObject<Env> {
   private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
   private datasetCache = new Map<string, DatasetMeta>();
   private resultCache = new VipCache<string, QueryResult>(RESULT_CACHE_MAX, RESULT_VIP_THRESHOLD);
@@ -38,15 +36,80 @@ export class QueryDO implements DurableObject {
   private initialized = false;
   private registeredWithMaster = false;
 
-  constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
   }
 
   private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
     console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
       JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
     );
+  }
+
+  /** Assemble Row[] from a column-major decoded map. */
+  private assembleRowsFromColumns(
+    decodedColumns: Map<string, (number | bigint | string | boolean | null)[]>,
+    colNames: string[],
+  ): Row[] {
+    let numRows = 0;
+    for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
+    const rows: Row[] = [];
+    for (let i = 0; i < numRows; i++) {
+      const row: Row = {};
+      for (const name of colNames) {
+        const vals = decodedColumns.get(name);
+        row[name] = vals && i < vals.length ? vals[i] : null;
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** Apply filters, sort, and limit in JS. Handles bigint↔number coercion for cross-type comparison. */
+  private applyJsPostProcessing(rows: Row[], query: QueryDescriptor): Row[] {
+    let result = rows;
+    if (query.filters.length > 0) {
+      result = result.filter(row => {
+        for (const f of query.filters) {
+          const val = row[f.column];
+          if (val == null) return false;
+          if (f.op === "in") {
+            const arr = f.value as (number | bigint | string)[];
+            if (!arr.some(v => {
+              if (typeof val === "bigint" && typeof v === "number") return val === BigInt(Math.trunc(v));
+              if (typeof val === "number" && typeof v === "bigint") return BigInt(Math.trunc(val)) === v;
+              return val === v;
+            })) return false;
+            continue;
+          }
+          let cv = val, cf = f.value;
+          if (typeof cv === "bigint" && typeof cf === "number") cf = BigInt(Math.trunc(cf));
+          else if (typeof cv === "number" && typeof cf === "bigint") cv = BigInt(Math.trunc(cv));
+          switch (f.op) {
+            case "eq": if (cv !== cf) return false; break;
+            case "neq": if (cv === cf) return false; break;
+            case "gt": if (!(cv > (cf as number | bigint | string))) return false; break;
+            case "gte": if (!(cv >= (cf as number | bigint | string))) return false; break;
+            case "lt": if (!(cv < (cf as number | bigint | string))) return false; break;
+            case "lte": if (!(cv <= (cf as number | bigint | string))) return false; break;
+          }
+        }
+        return true;
+      });
+    }
+    if (query.sortColumn) {
+      const dir = query.sortDirection === "desc" ? -1 : 1;
+      const sc = query.sortColumn;
+      result.sort((a, b) => {
+        const va = a[sc], vb = b[sc];
+        if (va == null && vb == null) return 0;
+        if (va == null) return dir;
+        if (vb == null) return -dir;
+        return va < vb ? -dir : va > vb ? dir : 0;
+      });
+    }
+    if (query.limit && query.limit > 0) result = result.slice(0, query.limit);
+    return result;
   }
 
   /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
@@ -72,8 +135,8 @@ export class QueryDO implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const region = request.headers.get("x-querymode-region");
     if (region) {
-      const stored = await this.state.storage.get<string>("region");
-      if (!stored) await this.state.storage.put("region", region);
+      const stored = await this.ctx.storage.get<string>("region");
+      if (!stored) await this.ctx.storage.put("region", region);
     }
     await this.ensureInitialized();
     if (!this.registeredWithMaster) this.registerWithMaster();
@@ -98,7 +161,7 @@ export class QueryDO implements DurableObject {
     if (this.initialized) return;
     this.initialized = true;
 
-    const stored = await this.state.storage.list<TableMeta>({ prefix: "table:" });
+    const stored = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 
     this.wasmEngine = await instantiateWasm(wasmModule);
@@ -109,11 +172,11 @@ export class QueryDO implements DurableObject {
 
   private registerWithMaster(): void {
     const master = this.env.MASTER_DO.get(this.env.MASTER_DO.idFromName("master"));
-    this.state.storage.get<string>("region").then(async (region) => {
+    this.ctx.storage.get<string>("region").then(async (region) => {
       try {
         const resp = await master.fetch(new Request("http://internal/register", {
           method: "POST",
-          body: JSON.stringify({ queryDoId: this.state.id.toString(), region: region ?? "unknown" }),
+          body: JSON.stringify({ queryDoId: this.ctx.id.toString(), region: region ?? "unknown" }),
           headers: { "content-type": "application/json" },
         }));
         this.registeredWithMaster = true;
@@ -185,7 +248,7 @@ export class QueryDO implements DurableObject {
 
       this.footerCache.set(table, meta);
       this.wasmEngine.clearTable(table);
-      await this.state.storage.put(`table:${table}`, meta);
+      await this.ctx.storage.put(`table:${table}`, meta);
     }
   }
 
@@ -241,7 +304,7 @@ export class QueryDO implements DurableObject {
     this.resultCache.invalidateByPrefix(`qr:${body.table}:`);
     this.wasmEngine.clearTable(body.table);
     this.wasmEngine.cacheClear();
-    await this.state.storage.put(`table:${body.table}`, meta);
+    await this.ctx.storage.put(`table:${body.table}`, meta);
     return this.json({ updated: true, table: body.table });
   }
 
@@ -252,7 +315,7 @@ export class QueryDO implements DurableObject {
     try {
       query = this.parseQuery(body);
     } catch (err) {
-      return this.json({ error: (err as Error).message }, 400);
+      return this.json({ error: this.errMsg(err) }, 400);
     }
     try {
       const result = await this.executeQuery(query);
@@ -265,9 +328,9 @@ export class QueryDO implements DurableObject {
       });
       return this.json(result);
     } catch (err) {
-      const msg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
       this.log("error", "query_error", {
-        requestId, table: query.table, error: msg,
+        requestId, table: query.table, error: msg, stack: err instanceof Error ? err.stack : undefined,
         filterCount: query.filters.length,
         projectionCount: query.projections.length,
       });
@@ -298,124 +361,127 @@ export class QueryDO implements DurableObject {
     return parseAndValidateQuery(body) as QueryDescriptor;
   }
 
+  /** Core count logic shared by HTTP handler and RPC. */
+  private async executeCount(query: QueryDescriptor): Promise<number> {
+    if (query.filters.length === 0) {
+      const meta = this.footerCache.get(query.table)
+        ?? (await this.loadTableFromR2(query.table)) ?? undefined;
+      if (meta) return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
+    }
+    query.aggregates = [{ fn: "count", column: "*" }];
+    const result = await this.executeQuery(query);
+    return (result.rows[0]?.["count_*"] as number) ?? 0;
+  }
+
+  private errMsg(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
   private async handleCount(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
     try {
-      // Fast path: no filters — sum page rowCounts from cached metadata
-      if (query.filters.length === 0) {
-        const meta = this.footerCache.get(query.table)
-          ?? (await this.loadTableFromR2(query.table)) ?? undefined;
-        if (meta) {
-          const count = meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
-          return this.json({ count });
-        }
-      }
-      // With filters: use aggregate path
-      query.aggregates = [{ fn: "count", column: "*" }];
-      const result = await this.executeQuery(query);
-      const count = (result.rows[0]?.["count_*"] as number) ?? 0;
-      return this.json({ count });
+      return this.json({ count: await this.executeCount(query) });
     } catch (err) {
-      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      return this.json({ error: this.errMsg(err) }, 500);
     }
   }
 
   private async handleExists(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
     query.limit = 1;
     try {
-      const result = await this.executeQuery(query);
-      return this.json({ exists: result.rowCount > 0 });
+      return this.json({ exists: (await this.executeQuery(query)).rowCount > 0 });
     } catch (err) {
-      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      return this.json({ error: this.errMsg(err) }, 500);
     }
   }
 
   private async handleFirst(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
     query.limit = 1;
     try {
-      const result = await this.executeQuery(query);
-      return this.json({ row: result.rows[0] ?? null });
+      return this.json({ row: (await this.executeQuery(query)).rows[0] ?? null });
     } catch (err) {
-      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      return this.json({ error: this.errMsg(err) }, 500);
     }
   }
 
   private async handleExplain(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
     try {
-      let meta: TableMeta | undefined = this.footerCache.get(query.table);
-      const metaCached = !!meta;
-      if (!meta) {
-        meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-        if (!meta) throw new Error(`Table "${query.table}" not found`);
-      }
-
-      const { columns } = meta;
-      const projectedColumns = query.projections.length > 0
-        ? columns.filter(c => query.projections.includes(c.name))
-        : columns;
-
-      let pagesTotal = 0;
-      let pagesSkipped = 0;
-      const ranges: { column: string; offset: number; length: number }[] = [];
-      const colDetails: ExplainResult["columns"] = [];
-
-      for (const col of projectedColumns) {
-        let colBytes = 0;
-        let colPages = 0;
-        for (const page of col.pages) {
-          pagesTotal++;
-          if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-            pagesSkipped++;
-            continue;
-          }
-          colPages++;
-          colBytes += page.byteLength;
-          ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
-        }
-        colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
-      }
-
-      const coalesced = coalesceRanges(ranges, 64 * 1024);
-      const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
-
-      // Check dataset for fragment count
-      const dataset = this.datasetCache.get(query.table);
-      const fragments = dataset ? dataset.fragmentMetas.size : 1;
-
-      const result: ExplainResult = {
-        table: query.table,
-        format: meta.format ?? "lance",
-        totalRows: meta.totalRows,
-        columns: colDetails,
-        pagesTotal,
-        pagesSkipped,
-        pagesScanned: pagesTotal - pagesSkipped,
-        estimatedBytes,
-        estimatedR2Reads: coalesced.length,
-        estimatedRows: meta.totalRows,
-        fragments,
-        filters: query.filters.map(f => ({
-          column: f.column,
-          op: f.op,
-          pushable: f.op !== "in" && f.op !== "neq",
-        })),
-        metaCached,
-      };
-      return this.json(result);
+      return this.json(await this.executeExplain(query));
     } catch (err) {
-      return this.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      return this.json({ error: this.errMsg(err) }, 500);
     }
+  }
+
+  /** Core explain logic shared by HTTP handler and RPC. */
+  private async executeExplain(query: QueryDescriptor): Promise<ExplainResult> {
+    let meta: TableMeta | undefined = this.footerCache.get(query.table);
+    const metaCached = !!meta;
+    if (!meta) {
+      meta = (await this.loadTableFromR2(query.table)) ?? undefined;
+      if (!meta) throw new Error(`Table "${query.table}" not found`);
+    }
+
+    const { columns } = meta;
+    const projectedColumns = query.projections.length > 0
+      ? columns.filter(c => query.projections.includes(c.name))
+      : columns;
+
+    let pagesTotal = 0;
+    let pagesSkipped = 0;
+    const ranges: { column: string; offset: number; length: number }[] = [];
+    const colDetails: ExplainResult["columns"] = [];
+
+    for (const col of projectedColumns) {
+      let colBytes = 0;
+      let colPages = 0;
+      for (const page of col.pages) {
+        pagesTotal++;
+        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+          pagesSkipped++;
+          continue;
+        }
+        colPages++;
+        colBytes += page.byteLength;
+        ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
+      }
+      colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
+    }
+
+    const coalesced = coalesceRanges(ranges, 64 * 1024);
+    const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
+    const dataset = this.datasetCache.get(query.table);
+    const fragments = dataset ? dataset.fragmentMetas.size : 1;
+
+    return {
+      table: query.table,
+      format: meta.format ?? "lance",
+      totalRows: meta.totalRows,
+      columns: colDetails,
+      pagesTotal,
+      pagesSkipped,
+      pagesScanned: pagesTotal - pagesSkipped,
+      estimatedBytes,
+      estimatedR2Reads: coalesced.length,
+      estimatedRows: meta.totalRows,
+      fragments,
+      filters: query.filters.map(f => ({
+        column: f.column,
+        op: f.op,
+        pushable: f.op !== "in" && f.op !== "neq",
+      })),
+      metaCached,
+    };
   }
 
   /** Execute query using page-level R2 Range reads + WASM compute. Never downloads full files. */
@@ -423,41 +489,35 @@ export class QueryDO implements DurableObject {
     const t0 = Date.now();
 
     // Result cache check (skip for vector search)
-    if (query.cacheTTL && !query.vectorSearch) {
-      const cacheKey = this.queryKey(query);
-      const cached = this.resultCache.get(cacheKey);
+    const cacheable = !!(query.cacheTTL && !query.vectorSearch);
+    if (cacheable) {
+      const cached = this.resultCache.get(this.queryKey(query));
       if (cached) return { ...cached, durationMs: 0 };
     }
 
     // Multi-fragment dataset path
     const dataset = this.datasetCache.get(query.table);
+    let result: QueryResult;
     if (dataset) {
-      const result = await this.executeMultiFragment(query, dataset, t0);
-      if (query.cacheTTL && !query.vectorSearch) {
-        this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+      result = await this.executeMultiFragment(query, dataset, t0);
+    } else {
+      let meta: TableMeta | undefined = this.footerCache.get(query.table);
+      if (!meta) {
+        meta = (await this.loadTableFromR2(query.table)) ?? undefined;
+        if (!meta) throw new Error(`Table "${query.table}" not found`);
       }
-      return result;
-    }
 
-    let meta: TableMeta | undefined = this.footerCache.get(query.table);
-    if (!meta) {
-      meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (!meta) throw new Error(`Table "${query.table}" not found`);
-    }
-
-    // Lance whole-file path: if no page byte ranges, load entire file into WASM
-    const hasPages = meta.columns.some(c => c.pages.length > 0);
-    if (!hasPages && meta.format === "lance" && meta.r2Key) {
-      const result = await this.executeLanceWholeFile(query, meta, t0);
-      if (query.cacheTTL && !query.vectorSearch) {
-        this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+      // Lance whole-file path: if no page byte ranges, load entire file into WASM
+      const hasPages = meta.columns.some(c => c.pages.length > 0);
+      if (!hasPages && meta.format === "lance" && meta.r2Key) {
+        result = await this.executeLanceWholeFile(query, meta, t0);
+      } else {
+        result = await this.scanPages(query, meta, t0);
       }
-      return result;
     }
 
-    const result = await this.scanPages(query, meta, t0);
-    if (query.cacheTTL && !query.vectorSearch) {
-      this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL);
+    if (cacheable) {
+      this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL!);
     }
     return result;
   }
@@ -536,51 +596,10 @@ export class QueryDO implements DurableObject {
       decodedColumns.set(col.name, values);
     }
 
-    // Assemble rows
     const colNames = [...decodedColumns.keys()];
-    let numRows = 0;
-    for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
-    let rows: Row[] = [];
-    for (let i = 0; i < numRows; i++) {
-      const row: Row = {};
-      for (const name of colNames) {
-        const vals = decodedColumns.get(name);
-        row[name] = vals && i < vals.length ? vals[i] : null;
-      }
-      rows.push(row);
-    }
-
-    // Apply filters, sort, limit in JS
-    if (query.filters.length > 0) {
-      rows = rows.filter(row => {
-        for (const f of query.filters) {
-          const val = row[f.column];
-          if (val == null) return false;
-          switch (f.op) {
-            case "eq": if (val !== f.value) return false; break;
-            case "neq": if (val === f.value) return false; break;
-            case "gt": if (!(val > f.value)) return false; break;
-            case "gte": if (!(val >= f.value)) return false; break;
-            case "lt": if (!(val < f.value)) return false; break;
-            case "lte": if (!(val <= f.value)) return false; break;
-          }
-        }
-        return true;
-      });
-    }
-    if (query.sortColumn) {
-      const dir = query.sortDirection === "desc" ? -1 : 1;
-      const sc = query.sortColumn;
-      rows.sort((a, b) => {
-        const va = a[sc], vb = b[sc];
-        if (va == null && vb == null) return 0;
-        if (va == null) return dir;
-        if (vb == null) return -dir;
-        return va < vb ? -dir : va > vb ? dir : 0;
-      });
-    }
-    if (query.limit && query.limit > 0) rows = rows.slice(0, query.limit);
-
+    let rows = this.applyJsPostProcessing(
+      this.assembleRowsFromColumns(decodedColumns, colNames), query,
+    );
     const wasmExecMs = Date.now() - wasmStart;
 
     return {
@@ -619,12 +638,18 @@ export class QueryDO implements DurableObject {
       columnPageInfos.set(col.name, keptPages);
     }
 
-    // Cache-before-fetch: check WASM buffer pool for each range
+    // 3-tier cache hierarchy:
+    //   L1: WASM buffer pool (per-DO, in-memory, fastest, lost on hibernation)
+    //   L2: caches.default (per-datacenter, shared across DOs, survives hibernation)
+    //   L3: R2 (global, slowest)
     const columnData = new Map<string, ArrayBuffer[]>();
-    let cacheHits = 0;
-    let cacheMisses = 0;
-    const uncachedRanges: typeof ranges = [];
+    let cacheHits = 0;   // L1 hits
+    let cacheMisses = 0; // L1 misses
+    let edgeCacheHits = 0;   // L2 hits
+    let edgeCacheMisses = 0; // L2 misses
+    const l1Misses: typeof ranges = [];
 
+    // L1: Check WASM buffer pool
     for (const r of ranges) {
       const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
       const cached = this.wasmEngine.cacheGet(cacheKey);
@@ -635,20 +660,49 @@ export class QueryDO implements DurableObject {
         columnData.set(r.column, arr);
       } else {
         cacheMisses++;
-        uncachedRanges.push(r);
+        l1Misses.push(r);
       }
     }
 
-    // Bounded prefetch pipeline: fire all R2 reads eagerly (up to 8 concurrent),
-    // each fetch resolves independently so later logic doesn't block on earlier slow reads.
-    // This overlaps R2 I/O: while fetch N is downloading, fetch N+1..N+7 are already in-flight.
+    // L2: caches.default — only for VIP tables (queried >= 3 times).
+    // One-off queries against random tables would just pollute the shared cache.
+    // VIP tables show repeat access patterns where page caching actually pays off.
+    const tableIsVip = this.footerCache.accessCount(query.table) >= VIP_THRESHOLD;
+    const uncachedRanges: typeof ranges = [];
+
+    if (tableIsVip && l1Misses.length > 0) {
+      const edgeChecks = await Promise.all(
+        l1Misses.map(async (r) => {
+          const data = await this.edgeCacheGet(meta.r2Key, r.offset, r.length);
+          return { range: r, data };
+        }),
+      );
+      for (const { range: r, data } of edgeChecks) {
+        if (data) {
+          edgeCacheHits++;
+          const arr = columnData.get(r.column) ?? [];
+          arr.push(data);
+          columnData.set(r.column, arr);
+          // Promote to L1 for subsequent queries on this DO
+          const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
+          this.wasmEngine.cacheSet(cacheKey, data);
+        } else {
+          edgeCacheMisses++;
+          uncachedRanges.push(r);
+        }
+      }
+    } else {
+      // Not VIP or no L1 misses — go straight to R2 (no L2 lookups, so no L2 misses)
+      for (const r of l1Misses) uncachedRanges.push(r);
+    }
+
+    // L3: Fetch remaining ranges from R2
     const r2Start = Date.now();
     let bytesRead = 0;
 
     if (uncachedRanges.length > 0) {
       const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
 
-      // Fire all fetches eagerly — fetchBounded gates concurrency to 8
       const fetched = await fetchBounded(
         coalesced.map(c => () =>
           withRetry(() =>
@@ -673,9 +727,15 @@ export class QueryDO implements DurableObject {
           arr.push(slice);
           columnData.set(sub.column, arr);
 
-          // Populate cache for next time
+          // Populate L1 cache
           const cacheKey = `${meta.r2Key}:${sub.offset}:${sub.length}`;
           this.wasmEngine.cacheSet(cacheKey, slice);
+
+          // Populate L2 cache (async, fire-and-forget — don't block query)
+          // Only for VIP tables — no point caching pages for one-off queries
+          if (tableIsVip) {
+            this.edgeCachePut(meta.r2Key, sub.offset, sub.length, slice);
+          }
         }
       }
     }
@@ -692,6 +752,8 @@ export class QueryDO implements DurableObject {
         indexResult.pagesSkipped = pagesSkipped;
         indexResult.cacheHits = cacheHits;
         indexResult.cacheMisses = cacheMisses;
+        indexResult.edgeCacheHits = edgeCacheHits;
+        indexResult.edgeCacheMisses = edgeCacheMisses;
         return indexResult;
       }
       // Fall through to flat search via SQL executor
@@ -754,64 +816,16 @@ export class QueryDO implements DurableObject {
         decodedColumns.set(col.name, allValues);
       }
 
-      // Assemble rows from decoded columns
       const colNames = cols.map(c => c.name);
-      let numRows = 0;
-      for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
-      let rows: Row[] = [];
-      for (let i = 0; i < numRows; i++) {
-        const row: Row = {};
-        for (const name of colNames) {
-          const vals = decodedColumns.get(name);
-          row[name] = vals && i < vals.length ? vals[i] : null;
-        }
-        rows.push(row);
-      }
-
-      // Apply filters in JS (coerce bigint↔number for cross-type comparison)
-      if (query.filters.length > 0) {
-        rows = rows.filter(row => {
-          for (const f of query.filters) {
-            const val = row[f.column];
-            if (val == null) return false;
-            // Coerce bigint↔number: int64 columns decode as bigint, JSON filter values are numbers
-            let cv = val, cf = f.value;
-            if (typeof cv === "bigint" && typeof cf === "number") cf = BigInt(Math.trunc(cf));
-            else if (typeof cv === "number" && typeof cf === "bigint") cv = BigInt(Math.trunc(cv));
-            switch (f.op) {
-              case "eq": if (cv !== cf) return false; break;
-              case "neq": if (cv === cf) return false; break;
-              case "gt": if (!(cv > (cf as number | bigint | string))) return false; break;
-              case "gte": if (!(cv >= (cf as number | bigint | string))) return false; break;
-              case "lt": if (!(cv < (cf as number | bigint | string))) return false; break;
-              case "lte": if (!(cv <= (cf as number | bigint | string))) return false; break;
-            }
-          }
-          return true;
-        });
-      }
-
-      // Apply sort
-      if (query.sortColumn) {
-        const dir = query.sortDirection === "desc" ? -1 : 1;
-        const sc = query.sortColumn;
-        rows.sort((a, b) => {
-          const va = a[sc], vb = b[sc];
-          if (va == null && vb == null) return 0;
-          if (va == null) return dir;
-          if (vb == null) return -dir;
-          return va < vb ? -dir : va > vb ? dir : 0;
-        });
-      }
-
-      // Apply limit
-      if (query.limit && query.limit > 0) rows = rows.slice(0, query.limit);
-
+      let rows = this.applyJsPostProcessing(
+        this.assembleRowsFromColumns(decodedColumns, colNames), query,
+      );
       const wasmExecMs = Date.now() - wasmStart;
       return {
         rows, rowCount: rows.length, columns: colNames,
         bytesRead, pagesSkipped, durationMs: Date.now() - t0,
         r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
+        edgeCacheHits, edgeCacheMisses,
       };
     }
 
@@ -836,6 +850,7 @@ export class QueryDO implements DurableObject {
       rows, rowCount: rows.length, columns: cols.map(c => c.name),
       bytesRead, pagesSkipped, durationMs: Date.now() - t0,
       r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
+      edgeCacheHits, edgeCacheMisses,
     };
   }
 
@@ -985,7 +1000,7 @@ export class QueryDO implements DurableObject {
         const meta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
         meta.name = tableName;
         this.footerCache.set(tableName, meta);
-        await this.state.storage.put(`table:${tableName}`, meta);
+        await this.ctx.storage.put(`table:${tableName}`, meta);
         return meta;
       }
 
@@ -1000,7 +1015,7 @@ export class QueryDO implements DurableObject {
           fileSize, r2Key, updatedAt: Date.now(),
         };
         this.footerCache.set(tableName, meta);
-        await this.state.storage.put(`table:${tableName}`, meta);
+        await this.ctx.storage.put(`table:${tableName}`, meta);
         return meta;
       }
     }
@@ -1086,6 +1101,60 @@ export class QueryDO implements DurableObject {
     return null;
   }
 
+  /** Load Parquet file metadata from R2 (head → tail → footer → TableMeta). Returns null if file not found or invalid. */
+  private async loadParquetR2Meta(r2Key: string): Promise<TableMeta | null> {
+    const head = await this.env.DATA_BUCKET.head(r2Key);
+    if (!head) return null;
+    const fileSize = BigInt(head.size);
+    const tailObj = await this.env.DATA_BUCKET.get(r2Key, {
+      range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
+    });
+    if (!tailObj) return null;
+    const footerLen = getParquetFooterLength(await tailObj.arrayBuffer());
+    if (!footerLen) return null;
+    const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+      range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
+    });
+    if (!footerObj) return null;
+    const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
+    if (!parquetMeta) return null;
+    return parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
+  }
+
+  /** Load Parquet fragment metadata for a list of paths, returning (fragmentMetas, totalRows). */
+  private async loadParquetFragments(parquetPaths: string[], prefix: string): Promise<{ fragmentMetas: Map<number, TableMeta>; totalRows: number }> {
+    const fragmentMetas = new Map<number, TableMeta>();
+    let totalRows = 0;
+    for (let i = 0; i < parquetPaths.length; i++) {
+      const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
+      const meta = await this.loadParquetR2Meta(parquetKey);
+      if (!meta) continue;
+      meta.name = parquetPaths[i];
+      fragmentMetas.set(i, meta);
+      totalRows += meta.totalRows;
+    }
+    return { fragmentMetas, totalRows };
+  }
+
+  /** Cache an Iceberg dataset in both datasetCache (for multi-fragment queries) and return the metadata. */
+  private cacheIcebergDataset(
+    tableName: string, prefix: string, icebergMeta: { schema: IcebergDatasetMeta["schema"]; currentSnapshotId: string },
+    parquetPaths: string[], fragmentMetas: Map<number, TableMeta>, totalRows: number,
+  ): IcebergDatasetMeta {
+    const dataset: IcebergDatasetMeta = {
+      name: tableName, r2Prefix: prefix,
+      schema: icebergMeta.schema, snapshotId: icebergMeta.currentSnapshotId,
+      parquetFiles: parquetPaths, fragmentMetas, totalRows, updatedAt: Date.now(),
+    };
+    this.datasetCache.set(tableName, {
+      name: tableName, r2Prefix: prefix,
+      manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
+      fragmentMetas, totalRows, updatedAt: Date.now(),
+    });
+    this.evictDatasetCache();
+    return dataset;
+  }
+
   /** Register an Iceberg table by explicit metadata path (bypasses R2 list()). */
   private async handleRegisterIceberg(request: Request): Promise<Response> {
     const { table, metadataKey } = (await request.json()) as { table: string; metadataKey: string };
@@ -1116,52 +1185,10 @@ export class QueryDO implements DurableObject {
     const parquetPaths = extractParquetPathsFromManifest(manifestListBytes);
     if (parquetPaths.length === 0) return null;
 
-    // Load each Parquet file's metadata
-    const fragmentMetas = new Map<number, TableMeta>();
-    let totalRows = 0;
-    for (let i = 0; i < parquetPaths.length; i++) {
-      const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
-      const head = await this.env.DATA_BUCKET.head(parquetKey);
-      if (!head) continue;
-
-      const fileSize = BigInt(head.size);
-      const tailObj = await this.env.DATA_BUCKET.get(parquetKey, {
-        range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
-      });
-      if (!tailObj) continue;
-
-      const tailBuf = await tailObj.arrayBuffer();
-      const footerLen = getParquetFooterLength(tailBuf);
-      if (!footerLen) continue;
-
-      const footerObj = await this.env.DATA_BUCKET.get(parquetKey, {
-        range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
-      });
-      if (!footerObj) continue;
-
-      const parquetFileMeta = parseParquetFooter(await footerObj.arrayBuffer());
-      if (!parquetFileMeta) continue;
-
-      const meta = parquetMetaToTableMeta(parquetFileMeta, parquetKey, fileSize);
-      meta.name = parquetPaths[i];
-      fragmentMetas.set(i, meta);
-      totalRows += meta.totalRows;
-    }
-
+    const { fragmentMetas, totalRows } = await this.loadParquetFragments(parquetPaths, prefix);
     if (fragmentMetas.size === 0) return null;
 
-    const dataset: IcebergDatasetMeta = {
-      name: tableName, r2Prefix: prefix,
-      schema: icebergMeta.schema, snapshotId: icebergMeta.currentSnapshotId,
-      parquetFiles: parquetPaths, fragmentMetas, totalRows, updatedAt: Date.now(),
-    };
-    this.datasetCache.set(tableName, {
-      name: tableName, r2Prefix: prefix,
-      manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
-      fragmentMetas, totalRows, updatedAt: Date.now(),
-    });
-    this.evictDatasetCache();
-    return dataset;
+    return this.cacheIcebergDataset(tableName, prefix, icebergMeta, parquetPaths, fragmentMetas, totalRows);
   }
 
   /** Discover an Iceberg table in R2 by listing metadata/ for .metadata.json files. */
@@ -1173,71 +1200,24 @@ export class QueryDO implements DurableObject {
         .sort((a, b) => a.key.localeCompare(b.key));
       if (metadataKeys.length === 0) continue;
 
-      // Read latest metadata JSON
       const latestKey = metadataKeys[metadataKeys.length - 1].key;
       const metaObj = await this.env.DATA_BUCKET.get(latestKey);
       if (!metaObj) continue;
 
-      const metaJson = await metaObj.text();
-      const icebergMeta = parseIcebergMetadata(metaJson);
+      const icebergMeta = parseIcebergMetadata(await metaObj.text());
       if (!icebergMeta) continue;
 
-      // Read manifest list to get data file paths
       const manifestListKey = `${prefix}${icebergMeta.manifestListPath}`;
       const manifestListObj = await this.env.DATA_BUCKET.get(manifestListKey);
       if (!manifestListObj) continue;
 
-      const manifestListBytes = await manifestListObj.arrayBuffer();
-      const parquetPaths = extractParquetPathsFromManifest(manifestListBytes);
+      const parquetPaths = extractParquetPathsFromManifest(await manifestListObj.arrayBuffer());
       if (parquetPaths.length === 0) continue;
 
-      // Load each Parquet file's metadata
-      const fragmentMetas = new Map<number, TableMeta>();
-      let totalRows = 0;
-      for (let i = 0; i < parquetPaths.length; i++) {
-        const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
-        const head = await this.env.DATA_BUCKET.head(parquetKey);
-        if (!head) continue;
-
-        const fileSize = BigInt(head.size);
-        const tailObj = await this.env.DATA_BUCKET.get(parquetKey, {
-          range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
-        });
-        if (!tailObj) continue;
-
-        const tailBuf = await tailObj.arrayBuffer();
-        const footerLen = getParquetFooterLength(tailBuf);
-        if (!footerLen) continue;
-
-        const footerObj = await this.env.DATA_BUCKET.get(parquetKey, {
-          range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
-        });
-        if (!footerObj) continue;
-
-        const parquetFileMeta = parseParquetFooter(await footerObj.arrayBuffer());
-        if (!parquetFileMeta) continue;
-
-        const meta = parquetMetaToTableMeta(parquetFileMeta, parquetKey, fileSize);
-        meta.name = parquetPaths[i];
-        fragmentMetas.set(i, meta);
-        totalRows += meta.totalRows;
-      }
-
+      const { fragmentMetas, totalRows } = await this.loadParquetFragments(parquetPaths, prefix);
       if (fragmentMetas.size === 0) continue;
 
-      const dataset: IcebergDatasetMeta = {
-        name: tableName, r2Prefix: prefix,
-        schema: icebergMeta.schema, snapshotId: icebergMeta.currentSnapshotId,
-        parquetFiles: parquetPaths, fragmentMetas, totalRows, updatedAt: Date.now(),
-      };
-      // Store in datasetCache for multi-fragment query execution
-      this.datasetCache.set(tableName, {
-        name: tableName, r2Prefix: prefix,
-        manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
-        fragmentMetas, totalRows, updatedAt: Date.now(),
-      });
-      this.evictDatasetCache();
-      return dataset;
+      return this.cacheIcebergDataset(tableName, prefix, icebergMeta, parquetPaths, fragmentMetas, totalRows);
     }
     return null;
   }
@@ -1308,24 +1288,18 @@ export class QueryDO implements DurableObject {
       })));
     }
 
-    const region = (await this.state.storage.get<string>("region")) ?? "default";
+    const region = (await this.ctx.storage.get<string>("region")) ?? "default";
 
     try {
       const settled = await Promise.allSettled(groups.map(async (group, idx) => {
         const doName = `frag-${region}-slot-${slots[idx]}`;
         const doId = this.env.FRAGMENT_DO.idFromName(doName);
-        const fragmentDo = this.env.FRAGMENT_DO.get(doId);
+        const fragmentRpc = this.env.FRAGMENT_DO.get(doId) as unknown as { scanRpc(fragments: typeof group, query: QueryDescriptor): Promise<QueryResult> };
 
-        const resp = await withTimeout(
-          fragmentDo.fetch(new Request("http://internal/scan", {
-            method: "POST",
-            body: JSON.stringify({ fragments: group, query }, bigIntReplacer),
-            headers: { "content-type": "application/json" },
-          })),
+        return withTimeout(
+          fragmentRpc.scanRpc(group, query),
           FRAGMENT_TIMEOUT_MS,
         );
-
-        return resp.json() as Promise<QueryResult>;
       }));
 
       const fulfilled: QueryResult[] = [];
@@ -1353,8 +1327,9 @@ export class QueryDO implements DurableObject {
   private async handleQueryStream(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
-    const result = await this.executeQuery(query);
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
+    let result: QueryResult;
+    try { result = await this.executeQuery(query); } catch (err) { return this.json({ error: this.errMsg(err) }, 500); }
 
     const { readable, writable } = new TransformStream<Uint8Array>();
     const writer = writable.getWriter();
@@ -1373,6 +1348,91 @@ export class QueryDO implements DurableObject {
     return new Response(readable, {
       headers: { "content-type": "application/x-ndjson" },
     });
+  }
+
+  // ── RPC methods (zero-serialization calls from RemoteExecutor) ────────
+
+  /** Common RPC preamble — ensure WASM + footer cache is warm. */
+  private async ensureReady(): Promise<void> {
+    await this.ensureInitialized();
+    if (!this.registeredWithMaster) this.registerWithMaster();
+  }
+
+  /** Parse descriptor and ensure ready — shared by all RPC methods. */
+  private async rpcParseQuery(descriptor: unknown): Promise<QueryDescriptor> {
+    await this.ensureReady();
+    return this.parseQuery(descriptor);
+  }
+
+  async queryRpc(descriptor: unknown): Promise<QueryResult> {
+    return this.executeQuery(await this.rpcParseQuery(descriptor));
+  }
+
+  async countRpc(descriptor: unknown): Promise<number> {
+    return this.executeCount(await this.rpcParseQuery(descriptor));
+  }
+
+  async existsRpc(descriptor: unknown): Promise<boolean> {
+    const query = await this.rpcParseQuery(descriptor);
+    query.limit = 1;
+    return (await this.executeQuery(query)).rowCount > 0;
+  }
+
+  async firstRpc(descriptor: unknown): Promise<Row | null> {
+    const query = await this.rpcParseQuery(descriptor);
+    query.limit = 1;
+    return (await this.executeQuery(query)).rows[0] ?? null;
+  }
+
+  async explainRpc(descriptor: unknown): Promise<ExplainResult> {
+    return this.executeExplain(await this.rpcParseQuery(descriptor));
+  }
+
+  async streamRpc(descriptor: unknown): Promise<ReadableStream<Uint8Array>> {
+    const result = await this.executeQuery(await this.rpcParseQuery(descriptor));
+    const encoder = new TextEncoder();
+    const rows = result.rows;
+    let idx = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (idx >= rows.length) { controller.close(); return; }
+        controller.enqueue(encoder.encode(JSON.stringify(rows[idx++], bigIntReplacer) + "\n"));
+      },
+    });
+  }
+
+  // ── Edge page cache (caches.default — L2, per-datacenter, shared) ────
+
+  private edgeCacheUrl(r2Key: string, offset: number, length: number): string {
+    return `https://querymode-pages/${encodeURIComponent(r2Key)}/${offset}/${length}`;
+  }
+
+  private async edgeCacheGet(r2Key: string, offset: number, length: number): Promise<ArrayBuffer | null> {
+    try {
+      const resp = await (caches as unknown as { default: Cache }).default.match(
+        new Request(this.edgeCacheUrl(r2Key, offset, length)),
+      );
+      return resp ? resp.arrayBuffer() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async edgeCachePut(r2Key: string, offset: number, length: number, data: ArrayBuffer): Promise<void> {
+    try {
+      await (caches as unknown as { default: Cache }).default.put(
+        new Request(this.edgeCacheUrl(r2Key, offset, length)),
+        new Response(data, {
+          headers: {
+            "Cache-Control": "public, max-age=604800",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(data.byteLength),
+          },
+        }),
+      );
+    } catch {
+      // Fire-and-forget — R2 is source of truth
+    }
   }
 
 }

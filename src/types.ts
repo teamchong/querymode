@@ -116,7 +116,6 @@ export interface VectorSearchParams {
   topK: number;
 }
 
-
 /** Query result row — typed at runtime from footer schema */
 export type Row = Record<string, number | bigint | string | boolean | Float32Array | null>;
 
@@ -138,12 +137,16 @@ export interface QueryResult<T extends Row = Row> {
   r2ReadMs?: number;
   /** Time spent in WASM compute */
   wasmExecMs?: number;
-  /** Number of page cache hits */
+  /** Number of WASM buffer pool cache hits (L1 — per-DO, in-memory) */
   cacheHits?: number;
-  /** Number of page cache misses */
+  /** Number of WASM buffer pool cache misses (L1) */
   cacheMisses?: number;
-  /** Whether the result was served from cache */
+  /** Whether the result was served from result cache */
   cacheHit?: boolean;
+  /** Number of caches.default hits (L2 — per-datacenter, shared across DOs) */
+  edgeCacheHits?: number;
+  /** Number of caches.default misses (L2) */
+  edgeCacheMisses?: number;
 }
 
 /** Schema field extracted from Lance manifest */
@@ -237,4 +240,19 @@ export interface Env {
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
   FRAGMENT_DO: DurableObjectNamespace;
+}
+
+/** RPC interface exposed by QueryDO for zero-serialization calls from RemoteExecutor */
+export interface QueryDORpc {
+  queryRpc(descriptor: unknown): Promise<QueryResult>;
+  countRpc(descriptor: unknown): Promise<number>;
+  existsRpc(descriptor: unknown): Promise<boolean>;
+  firstRpc(descriptor: unknown): Promise<Row | null>;
+  explainRpc(descriptor: unknown): Promise<ExplainResult>;
+  streamRpc(descriptor: unknown): Promise<ReadableStream<Uint8Array>>;
+}
+
+/** RPC interface exposed by MasterDO for zero-serialization append */
+export interface MasterDORpc {
+  appendRpc(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
 }

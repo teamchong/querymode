@@ -1,7 +1,6 @@
 import { TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { AppendResult, ExplainResult, QueryResult, Row } from "./types.js";
-import { bigIntReplacer } from "./decode.js";
+import type { AppendResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 
 export { MasterDO } from "./master-do.js";
@@ -34,6 +33,8 @@ export type {
   AppendResult,
   ExplainResult,
   VectorIndexInfo,
+  QueryDORpc,
+  MasterDORpc,
 } from "./types.js";
 
 /**
@@ -95,8 +96,9 @@ export class QueryMode {
 }
 
 /**
- * Executor that sends queries to a regional Query DO.
- * The DO has cached footers — no metadata round-trip needed.
+ * Executor that calls regional Query DO via Worker RPC.
+ * Zero-serialization: structured clone instead of JSON, no HTTP overhead.
+ * RPC sessions survive DO hibernation — each session is one billable request.
  */
 class RemoteExecutor implements QueryExecutor {
   private namespace: DurableObjectNamespace;
@@ -111,76 +113,45 @@ class RemoteExecutor implements QueryExecutor {
     this.masterNamespace = masterNamespace;
   }
 
-  private getQueryDo() {
+  /** Get a typed RPC handle for the regional Query DO. */
+  private getQueryHandle(): QueryDORpc {
     const doName = `query-${this.region}`;
     const id = this.namespace.idFromName(doName);
-    return this.locationHint
+    const doRef = this.locationHint
       ? this.namespace.get(id, { locationHint: this.locationHint as DurableObjectLocationHint })
       : this.namespace.get(id);
+    return doRef as unknown as QueryDORpc;
   }
 
+  /** Execute query via RPC — zero JSON serialization overhead. */
   async execute(query: QueryDescriptor): Promise<QueryResult> {
-    const queryDo = this.getQueryDo();
-
-    const response = await queryDo.fetch(new Request("http://internal/query", {
-      method: "POST",
-      body: JSON.stringify(query, bigIntReplacer),
-      headers: { "content-type": "application/json" },
-    }));
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`QueryMode query failed: ${error}`);
-    }
-
-    return response.json() as Promise<QueryResult>;
+    const rpc = this.getQueryHandle();
+    return rpc.queryRpc(query);
   }
 
+  /** Append rows via RPC to Master DO. */
   async append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
     if (!this.masterNamespace) {
       throw new Error("append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
-    // Append goes to Master DO (single writer)
     const id = this.masterNamespace.idFromName("master");
-    const masterDo = this.masterNamespace.get(id);
-
-    const response = await masterDo.fetch(new Request("http://internal/append", {
-      method: "POST",
-      body: JSON.stringify({ table, rows }, bigIntReplacer),
-      headers: { "content-type": "application/json" },
-    }));
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`QueryMode append failed: ${error}`);
-    }
-
-    return response.json() as Promise<AppendResult>;
+    const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;
+    return masterRpc.appendRpc(table, rows);
   }
 
+  /** Stream query results via RPC — native ReadableStream, no HTTP wrapper. */
   async executeStream(query: QueryDescriptor): Promise<ReadableStream<Row>> {
-    const queryDo = this.getQueryDo();
+    const rpc = this.getQueryHandle();
+    const byteStream = await rpc.streamRpc(query);
 
-    const response = await queryDo.fetch(new Request("http://internal/query/stream", {
-      method: "POST",
-      body: JSON.stringify(query, bigIntReplacer),
-      headers: { "content-type": "application/json" },
-    }));
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`QueryMode stream failed: ${error}`);
-    }
-
-    if (!response.body) throw new Error("No response body for stream");
-
+    // Parse NDJSON byte stream into Row objects
     const decoder = new TextDecoder();
-    const MAX_STREAM_BUFFER = 10 * 1024 * 1024; // 10MB
+    const MAX_STREAM_BUFFER = 10 * 1024 * 1024;
     let buffer = "";
 
     return new ReadableStream<Row>({
       async start(controller) {
-        const reader = response.body!.getReader();
+        const reader = byteStream.getReader();
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -206,36 +177,27 @@ class RemoteExecutor implements QueryExecutor {
     });
   }
 
-  private async postQuery<T>(path: string, query: QueryDescriptor): Promise<T> {
-    const queryDo = this.getQueryDo();
-    const response = await queryDo.fetch(new Request(`http://internal${path}`, {
-      method: "POST",
-      body: JSON.stringify(query, bigIntReplacer),
-      headers: { "content-type": "application/json" },
-    }));
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`QueryMode ${path} failed: ${error}`);
-    }
-    return response.json() as Promise<T>;
-  }
-
+  /** Count via RPC — returns number directly, no JSON wrapper. */
   async count(query: QueryDescriptor): Promise<number> {
-    const body = await this.postQuery<{ count: number }>("/query/count", query);
-    return body.count;
+    const rpc = this.getQueryHandle();
+    return rpc.countRpc(query);
   }
 
+  /** Exists via RPC — returns boolean directly. */
   async exists(query: QueryDescriptor): Promise<boolean> {
-    const body = await this.postQuery<{ exists: boolean }>("/query/exists", query);
-    return body.exists;
+    const rpc = this.getQueryHandle();
+    return rpc.existsRpc(query);
   }
 
+  /** First via RPC — returns Row directly. */
   async first(query: QueryDescriptor): Promise<Row | null> {
-    const body = await this.postQuery<{ row: Row | null }>("/query/first", query);
-    return body.row;
+    const rpc = this.getQueryHandle();
+    return rpc.firstRpc(query);
   }
 
+  /** Explain via RPC — returns ExplainResult directly. */
   async explain(query: QueryDescriptor): Promise<ExplainResult> {
-    return this.postQuery<ExplainResult>("/query/explain", query);
+    const rpc = this.getQueryHandle();
+    return rpc.explainRpc(query);
   }
 }

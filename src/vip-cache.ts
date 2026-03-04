@@ -78,6 +78,11 @@ export class VipCache<K, V> {
     return this.map.has(key);
   }
 
+  /** Return the access count for a key without incrementing it. Returns 0 if not present. */
+  accessCount(key: K): number {
+    return this.map.get(key)?.accessCount ?? 0;
+  }
+
   delete(key: K): boolean {
     return this.map.delete(key);
   }
