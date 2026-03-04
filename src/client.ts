@@ -65,6 +65,7 @@ export class TableQuery<T extends Row = Row> {
 
   /** Limit the number of returned rows. Enables early termination. */
   limit(n: number): this {
+    if (n < 0) throw new Error("limit() must be non-negative");
     this._limit = n;
     return this;
   }

@@ -45,7 +45,11 @@ export function assembleRows(
   const rowCount = firstCol.length;
 
   const rows: Row[] = [];
-  const earlyStop = (!query.sortColumn && query.limit) ? query.limit : rowCount;
+  const hasSort = !!query.sortColumn;
+  const limit = query.limit ?? Infinity;
+  const offset = query.offset ?? 0;
+  // Without sort, apply offset+limit as early termination
+  const earlyStop = !hasSort ? offset + limit : rowCount;
 
   for (let i = 0; i < rowCount && rows.length < earlyStop; i++) {
     const row: Row = {};
@@ -158,13 +162,24 @@ export function decodePage(
 // --- Sort / Top-K ---
 
 function applySortAndLimit(rows: Row[], query: QueryDescriptor): Row[] {
-  if (!query.sortColumn || rows.length === 0) return rows;
+  const offset = query.offset ?? 0;
+  const limit = query.limit;
+
+  if (!query.sortColumn || rows.length === 0) {
+    // No sort — just apply offset + limit
+    if (offset > 0 || limit !== undefined) {
+      return rows.slice(offset, limit !== undefined ? offset + limit : undefined);
+    }
+    return rows;
+  }
 
   const col = query.sortColumn;
   const desc = query.sortDirection === "desc";
+  const needed = offset + (limit ?? rows.length);
 
-  if (query.limit && query.limit < rows.length) {
-    return topK(rows, query.limit, col, desc);
+  if (needed < rows.length) {
+    const sorted = topK(rows, needed, col, desc);
+    return sorted.slice(offset);
   }
 
   const dir = desc ? -1 : 1;
@@ -175,7 +190,9 @@ function applySortAndLimit(rows: Row[], query: QueryDescriptor): Row[] {
     if (bv === null) return -1;
     return av < bv ? -dir : av > bv ? dir : 0;
   });
-  return query.limit ? rows.slice(0, query.limit) : rows;
+  const start = offset;
+  const end = limit !== undefined ? offset + limit : undefined;
+  return rows.slice(start, end);
 }
 
 /** Top-K via max-heap (asc) or min-heap (desc). O(N log K) time, O(K) memory. */

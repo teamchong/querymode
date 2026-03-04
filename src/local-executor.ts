@@ -55,6 +55,12 @@ export class LocalExecutor implements QueryExecutor {
     const pathMod = await import("node:path");
     const wasm = await this.getWasm();
 
+    // Ensure target is a directory (not a file like .parquet)
+    const stat = await fs.stat(tablePath).catch(() => null);
+    if (stat && !stat.isDirectory()) {
+      throw new QueryModeError("INVALID_FORMAT", `append() only works on Lance dataset directories, not files: ${tablePath}`);
+    }
+
     // Ensure dataset directory structure exists
     const dataDir = pathMod.join(tablePath, "data");
     const versionsDir = pathMod.join(tablePath, "_versions");
@@ -389,6 +395,19 @@ export class LocalExecutor implements QueryExecutor {
     }
 
     const { columns } = meta;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    // Validate column references
+    for (const p of query.projections) {
+      if (!columnNames.has(p)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Column "${p}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
+      }
+    }
+    for (const f of query.filters) {
+      if (!columnNames.has(f.column)) {
+        throw new QueryModeError("COLUMN_NOT_FOUND", `Filter column "${f.column}" not found in ${query.table}. Available: ${[...columnNames].join(", ")}`);
+      }
+    }
 
     // Step 2: Determine projected columns
     const projectedColumns =
@@ -455,12 +474,33 @@ export class LocalExecutor implements QueryExecutor {
 
     // Step 5: Decode and assemble rows
     const wasm = await this.getWasm();
-    let rows = assembleRows(columnData, projectedColumns, query, wasm);
+    const hasAggregates = query.aggregates && query.aggregates.length > 0;
+    // When aggregating, defer sort/limit — they apply to aggregated output, not raw rows
+    const assembleQuery = hasAggregates
+      ? { ...query, sortColumn: undefined, sortDirection: undefined, limit: undefined, offset: undefined }
+      : query;
+    let rows = assembleRows(columnData, projectedColumns, assembleQuery, wasm);
 
-    // Step 6: Apply aggregation if requested
-    if (query.aggregates && query.aggregates.length > 0) {
+    // Step 6: Apply aggregation if requested, then sort/limit the result
+    if (hasAggregates) {
       const partial = computePartialAgg(rows, query);
       rows = finalizePartialAgg(partial, query);
+      // Apply sort and limit to aggregated rows
+      if (query.sortColumn) {
+        const dir = query.sortDirection === "desc" ? -1 : 1;
+        const sc = query.sortColumn;
+        rows.sort((a, b) => {
+          const av = a[sc], bv = b[sc];
+          if (av == null && bv == null) return 0;
+          if (av == null) return 1;
+          if (bv == null) return -1;
+          return av < bv ? -dir : av > bv ? dir : 0;
+        });
+      }
+      const offset = query.offset ?? 0;
+      if (offset > 0 || query.limit !== undefined) {
+        rows = rows.slice(offset, query.limit !== undefined ? offset + query.limit : undefined);
+      }
     }
 
     const result: QueryResult = {
@@ -470,6 +510,7 @@ export class LocalExecutor implements QueryExecutor {
       bytesRead,
       pagesSkipped,
       durationMs: Date.now() - startTime,
+      cacheHit: false,
     };
 
     // Store in result cache if TTL specified
@@ -611,15 +652,31 @@ export class LocalExecutor implements QueryExecutor {
       for (let ri = 0; ri < rows.length; ri++) allRows.push(rows[ri]);
     }
 
-    // Apply limit if no sort (sorted results already limited per-fragment)
-    if (query.limit && !query.sortColumn && allRows.length > query.limit) {
+    // Apply limit if no sort and no aggregates
+    const hasAgg = query.aggregates && query.aggregates.length > 0;
+    if (query.limit && !query.sortColumn && !hasAgg && allRows.length > query.limit) {
       allRows = allRows.slice(0, query.limit);
     }
 
-    // Apply aggregation if requested
-    if (query.aggregates && query.aggregates.length > 0) {
+    // Apply aggregation if requested, then sort/limit the result
+    if (hasAgg) {
       const partial = computePartialAgg(allRows, query);
       allRows = finalizePartialAgg(partial, query);
+      if (query.sortColumn) {
+        const dir = query.sortDirection === "desc" ? -1 : 1;
+        const sc = query.sortColumn;
+        allRows.sort((a, b) => {
+          const av = a[sc], bv = b[sc];
+          if (av == null && bv == null) return 0;
+          if (av == null) return 1;
+          if (bv == null) return -1;
+          return av < bv ? -dir : av > bv ? dir : 0;
+        });
+      }
+      const offset = query.offset ?? 0;
+      if (offset > 0 || query.limit !== undefined) {
+        allRows = allRows.slice(offset, query.limit !== undefined ? offset + query.limit : undefined);
+      }
     }
 
     return {
@@ -654,7 +711,7 @@ export class LocalExecutor implements QueryExecutor {
 
       if (fmt === "parquet") {
         const footerLen = getParquetFooterLength(tailAb);
-        if (!footerLen) throw new Error(`Invalid Parquet file: cannot read footer length in ${path}`);
+        if (!footerLen) throw new QueryModeError("INVALID_FORMAT", `Invalid Parquet file: cannot read footer length in ${path}`);
 
         const parquetFooterBuf = Buffer.alloc(footerLen);
         await handle.read(parquetFooterBuf, 0, footerLen, fileSize - footerLen - 8);
@@ -663,7 +720,7 @@ export class LocalExecutor implements QueryExecutor {
         );
 
         const parquetMeta = parseParquetFooter(parquetFooterAb);
-        if (!parquetMeta) throw new Error(`Failed to parse Parquet footer in ${path}`);
+        if (!parquetMeta) throw new QueryModeError("INVALID_FORMAT", `Failed to parse Parquet footer in ${path}`);
 
         const tableMeta = parquetMetaToTableMeta(parquetMeta, path, BigInt(fileSize));
         return { columns: tableMeta.columns, fileSize };
@@ -671,7 +728,7 @@ export class LocalExecutor implements QueryExecutor {
 
       // Lance format (default)
       const footer = parseFooter(tailAb);
-      if (!footer) throw new Error(`Invalid file format: unrecognized magic in ${path}`);
+      if (!footer) throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}`);
 
       // Read column metadata (protobuf region)
       const metaStart = Number(footer.columnMetaStart);
@@ -722,7 +779,7 @@ export class LocalExecutor implements QueryExecutor {
 
     if (fmt === "parquet") {
       const footerLen = getParquetFooterLength(tailAb);
-      if (!footerLen) throw new Error(`Invalid Parquet file: cannot read footer length in ${url}`);
+      if (!footerLen) throw new QueryModeError("INVALID_FORMAT", `Invalid Parquet file: cannot read footer length in ${url}`);
 
       const footerStart = fileSize - footerLen - 8;
       const footerResp = await fetch(url, {
@@ -730,7 +787,7 @@ export class LocalExecutor implements QueryExecutor {
       });
       const footerBuf = await footerResp.arrayBuffer();
       const parquetMeta = parseParquetFooter(footerBuf);
-      if (!parquetMeta) throw new Error(`Failed to parse Parquet footer in ${url}`);
+      if (!parquetMeta) throw new QueryModeError("INVALID_FORMAT", `Failed to parse Parquet footer in ${url}`);
 
       const tableMeta = parquetMetaToTableMeta(parquetMeta, url, BigInt(fileSize));
       return { columns: tableMeta.columns, fileSize };
@@ -738,7 +795,7 @@ export class LocalExecutor implements QueryExecutor {
 
     // Lance format
     const footer = parseFooter(tailAb);
-    if (!footer) throw new Error(`Invalid file format: unrecognized magic in ${url}`);
+    if (!footer) throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${url}`);
 
     const metaStart = Number(footer.columnMetaStart);
     const metaEnd = Number(footer.columnMetaOffsetsStart);
