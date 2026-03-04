@@ -13,3 +13,4 @@ wasm/benchmarks/
 wasm/fixtures/
 wasm/deps/
 wasm/examples/
+wasm/tests/fixtures/generated/

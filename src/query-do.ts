@@ -17,6 +17,7 @@ const R2_TIMEOUT_MS = 10_000;
 const FRAGMENT_TIMEOUT_MS = 25_000;
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
 const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from eviction)
+const DATASET_CACHE_MAX = 100; // Max cached datasets before eviction
 
 /**
  * Query DO — per-region reader with cached footers.
@@ -26,7 +27,7 @@ export class QueryDO implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
-  private datasetCache = new Map<string, DatasetMeta>();  // datasets are few, no eviction needed
+  private datasetCache = new Map<string, DatasetMeta>();
   private wasmEngine!: WasmEngine;
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
   private initialized = false;
@@ -41,6 +42,20 @@ export class QueryDO implements DurableObject {
     console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
       JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
     );
+  }
+
+  /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
+  private evictDatasetCache(): void {
+    if (this.datasetCache.size <= DATASET_CACHE_MAX) return;
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    for (const [key, meta] of this.datasetCache) {
+      if (meta.updatedAt < oldestTime) {
+        oldestTime = meta.updatedAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) this.datasetCache.delete(oldestKey);
   }
 
   private json(body: unknown, status = 200): Response {
@@ -84,12 +99,13 @@ export class QueryDO implements DurableObject {
 
   private registerWithMaster(): void {
     const master = this.env.MASTER_DO.get(this.env.MASTER_DO.idFromName("master"));
-    this.state.storage.get<string>("region").then(region => {
-      master.fetch(new Request("http://internal/register", {
-        method: "POST",
-        body: JSON.stringify({ queryDoId: this.state.id.toString(), region: region ?? "unknown" }),
-        headers: { "content-type": "application/json" },
-      })).then(async (resp) => {
+    this.state.storage.get<string>("region").then(async (region) => {
+      try {
+        const resp = await master.fetch(new Request("http://internal/register", {
+          method: "POST",
+          body: JSON.stringify({ queryDoId: this.state.id.toString(), region: region ?? "unknown" }),
+          headers: { "content-type": "application/json" },
+        }));
         this.registeredWithMaster = true;
         // Master returns current table timestamps — refresh any stale entries
         // This closes the gap where broadcasts were missed during hibernation
@@ -100,8 +116,15 @@ export class QueryDO implements DurableObject {
         if (body.tableVersions) {
           await this.refreshStaleTables(body.tableVersions);
         }
-      }).catch(() => {
-        this.log("warn", "master_register_failed", { note: "will retry on next request" });
+      } catch (err) {
+        this.log("warn", "master_register_failed", {
+          note: "will retry on next request",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }).catch((err) => {
+      this.log("warn", "master_register_storage_error", {
+        error: err instanceof Error ? err.message : String(err),
       });
     });
   }
@@ -213,6 +236,9 @@ export class QueryDO implements DurableObject {
   private async handleQuery(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-querymode-request-id") ?? crypto.randomUUID();
     const body = await request.json() as Record<string, unknown>;
+    if (!body.table || typeof body.table !== "string") {
+      return this.json({ error: "Missing or invalid 'table' field" }, 400);
+    }
     const query: QueryDescriptor = {
       table: body.table as string,
       filters: (body.filters ?? []) as QueryDescriptor["filters"],
@@ -236,7 +262,11 @@ export class QueryDO implements DurableObject {
       return this.json(result);
     } catch (err) {
       const msg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
-      this.log("error", "query_error", { requestId, table: query.table, error: msg });
+      this.log("error", "query_error", {
+        requestId, table: query.table, error: msg,
+        filterCount: query.filters.length,
+        projectionCount: query.projections.length,
+      });
       return this.json({ error: msg }, 500);
     }
   }
@@ -943,6 +973,7 @@ export class QueryDO implements DurableObject {
         fragmentMetas, totalRows: manifest.totalRows, updatedAt: Date.now(),
       };
       this.datasetCache.set(tableName, dataset);
+      this.evictDatasetCache();
       return dataset;
     }
     return null;
@@ -1020,6 +1051,7 @@ export class QueryDO implements DurableObject {
         manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
         fragmentMetas, totalRows, updatedAt: Date.now(),
       });
+      this.evictDatasetCache();
       return dataset;
     }
     return null;

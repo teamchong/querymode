@@ -154,8 +154,10 @@ function writeParquet(columns: Column[], rowGroupSize = ROW_GROUP_SIZE): Buffer 
   const numRows = columns[0].values.length;
   const numRowGroups = Math.ceil(numRows / rowGroupSize);
   const parts: Buffer[] = [];
+  let fileOffset = 0;
 
-  parts.push(Buffer.from("PAR1"));
+  const addPart = (buf: Buffer) => { parts.push(buf); fileOffset += buf.length; };
+  addPart(Buffer.from("PAR1"));
 
   // Track per-row-group column chunk metadata
   const rowGroupMetas: {
@@ -176,10 +178,11 @@ function writeParquet(columns: Column[], rowGroupSize = ROW_GROUP_SIZE): Buffer 
 
     for (const col of columns) {
       const slice = col.values.slice(startRow, endRow);
-      const dataPageOffset = parts.reduce((s, b) => s + b.length, 0);
+      const dataPageOffset = fileOffset;
       const valBuf = encodeColumnValues(col.type, slice);
       const pageHeader = encodeDataPageHeader(valBuf.length, rgRows);
-      parts.push(pageHeader, valBuf);
+      addPart(pageHeader);
+      addPart(valBuf);
       const totalSize = pageHeader.length + valBuf.length;
 
       // Compute min/max for this slice
@@ -206,10 +209,11 @@ function writeParquet(columns: Column[], rowGroupSize = ROW_GROUP_SIZE): Buffer 
 
   // Build Thrift footer
   const footer = encodeParquetFooter(columns, rowGroupMetas, numRows);
-  parts.push(footer);
+  addPart(footer);
   const footerLenBuf = Buffer.alloc(4);
   footerLenBuf.writeUInt32LE(footer.length, 0);
-  parts.push(footerLenBuf, Buffer.from("PAR1"));
+  addPart(footerLenBuf);
+  addPart(Buffer.from("PAR1"));
 
   return Buffer.concat(parts);
 }
@@ -366,12 +370,31 @@ function generateIcebergMetadata(
   };
 
   const pathStr = `data/${parquetPath}`;
-  const avroContent = Buffer.from(
-    `Obj\x01\x04\x16avro.schema\xb2\x01{"type":"record","name":"manifest_file","fields":[{"name":"manifest_path","type":"string"}]}\x00` +
-    `\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00` +
-    `\x02${String.fromCharCode(pathStr.length * 2)}${pathStr}` +
-    `\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00`
-  );
+  // Avro zigzag-encoded long for string length: (n << 1) for small positive n
+  const pathBytes = Buffer.from(pathStr, "utf8");
+  const zigzagLen = encodeVarintArr(pathBytes.length << 1);
+  const schemaJson = '{"type":"record","name":"manifest_file","fields":[{"name":"manifest_path","type":"string"}]}';
+  const schemaBytes = Buffer.from(schemaJson, "utf8");
+  const zigzagSchemaLen = encodeVarintArr(schemaBytes.length << 1);
+  const syncMarker = Buffer.alloc(16); // 16-byte sync marker (zeros)
+  const avroContent = Buffer.concat([
+    // Avro container header
+    Buffer.from("Obj\x01"),                   // magic + version
+    Buffer.from([0x02]),                      // map: 1 entry (zigzag 1 = 2)
+    // map entry: "avro.schema" -> schema JSON
+    Buffer.from([0x16]),                      // key length zigzag(11) = 22
+    Buffer.from("avro.schema"),
+    Buffer.from(zigzagSchemaLen),              // schema value length (zigzag)
+    schemaBytes,
+    Buffer.from([0x00]),                      // end of map
+    syncMarker,
+    // Single data block: 1 object (block count = zigzag(1) = 2)
+    Buffer.from([0x02]),                      // block count: 1
+    Buffer.from(encodeVarintArr((pathBytes.length + zigzagLen.length) << 1)), // block byte size (zigzag)
+    Buffer.from(zigzagLen),                   // string length (zigzag)
+    pathBytes,                                // string data
+    syncMarker,
+  ]);
 
   return { metadataJson: JSON.stringify(metadata, null, 2), manifestListAvro: avroContent };
 }

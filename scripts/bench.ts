@@ -35,7 +35,7 @@ interface BenchResult {
 
 function percentile(sorted: number[], p: number): number {
   const idx = Math.ceil((p / 100) * sorted.length) - 1;
-  return sorted[Math.max(0, idx)];
+  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
 }
 
 async function runQuery(body: unknown): Promise<{ latencyMs: number; result: Record<string, unknown> }> {
@@ -60,6 +60,7 @@ async function bench(name: string, query: unknown): Promise<BenchResult> {
   }
 
   const latencies: number[] = [];
+  // Reset each run — only the latest successful result's metrics are reported
   let lastResult: Record<string, unknown> = {};
 
   for (let i = 0; i < BENCH_RUNS; i++) {

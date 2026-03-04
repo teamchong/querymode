@@ -53,6 +53,9 @@ export class MasterDO implements DurableObject {
 
   private async handleWrite(request: Request): Promise<Response> {
     const { r2Key } = (await request.json()) as { r2Key: string };
+    if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
+      return this.json({ error: "Invalid r2Key" }, 400);
+    }
 
     // Check if this is a dataset directory (ends with / or .lance/)
     if (r2Key.endsWith("/") || r2Key.endsWith(".lance/")) {
@@ -345,6 +348,9 @@ export class MasterDO implements DurableObject {
 
   private async handleRefresh(request: Request): Promise<Response> {
     const { r2Key } = (await request.json()) as { r2Key: string };
+    if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
+      return this.json({ error: "Invalid r2Key" }, 400);
+    }
     const result = await this.readFooterAndColumns(r2Key);
     if (!result) return this.json({ error: "Failed to read footer" }, 500);
 

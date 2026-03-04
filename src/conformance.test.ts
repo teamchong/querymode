@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { describe, it, expect, beforeAll } from "vitest";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseParquetFooter, parquetMetaToTableMeta, getParquetFooterLength, detectFormat } from "./parquet.js";
 import { decodeParquetColumnChunk, decompressSnappy, decodePlainValues } from "./parquet-decode.js";
@@ -11,6 +11,14 @@ import type { WasmEngine } from "./wasm-engine.js";
 
 const FIXTURES = join(import.meta.dirname, "../wasm/tests/fixtures");
 const GENERATED = join(FIXTURES, "generated");
+const hasGenerated = existsSync(join(GENERATED, "bench_100k_3col.parquet"));
+
+// ============================================================================
+// Constants — referenced in assertions instead of magic numbers/arrays
+// ============================================================================
+
+const ROW_GROUP_SIZE = 10_000;
+const BENCH_CATEGORIES = ["alpha", "beta", "gamma", "delta", "epsilon"];
 
 // Minimal WASM mock -- only needed for Parquet decompression that uses WASM (ZSTD/GZIP/LZ4).
 // Snappy is pure TS so it works without WASM.
@@ -29,6 +37,34 @@ function loadParquetFooterBytes(filePath: string): { footerBuf: ArrayBuffer; fil
   const footerStart = fileSize - 8 - footerLen;
   const footerBuf = file.buffer.slice(file.byteOffset + footerStart, file.byteOffset + footerStart + footerLen);
   return { footerBuf, fileSize };
+}
+
+// Helper to find the single .lance data file in a dataset's data/ directory
+function findLanceDataFile(datasetName: string): string {
+  const dataDir = join(FIXTURES, datasetName, "data");
+  const files = readdirSync(dataDir);
+  const lanceFile = files.find(f => f.endsWith(".lance"));
+  return join(dataDir, lanceFile!);
+}
+
+// ============================================================================
+// Shared fixture types
+// ============================================================================
+
+interface ParquetFixture {
+  file: Buffer;
+  footerBuf: ArrayBuffer;
+  fileSize: number;
+  meta: ReturnType<typeof parseParquetFooter> & {};
+  tableMeta: ReturnType<typeof parquetMetaToTableMeta>;
+}
+
+function loadParquetFixture(filePath: string, fileName: string): ParquetFixture {
+  const file = readFileSync(filePath);
+  const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
+  const meta = parseParquetFooter(footerBuf)!;
+  const tableMeta = parquetMetaToTableMeta(meta, fileName, BigInt(fileSize));
+  return { file, footerBuf, fileSize, meta, tableMeta };
 }
 
 // ============================================================================
@@ -90,32 +126,38 @@ describe("Parquet footer parsing correctness", () => {
     });
   });
 
-  describe("generated multi-row-group Parquet files", () => {
-    it("bench_100k_3col.parquet has multiple row groups with statistics", () => {
-      const { footerBuf, fileSize } = loadParquetFooterBytes(join(GENERATED, "bench_100k_3col.parquet"));
-      const meta = parseParquetFooter(footerBuf)!;
-      expect(meta.numRows).toBe(100_000);
-      expect(meta.rowGroups.length).toBe(10); // 100K / 10K per row group
+  describe.skipIf(!hasGenerated)("generated multi-row-group Parquet files", () => {
+    let bench3col: ParquetFixture;
+    let benchNumeric: ParquetFixture;
 
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
-      expect(tableMeta.columns.length).toBe(3);
+    beforeAll(() => {
+      bench3col = loadParquetFixture(join(GENERATED, "bench_100k_3col.parquet"), "bench_100k_3col.parquet");
+      benchNumeric = loadParquetFixture(join(GENERATED, "bench_100k_numeric.parquet"), "bench_100k_numeric.parquet");
+    });
+
+    it("bench_100k_3col.parquet has multiple row groups with statistics", () => {
+      expect(bench3col.meta.numRows).toBe(100_000);
+      expect(bench3col.meta.rowGroups.length).toBe(100_000 / ROW_GROUP_SIZE);
+
+      expect(bench3col.tableMeta.columns.length).toBe(3);
 
       // Verify column names
-      const colNames = tableMeta.columns.map(c => c.name).sort();
+      const colNames = bench3col.tableMeta.columns.map(c => c.name).sort();
       expect(colNames).toEqual(["category", "id", "value"]);
 
       // Verify data types
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+      const idCol = bench3col.tableMeta.columns.find(c => c.name === "id")!;
       expect(idCol.dtype).toBe("int64");
-      const valueCol = tableMeta.columns.find(c => c.name === "value")!;
+      const valueCol = bench3col.tableMeta.columns.find(c => c.name === "value")!;
       expect(valueCol.dtype).toBe("float64");
-      const catCol = tableMeta.columns.find(c => c.name === "category")!;
+      const catCol = bench3col.tableMeta.columns.find(c => c.name === "category")!;
       expect(catCol.dtype).toBe("utf8");
 
       // Each column should have 10 pages (one per row group)
-      expect(idCol.pages.length).toBe(10);
-      expect(valueCol.pages.length).toBe(10);
-      expect(catCol.pages.length).toBe(10);
+      const expectedPages = 100_000 / ROW_GROUP_SIZE;
+      expect(idCol.pages.length).toBe(expectedPages);
+      expect(valueCol.pages.length).toBe(expectedPages);
+      expect(catCol.pages.length).toBe(expectedPages);
 
       // Statistics should be present on numeric columns
       for (const page of idCol.pages) {
@@ -127,28 +169,23 @@ describe("Parquet footer parsing correctness", () => {
     });
 
     it("bench_100k_numeric.parquet has correct structure", () => {
-      const { footerBuf, fileSize } = loadParquetFooterBytes(join(GENERATED, "bench_100k_numeric.parquet"));
-      const meta = parseParquetFooter(footerBuf)!;
-      expect(meta.numRows).toBe(100_000);
-      expect(meta.rowGroups.length).toBe(10);
+      expect(benchNumeric.meta.numRows).toBe(100_000);
+      expect(benchNumeric.meta.rowGroups.length).toBe(100_000 / ROW_GROUP_SIZE);
 
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_numeric.parquet", BigInt(fileSize));
-      expect(tableMeta.columns.length).toBe(2);
-      expect(tableMeta.columns.map(c => c.name).sort()).toEqual(["id", "value"]);
+      expect(benchNumeric.tableMeta.columns.length).toBe(2);
+      expect(benchNumeric.tableMeta.columns.map(c => c.name).sort()).toEqual(["id", "value"]);
     });
 
     it("bench_1m_numeric.parquet has 100 row groups", () => {
       const { footerBuf } = loadParquetFooterBytes(join(GENERATED, "bench_1m_numeric.parquet"));
       const meta = parseParquetFooter(footerBuf)!;
       expect(meta.numRows).toBe(1_000_000);
-      expect(meta.rowGroups.length).toBe(100);
+      expect(meta.rowGroups.length).toBe(1_000_000 / ROW_GROUP_SIZE);
     });
 
     it("total rows across all row groups matches numRows", () => {
-      const { footerBuf } = loadParquetFooterBytes(join(GENERATED, "bench_100k_3col.parquet"));
-      const meta = parseParquetFooter(footerBuf)!;
-      const sumFromRgs = meta.rowGroups.reduce((sum, rg) => sum + rg.numRows, 0);
-      expect(sumFromRgs).toBe(meta.numRows);
+      const sumFromRgs = bench3col.meta.rowGroups.reduce((sum, rg) => sum + rg.numRows, 0);
+      expect(sumFromRgs).toBe(bench3col.meta.numRows);
     });
   });
 });
@@ -157,24 +194,25 @@ describe("Parquet footer parsing correctness", () => {
 // 2. Parquet column decoding correctness
 // ============================================================================
 
-describe("Parquet column decoding correctness", () => {
+describe.skipIf(!hasGenerated)("Parquet column decoding correctness", () => {
+  let bench3col: ParquetFixture;
+
+  beforeAll(() => {
+    bench3col = loadParquetFixture(join(GENERATED, "bench_100k_3col.parquet"), "bench_100k_3col.parquet");
+  });
+
   describe("bench_100k_3col.parquet - INT64 decoding", () => {
     it("decodes id column from first row group with correct BigInt values", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
-
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+      const idCol = bench3col.tableMeta.columns.find(c => c.name === "id")!;
       const firstPage = idCol.pages[0];
+      expect(firstPage.encoding).toBeDefined();
       const offset = Number(firstPage.byteOffset);
       const length = firstPage.byteLength;
 
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + length);
+      const chunkBuf = bench3col.file.buffer.slice(bench3col.file.byteOffset + offset, bench3col.file.byteOffset + offset + length);
       const values = decodeParquetColumnChunk(chunkBuf, firstPage.encoding!, idCol.dtype, firstPage.rowCount, mockWasm);
 
-      expect(values.length).toBe(10_000);
+      expect(values.length).toBe(ROW_GROUP_SIZE);
       // IDs are sequential starting from 0
       expect(values[0]).toBe(0n);
       expect(values[1]).toBe(1n);
@@ -182,44 +220,34 @@ describe("Parquet column decoding correctness", () => {
     });
 
     it("decodes id column from second row group with correct offset", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
-
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+      const idCol = bench3col.tableMeta.columns.find(c => c.name === "id")!;
       const secondPage = idCol.pages[1];
+      expect(secondPage.encoding).toBeDefined();
       const offset = Number(secondPage.byteOffset);
       const length = secondPage.byteLength;
 
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + length);
+      const chunkBuf = bench3col.file.buffer.slice(bench3col.file.byteOffset + offset, bench3col.file.byteOffset + offset + length);
       const values = decodeParquetColumnChunk(chunkBuf, secondPage.encoding!, idCol.dtype, secondPage.rowCount, mockWasm);
 
-      expect(values.length).toBe(10_000);
+      expect(values.length).toBe(ROW_GROUP_SIZE);
       // Second row group should have IDs starting at 10000
-      expect(values[0]).toBe(10000n);
-      expect(values[9999]).toBe(19999n);
+      expect(values[0]).toBe(BigInt(ROW_GROUP_SIZE));
+      expect(values[9999]).toBe(BigInt(ROW_GROUP_SIZE * 2 - 1));
     });
   });
 
   describe("bench_100k_3col.parquet - FLOAT64 decoding", () => {
     it("decodes value column with finite float64 numbers", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
-
-      const valueCol = tableMeta.columns.find(c => c.name === "value")!;
+      const valueCol = bench3col.tableMeta.columns.find(c => c.name === "value")!;
       const firstPage = valueCol.pages[0];
+      expect(firstPage.encoding).toBeDefined();
       const offset = Number(firstPage.byteOffset);
       const length = firstPage.byteLength;
 
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + length);
+      const chunkBuf = bench3col.file.buffer.slice(bench3col.file.byteOffset + offset, bench3col.file.byteOffset + offset + length);
       const values = decodeParquetColumnChunk(chunkBuf, firstPage.encoding!, valueCol.dtype, firstPage.rowCount, mockWasm);
 
-      expect(values.length).toBe(10_000);
+      expect(values.length).toBe(ROW_GROUP_SIZE);
       // All values should be finite numbers in range [0, 1000)
       for (const v of values) {
         expect(typeof v).toBe("number");
@@ -232,48 +260,38 @@ describe("Parquet column decoding correctness", () => {
 
   describe("bench_100k_3col.parquet - UTF8 decoding", () => {
     it("decodes category column with correct string values", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
-
-      const catCol = tableMeta.columns.find(c => c.name === "category")!;
+      const catCol = bench3col.tableMeta.columns.find(c => c.name === "category")!;
       const firstPage = catCol.pages[0];
+      expect(firstPage.encoding).toBeDefined();
       const offset = Number(firstPage.byteOffset);
       const length = firstPage.byteLength;
 
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + length);
+      const chunkBuf = bench3col.file.buffer.slice(bench3col.file.byteOffset + offset, bench3col.file.byteOffset + offset + length);
       const values = decodeParquetColumnChunk(chunkBuf, firstPage.encoding!, catCol.dtype, firstPage.rowCount, mockWasm);
 
-      expect(values.length).toBe(10_000);
-      const expectedCategories = new Set(["alpha", "beta", "gamma", "delta", "epsilon"]);
+      expect(values.length).toBe(ROW_GROUP_SIZE);
+      const expectedCategories = new Set(BENCH_CATEGORIES);
       for (const v of values) {
         expect(typeof v).toBe("string");
         expect(expectedCategories.has(v as string)).toBe(true);
       }
       // First values cycle: alpha, beta, gamma, delta, epsilon, ...
-      expect(values[0]).toBe("alpha");
-      expect(values[1]).toBe("beta");
-      expect(values[2]).toBe("gamma");
-      expect(values[3]).toBe("delta");
-      expect(values[4]).toBe("epsilon");
+      for (let i = 0; i < BENCH_CATEGORIES.length; i++) {
+        expect(values[i]).toBe(BENCH_CATEGORIES[i]);
+      }
     });
   });
 
   describe("multi-row-group decoding completeness", () => {
     it("decoding all row groups yields the full row count", () => {
-      const filePath = join(GENERATED, "bench_100k_numeric.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_numeric.parquet", BigInt(fileSize));
+      const fixture = loadParquetFixture(join(GENERATED, "bench_100k_numeric.parquet"), "bench_100k_numeric.parquet");
 
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+      const idCol = fixture.tableMeta.columns.find(c => c.name === "id")!;
       let totalDecoded = 0;
       for (const page of idCol.pages) {
+        expect(page.encoding).toBeDefined();
         const offset = Number(page.byteOffset);
-        const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + page.byteLength);
+        const chunkBuf = fixture.file.buffer.slice(fixture.file.byteOffset + offset, fixture.file.byteOffset + offset + page.byteLength);
         const values = decodeParquetColumnChunk(chunkBuf, page.encoding!, idCol.dtype, page.rowCount, mockWasm);
         totalDecoded += values.length;
       }
@@ -283,20 +301,17 @@ describe("Parquet column decoding correctness", () => {
 
   describe("Snappy compressed Parquet decoding", () => {
     it("decompresses and decodes data from simple_snappy.parquet", () => {
-      const filePath = join(FIXTURES, "simple_snappy.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "simple_snappy.parquet", BigInt(fileSize));
+      const fixture = loadParquetFixture(join(FIXTURES, "simple_snappy.parquet"), "simple_snappy.parquet");
 
       // Should have at least one column
-      expect(tableMeta.columns.length).toBeGreaterThan(0);
+      expect(fixture.tableMeta.columns.length).toBeGreaterThan(0);
 
       // Decode the first column's first page
-      const col = tableMeta.columns[0];
+      const col = fixture.tableMeta.columns[0];
       const page = col.pages[0];
+      expect(page.encoding).toBeDefined();
       const offset = Number(page.byteOffset);
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + page.byteLength);
+      const chunkBuf = fixture.file.buffer.slice(fixture.file.byteOffset + offset, fixture.file.byteOffset + offset + page.byteLength);
       const values = decodeParquetColumnChunk(chunkBuf, page.encoding!, col.dtype, page.rowCount, mockWasm);
 
       expect(values.length).toBeGreaterThan(0);
@@ -306,19 +321,14 @@ describe("Parquet column decoding correctness", () => {
 
   describe("Snappy decompression round-trip", () => {
     it("Snappy-compressed file decodes to plausible values", () => {
-      // simple_snappy.parquet uses dictionary+Snappy encoding.
-      // Verify that decoded values are sensible (correct type, non-garbage).
-      const snappyPath = join(FIXTURES, "simple_snappy.parquet");
-      const snappyFile = readFileSync(snappyPath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(snappyPath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "simple_snappy.parquet", BigInt(fileSize));
+      const fixture = loadParquetFixture(join(FIXTURES, "simple_snappy.parquet"), "simple_snappy.parquet");
 
       // Decode each column and verify types match expectations
-      for (const col of tableMeta.columns) {
+      for (const col of fixture.tableMeta.columns) {
         const page = col.pages[0];
+        expect(page.encoding).toBeDefined();
         const offset = Number(page.byteOffset);
-        const chunkBuf = snappyFile.buffer.slice(snappyFile.byteOffset + offset, snappyFile.byteOffset + offset + page.byteLength);
+        const chunkBuf = fixture.file.buffer.slice(fixture.file.byteOffset + offset, fixture.file.byteOffset + offset + page.byteLength);
         const values = decodeParquetColumnChunk(chunkBuf, page.encoding!, col.dtype, page.rowCount, mockWasm);
 
         expect(values.length).toBe(page.rowCount);
@@ -338,7 +348,7 @@ describe("Parquet column decoding correctness", () => {
 
     it("decompressSnappy produces correct output for known input", () => {
       // Snappy-compress a small buffer manually and verify round-trip.
-      // Encode: literal "hello" → tag byte for 5-byte literal: (4 << 2) | 0 = 16, then data
+      // Encode: literal "hello" -> tag byte for 5-byte literal: (4 << 2) | 0 = 16, then data
       const literalTag = (4 << 2) | 0; // length-1=4, shifted, type=literal
       const data = new TextEncoder().encode("hello");
       // Snappy format: uncompressed length varint (5), then literal tag + data
@@ -470,15 +480,47 @@ describe("Page skipping correctness", () => {
     });
   });
 
-  describe("page skipping with real Parquet statistics", () => {
-    it("skips row groups where id column max < filter threshold", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
+  describe("edge cases for filter arrays", () => {
+    it("handles empty filter array (returns all rows)", () => {
+      // An empty filter array means no conditions to skip on, so pages are never skipped
+      expect(canSkipPage(pageWithStats, [], "x")).toBe(false);
+      expect(canSkipPage(pageWithoutStats, [], "x")).toBe(false);
+      expect(canSkipPage(pageWithStringStats, [], "x")).toBe(false);
+    });
 
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+    it("multiple filters apply with AND logic", () => {
+      // Both filters match: min=100, max=500 — gt 50 (can't skip) AND lt 600 (can't skip)
+      expect(canSkipPage(pageWithStats, [
+        { column: "x", op: "gt", value: 50 },
+        { column: "x", op: "lt", value: 600 },
+      ], "x")).toBe(false);
+
+      // First filter can skip (gt 500 => max 500 <= 500 => skip)
+      expect(canSkipPage(pageWithStats, [
+        { column: "x", op: "gt", value: 500 },
+        { column: "x", op: "lt", value: 600 },
+      ], "x")).toBe(true);
+
+      // Second filter can skip (lt 100 => min 100 >= 100 => skip)
+      expect(canSkipPage(pageWithStats, [
+        { column: "x", op: "gt", value: 50 },
+        { column: "x", op: "lt", value: 100 },
+      ], "x")).toBe(true);
+    });
+
+    it("filter on non-existent column name skips no pages", () => {
+      // Filter references column "nonexistent" but page is for column "x" — should not skip
+      expect(canSkipPage(pageWithStats, [{ column: "nonexistent", op: "gt", value: 999999 }], "x")).toBe(false);
+      expect(canSkipPage(pageWithStats, [{ column: "nonexistent", op: "eq", value: 0 }], "x")).toBe(false);
+      expect(canSkipPage(pageWithStats, [{ column: "nonexistent", op: "lt", value: -999999 }], "x")).toBe(false);
+    });
+  });
+
+  describe.skipIf(!hasGenerated)("page skipping with real Parquet statistics", () => {
+    it("skips row groups where id column max < filter threshold", () => {
+      const fixture = loadParquetFixture(join(GENERATED, "bench_100k_3col.parquet"), "bench_100k_3col.parquet");
+
+      const idCol = fixture.tableMeta.columns.find(c => c.name === "id")!;
       // Filter: id > 95000. First 9 row groups (IDs 0-89999) should be skippable.
       const filter = { column: "id", op: "gt" as const, value: 95000 };
       let skipped = 0;
@@ -499,14 +541,6 @@ describe("Page skipping correctness", () => {
 // ============================================================================
 
 describe("Lance footer parsing", () => {
-  // Helper to find the single .lance data file in a dataset's data/ directory
-  function findLanceDataFile(datasetName: string): string {
-    const dataDir = join(FIXTURES, datasetName, "data");
-    const files = readdirSync(dataDir);
-    const lanceFile = files.find(f => f.endsWith(".lance"));
-    return join(dataDir, lanceFile!);
-  }
-
   const lanceDatasets = [
     { name: "simple_int64.lance", numCols: 1 },
     { name: "simple_float64.lance", numCols: 1 },
@@ -514,49 +548,50 @@ describe("Lance footer parsing", () => {
     { name: "basic_types.lance", numCols: null },
   ];
 
-  for (const ds of lanceDatasets) {
-    describe(ds.name, () => {
-      it("detects Lance format from data file tail", () => {
-        const file = readFileSync(findLanceDataFile(ds.name));
-        const tail = file.buffer.slice(file.byteOffset + file.length - 8, file.byteOffset + file.length);
-        expect(detectFormat(tail)).toBe("lance");
-      });
+  describe.each(lanceDatasets)("$name", (ds) => {
+    let fileBytes: ArrayBuffer;
 
-      it("parses the 40-byte Lance footer with valid structure", () => {
-        const file = readFileSync(findLanceDataFile(ds.name));
-        const footer = parseFooter(file.buffer.slice(file.byteOffset, file.byteOffset + file.length));
-        expect(footer).not.toBe(null);
-        // These fixtures are Lance v0.3 format
-        expect(footer!.majorVersion).toBeGreaterThanOrEqual(0);
-        if (ds.numCols !== null) {
-          expect(footer!.numColumns).toBe(ds.numCols);
-        } else {
-          expect(footer!.numColumns).toBeGreaterThan(0);
-        }
-        expect(Number(footer!.columnMetaStart)).toBeGreaterThan(0);
-      });
-
-      it("parses column metadata protobuf with correct column count", () => {
-        const file = readFileSync(findLanceDataFile(ds.name));
-        const fileBytes = file.buffer.slice(file.byteOffset, file.byteOffset + file.length);
-        const footer = parseFooter(fileBytes)!;
-
-        const metaStart = Number(footer.columnMetaStart);
-        const metaEnd = file.length - FOOTER_SIZE;
-        const metaBuf = fileBytes.slice(metaStart, metaEnd);
-        const columns = parseColumnMetaFromProtobuf(metaBuf, footer.numColumns);
-
-        // Column count from protobuf should match footer
-        expect(columns.length).toBe(footer.numColumns);
-
-        // Each column should have a name (may be default "column_N" for v0.x data files)
-        for (const col of columns) {
-          expect(col.name).toBeDefined();
-          expect(col.name.length).toBeGreaterThan(0);
-        }
-      });
+    beforeAll(() => {
+      const file = readFileSync(findLanceDataFile(ds.name));
+      fileBytes = file.buffer.slice(file.byteOffset, file.byteOffset + file.length);
     });
-  }
+
+    it("detects Lance format from data file tail", () => {
+      const tail = fileBytes.slice(fileBytes.byteLength - 8);
+      expect(detectFormat(tail)).toBe("lance");
+    });
+
+    it("parses the 40-byte Lance footer with valid structure", () => {
+      const footer = parseFooter(fileBytes);
+      expect(footer).not.toBe(null);
+      // These fixtures are Lance v0.3 format
+      expect(footer!.majorVersion).toBe(0);
+      if (ds.numCols !== null) {
+        expect(footer!.numColumns).toBe(ds.numCols);
+      } else {
+        expect(footer!.numColumns).toBeGreaterThan(0);
+      }
+      expect(Number(footer!.columnMetaStart)).toBeGreaterThan(0);
+    });
+
+    it("parses column metadata protobuf with correct column count", () => {
+      const footer = parseFooter(fileBytes)!;
+
+      const metaStart = Number(footer.columnMetaStart);
+      const metaEnd = fileBytes.byteLength - FOOTER_SIZE;
+      const metaBuf = fileBytes.slice(metaStart, metaEnd);
+      const columns = parseColumnMetaFromProtobuf(metaBuf, footer.numColumns);
+
+      // Column count from protobuf should match footer
+      expect(columns.length).toBe(footer.numColumns);
+
+      // Each column should have a name (may be default "column_N" for v0.x data files)
+      for (const col of columns) {
+        expect(col.name).toBeDefined();
+        expect(col.name.length).toBeGreaterThan(0);
+      }
+    });
+  });
 
   describe("Lance manifest parsing", () => {
     it("parses simple_int64.lance manifest", () => {
@@ -595,20 +630,15 @@ describe("Lance footer parsing", () => {
   });
 
   describe("Lance manifest column names match expected.json", () => {
-    it("simple_int64.lance manifest has 'id' column", () => {
-      const manifestPath = join(FIXTURES, "simple_int64.lance", "_versions", "1.manifest");
+    it.each([
+      { dataset: "simple_int64.lance", version: "1", expectedColumn: "id" },
+      { dataset: "simple_float64.lance", version: "1", expectedColumn: "value" },
+    ])("$dataset manifest has '$expectedColumn' column", ({ dataset, version, expectedColumn }) => {
+      const manifestPath = join(FIXTURES, dataset, "_versions", `${version}.manifest`);
       const file = readFileSync(manifestPath);
       const manifest = parseManifest(file.buffer.slice(file.byteOffset, file.byteOffset + file.length))!;
       const fieldNames = manifest.schema.map(f => f.name);
-      expect(fieldNames).toContain("id");
-    });
-
-    it("simple_float64.lance manifest has 'value' column", () => {
-      const manifestPath = join(FIXTURES, "simple_float64.lance", "_versions", "1.manifest");
-      const file = readFileSync(manifestPath);
-      const manifest = parseManifest(file.buffer.slice(file.byteOffset, file.byteOffset + file.length))!;
-      const fieldNames = manifest.schema.map(f => f.name);
-      expect(fieldNames).toContain("value");
+      expect(fieldNames).toContain(expectedColumn);
     });
   });
 
@@ -710,40 +740,37 @@ describe("Filter result correctness", () => {
     });
   });
 
-  describe("filtered decoding from real Parquet data", () => {
-    it("filtering INT64 column returns exactly matching rows", () => {
-      const filePath = join(GENERATED, "bench_100k_3col.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_3col.parquet", BigInt(fileSize));
+  describe.skipIf(!hasGenerated)("filtered decoding from real Parquet data", () => {
+    let bench3col: ParquetFixture;
+    let benchNumeric: ParquetFixture;
 
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+    beforeAll(() => {
+      bench3col = loadParquetFixture(join(GENERATED, "bench_100k_3col.parquet"), "bench_100k_3col.parquet");
+      benchNumeric = loadParquetFixture(join(GENERATED, "bench_100k_numeric.parquet"), "bench_100k_numeric.parquet");
+    });
+
+    it("filtering INT64 column returns exactly matching rows", () => {
+      const idCol = bench3col.tableMeta.columns.find(c => c.name === "id")!;
       // Decode only the last row group (IDs 90000-99999)
       const lastPage = idCol.pages[idCol.pages.length - 1];
+      expect(lastPage.encoding).toBeDefined();
       const offset = Number(lastPage.byteOffset);
-      const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + lastPage.byteLength);
+      const chunkBuf = bench3col.file.buffer.slice(bench3col.file.byteOffset + offset, bench3col.file.byteOffset + offset + lastPage.byteLength);
       const allValues = decodeParquetColumnChunk(chunkBuf, lastPage.encoding!, idCol.dtype, lastPage.rowCount, mockWasm);
 
       // Apply filter: id > 99990n
       const threshold = 99990n;
-      const filtered = allValues.filter(v => v !== null && (v as bigint) > threshold);
+      const filtered = allValues.filter(v => v !== null && typeof v === "bigint" && v > threshold);
 
-      // IDs 90000..99999 → those > 99990 are 99991..99999 = 9 rows
+      // IDs 90000..99999 -> those > 99990 are 99991..99999 = 9 rows
       expect(filtered.length).toBe(9);
       for (const v of filtered) {
-        expect(v as bigint > threshold).toBe(true);
+        expect(typeof v === "bigint" && v > threshold).toBe(true);
       }
     });
 
     it("combined page skip + in-memory filter yields consistent results", () => {
-      const filePath = join(GENERATED, "bench_100k_numeric.parquet");
-      const file = readFileSync(filePath);
-      const { footerBuf, fileSize } = loadParquetFooterBytes(filePath);
-      const meta = parseParquetFooter(footerBuf)!;
-      const tableMeta = parquetMetaToTableMeta(meta, "bench_100k_numeric.parquet", BigInt(fileSize));
-
-      const idCol = tableMeta.columns.find(c => c.name === "id")!;
+      const idCol = benchNumeric.tableMeta.columns.find(c => c.name === "id")!;
       const filter = { column: "id", op: "gt" as const, value: 99000 };
 
       let totalMatchingRows = 0;
@@ -752,8 +779,9 @@ describe("Filter result correctness", () => {
         if (canSkipPage(page, [filter], "id")) continue;
 
         // Decode and filter in-memory
+        expect(page.encoding).toBeDefined();
         const offset = Number(page.byteOffset);
-        const chunkBuf = file.buffer.slice(file.byteOffset + offset, file.byteOffset + offset + page.byteLength);
+        const chunkBuf = benchNumeric.file.buffer.slice(benchNumeric.file.byteOffset + offset, benchNumeric.file.byteOffset + offset + page.byteLength);
         const values = decodeParquetColumnChunk(chunkBuf, page.encoding!, idCol.dtype, page.rowCount, mockWasm);
         const matching = values.filter(v => v !== null && Number(v) > 99000);
         totalMatchingRows += matching.length;
@@ -770,7 +798,7 @@ describe("Filter result correctness", () => {
 // ============================================================================
 
 describe("Cross-format consistency", () => {
-  it("Lance and Parquet agree on column types for numeric data", () => {
+  it.skipIf(!hasGenerated)("Lance and Parquet agree on column types for numeric data", () => {
     // Parquet bench_100k_numeric id column uses int64
     const { footerBuf, fileSize } = loadParquetFooterBytes(join(GENERATED, "bench_100k_numeric.parquet"));
     const parquetMeta = parseParquetFooter(footerBuf)!;

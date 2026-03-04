@@ -16,6 +16,24 @@ import { join, basename, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 
+/** Run async tasks with bounded concurrency. */
+async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = new Array(tasks.length);
+  let idx = 0;
+  async function worker() {
+    while (idx < tasks.length) {
+      const i = idx++;
+      try {
+        results[i] = { status: "fulfilled", value: await tasks[i]() };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+  return results;
+}
+
 const BASE_URL = process.env.WORKER_URL ?? "http://localhost:8787";
 const FIXTURES = join(import.meta.dirname, "../wasm/tests/fixtures");
 const GENERATED = join(FIXTURES, "generated");
@@ -126,27 +144,33 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- 2. Seed fixture Parquet files ---
+  // --- 2. Seed fixture Parquet files (parallel, concurrency 4) ---
   const parquetFiles = readdirSync(FIXTURES)
     .filter(f => f.endsWith(".parquet"))
     .map(f => join(FIXTURES, f));
 
-  for (const file of parquetFiles) {
-    try { await seedParquetFile(file); } catch (err) {
-      console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
-    }
-  }
+  await parallelLimit(
+    parquetFiles.map(file => async () => {
+      try { await seedParquetFile(file); } catch (err) {
+        console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
+      }
+    }),
+    4,
+  );
 
-  // --- 3. Seed generated benchmark data ---
+  // --- 3. Seed generated benchmark data (parallel, concurrency 4) ---
   if (existsSync(GENERATED)) {
     const genParquets = readdirSync(GENERATED)
       .filter(f => f.endsWith(".parquet"))
       .map(f => join(GENERATED, f));
-    for (const file of genParquets) {
-      try { await seedParquetFile(file); } catch (err) {
-        console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
-      }
-    }
+    await parallelLimit(
+      genParquets.map(file => async () => {
+        try { await seedParquetFile(file); } catch (err) {
+          console.log(`  SKIP ${basename(file)}: ${String(err).slice(0, 80)}`);
+        }
+      }),
+      4,
+    );
 
     // Iceberg tables
     const icebergDirs = readdirSync(GENERATED)
@@ -182,15 +206,18 @@ async function main(): Promise<void> {
   if (existsSync(GENERATED)) {
     allParquets.push(...readdirSync(GENERATED).filter(f => f.endsWith(".parquet")));
   }
-  for (const name of allParquets) {
-    try {
-      await fetch(`${BASE_URL}/write`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ r2Key: name }),
-      });
-    } catch {}
-  }
+  await parallelLimit(
+    allParquets.map(name => async () => {
+      try {
+        await fetch(`${BASE_URL}/write`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ r2Key: name }),
+        });
+      } catch {}
+    }),
+    4,
+  );
   await new Promise(r => setTimeout(r, 500));
 
   // Verify
