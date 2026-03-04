@@ -168,7 +168,7 @@ async function main(): Promise<void> {
     "simple.parquet", "simple_plain.parquet", "simple_snappy.parquet",
     "benchmark_100k.parquet", "benchmark_100k_uncompressed.parquet",
     "bench_100k_3col.parquet", "bench_100k_numeric.parquet", "bench_1m_numeric.parquet",
-    "bench_iceberg_100k",
+    // Iceberg tables use directory-based discovery (handled separately below)
   ];
 
   console.log("Refreshing tables...");
@@ -191,12 +191,13 @@ async function main(): Promise<void> {
   }
   await new Promise(r => setTimeout(r, 500));
 
-  // Pre-register Iceberg tables by triggering lazy-load via a query (retry for R2 consistency)
+  // Pre-register Iceberg tables by triggering lazy-load via a query.
+  // R2 list() in miniflare has eventual consistency — retry with longer delays.
   const icebergTables = ["bench_iceberg_100k"];
   for (const tbl of icebergTables) {
     let ok = false;
-    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+    for (let attempt = 0; attempt < 5 && !ok; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
       try {
         const resp = await fetch(`${BASE_URL}/query`, {
           method: "POST",
