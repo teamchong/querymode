@@ -112,8 +112,9 @@ pub export fn gzip_decompress(
     var reader = std.io.Reader.fixed(compressed);
     var writer = std.io.Writer.fixed(decompressed_ptr[0..decompressed_capacity]);
 
-    var gzip_stream = std.compress.gzip.decompressor(&reader);
-    const bytes_written = gzip_stream.reader.streamRemaining(&writer) catch {
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompress = std.compress.flate.Decompress.init(&reader, .gzip, &window);
+    const bytes_written = decompress.reader.streamRemaining(&writer) catch {
         return 0;
     };
     return bytes_written;
@@ -139,7 +140,6 @@ pub export fn lz4_block_decompress(
     var out_pos: usize = 0;
 
     while (pos < compressed.len) {
-        if (pos >= compressed.len) break;
         const token = compressed[pos];
         pos += 1;
 

@@ -11,6 +11,7 @@ const memory = @import("memory.zig");
 const column_meta = @import("column_meta.zig");
 
 const readU32LE = format.readU32LE;
+const readU64LE = format.readU64LE;
 const readVarint = format.readVarint;
 const wasmAlloc = memory.wasmAlloc;
 

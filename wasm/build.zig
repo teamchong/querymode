@@ -905,6 +905,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
             .optimize = .ReleaseSmall,
+            .strip = true,
+            .unwind_tables = .none,
             .imports = &.{
                 // DuckDB-style vectorized query engine (shared with native)
                 .{ .name = "vector_engine", .module = vector_engine_mod },

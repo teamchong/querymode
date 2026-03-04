@@ -21,7 +21,12 @@ jobs:
 
       - run: pnpm install
 
-      - name: Type check
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build (WASM + TypeScript)
         run: pnpm build
 
       - name: Unit tests
@@ -41,6 +46,14 @@ jobs:
           cache: pnpm
 
       - run: pnpm install
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build (WASM + TypeScript)
+        run: pnpm build
 
       - name: Generate benchmark data
         run: npx tsx scripts/generate-bench-data.ts

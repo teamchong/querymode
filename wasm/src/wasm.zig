@@ -36,6 +36,7 @@ const sql_executor = @import("wasm/sql_executor.zig");
 const buffer_pool = @import("wasm/buffer_pool.zig");
 const dataset_writer = @import("wasm/dataset_writer.zig");
 const ivf_pq = @import("wasm/ivf_pq.zig");
+const filter_simd = @import("wasm/filter_simd.zig");
 
 // Module exports are automatic via `pub export fn` in each module.
 // Force reference to ensure they're included in WASM binary:
@@ -215,14 +216,16 @@ pub fn getColumnBuffer(col_idx: u32) ?ColumnBuffer {
 export fn readInt64Column(col_idx: u32, out_ptr: [*]i64, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 8, max_len);
-    for (0..count) |i| out_ptr[i] = readI64LE(buf.data, buf.start + i * 8);
+    const bytes = count * 8;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
 export fn readFloat64Column(col_idx: u32, out_ptr: [*]f64, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 8, max_len);
-    for (0..count) |i| out_ptr[i] = readF64LE(buf.data, buf.start + i * 8);
+    const bytes = count * 8;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
@@ -261,26 +264,15 @@ export fn filterInt64Column(
 ) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const row_count = buf.size / 8;
-    var out_count: usize = 0;
-
-    for (0..row_count) |i| {
-        if (out_count >= max_indices) break;
-        const col_val = readI64LE(buf.data, buf.start + i * 8);
-        const matches = switch (op) {
-            0 => col_val == value,
-            1 => col_val != value,
-            2 => col_val < value,
-            3 => col_val <= value,
-            4 => col_val > value,
-            5 => col_val >= value,
-            else => false,
-        };
-        if (matches) {
-            out_indices[out_count] = @intCast(i);
-            out_count += 1;
-        }
-    }
-    return out_count;
+    return switch (op) {
+        0 => filter_simd.filterI64Eq(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        1 => filter_simd.filterI64Ne(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        2 => filter_simd.filterI64Lt(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        3 => filter_simd.filterI64Le(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        4 => filter_simd.filterI64Gt(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        5 => filter_simd.filterI64Ge(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        else => 0,
+    };
 }
 
 /// Filter float64 column
@@ -293,26 +285,15 @@ export fn filterFloat64Column(
 ) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const row_count = buf.size / 8;
-    var out_count: usize = 0;
-
-    for (0..row_count) |i| {
-        if (out_count >= max_indices) break;
-        const col_val = readF64LE(buf.data, buf.start + i * 8);
-        const matches = switch (op) {
-            0 => col_val == value,
-            1 => col_val != value,
-            2 => col_val < value,
-            3 => col_val <= value,
-            4 => col_val > value,
-            5 => col_val >= value,
-            else => false,
-        };
-        if (matches) {
-            out_indices[out_count] = @intCast(i);
-            out_count += 1;
-        }
-    }
-    return out_count;
+    return switch (op) {
+        0 => filter_simd.filterF64Eq(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        1 => filter_simd.filterF64Ne(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        2 => filter_simd.filterF64Lt(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        3 => filter_simd.filterF64Le(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        4 => filter_simd.filterF64Gt(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        5 => filter_simd.filterF64Ge(buf.data, buf.start, row_count, value, out_indices, max_indices),
+        else => 0,
+    };
 }
 
 /// Read int64 values at specific indices
@@ -360,42 +341,47 @@ export fn allocIndexBuffer(count: usize) ?[*]u32 {
 export fn readInt32Column(col_idx: u32, out_ptr: [*]i32, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 4, max_len);
-    for (0..count) |i| out_ptr[i] = readI32LE(buf.data, buf.start + i * 4);
+    const bytes = count * 4;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
 export fn readInt16Column(col_idx: u32, out_ptr: [*]i16, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 2, max_len);
-    for (0..count) |i| out_ptr[i] = readI16LE(buf.data, buf.start + i * 2);
+    const bytes = count * 2;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
 export fn readInt8Column(col_idx: u32, out_ptr: [*]i8, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size, max_len);
-    for (0..count) |i| out_ptr[i] = readI8(buf.data, buf.start + i);
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..count], buf.data[buf.start..][0..count]);
     return count;
 }
 
 export fn readUint64Column(col_idx: u32, out_ptr: [*]u64, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 8, max_len);
-    for (0..count) |i| out_ptr[i] = readU64LE(buf.data, buf.start + i * 8);
+    const bytes = count * 8;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
 export fn readUint32Column(col_idx: u32, out_ptr: [*]u32, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 4, max_len);
-    for (0..count) |i| out_ptr[i] = readU32LE(buf.data, buf.start + i * 4);
+    const bytes = count * 4;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
 export fn readUint16Column(col_idx: u32, out_ptr: [*]u16, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 2, max_len);
-    for (0..count) |i| out_ptr[i] = readU16LE(buf.data, buf.start + i * 2);
+    const bytes = count * 2;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 
@@ -409,7 +395,8 @@ export fn readUint8Column(col_idx: u32, out_ptr: [*]u8, max_len: usize) usize {
 export fn readFloat32Column(col_idx: u32, out_ptr: [*]f32, max_len: usize) usize {
     const buf = getColumnBuffer(col_idx) orelse return 0;
     const count = @min(buf.size / 4, max_len);
-    for (0..count) |i| out_ptr[i] = readF32LE(buf.data, buf.start + i * 4);
+    const bytes = count * 4;
+    @memcpy(@as([*]u8, @ptrCast(out_ptr))[0..bytes], buf.data[buf.start..][0..bytes]);
     return count;
 }
 

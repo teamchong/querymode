@@ -1,7 +1,7 @@
 //! LRU Buffer Pool for WASM
 //!
 //! Manages memory usage by evicting cold data when a byte limit is reached.
-//! This is a Zig-native implementation to cache column data efficiently.
+//! Uses FNV-1a hash table for O(1) lookups (pattern from vectorjson).
 
 const std = @import("std");
 const memory = @import("memory.zig");
@@ -11,21 +11,22 @@ const memory = @import("memory.zig");
 // ============================================================================
 
 const MAX_ENTRIES = 1024;
+const HASH_BUCKETS = 256;
 /// Default 64MB - safe for Cloudflare Workers (128MB limit).
-/// For AWS Lambda or browsers with more memory, call bufferPoolInit() with larger value.
-const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024; // 64MB (Worker-safe)
+const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 // ============================================================================
 // Types
 // ============================================================================
 
 pub const CacheEntry = struct {
-    key: [128]u8, // Fixed-size key buffer
+    key: [128]u8,
     key_len: usize,
-    data: ?[]u8, // Pointer to cached data
+    data: ?[]u8,
     size: usize,
     prev: ?*CacheEntry,
     next: ?*CacheEntry,
+    hash_next: ?*CacheEntry,
     in_use: bool,
 };
 
@@ -35,11 +36,48 @@ pub const CacheEntry = struct {
 
 var entries: [MAX_ENTRIES]CacheEntry = undefined;
 var entry_count: usize = 0;
-var head: ?*CacheEntry = null; // Most recently used
-var tail: ?*CacheEntry = null; // Least recently used
+var head: ?*CacheEntry = null;
+var tail: ?*CacheEntry = null;
 var current_bytes: usize = 0;
 var max_bytes: usize = DEFAULT_MAX_BYTES;
 var initialized: bool = false;
+var hash_table: [HASH_BUCKETS]?*CacheEntry = .{null} ** HASH_BUCKETS;
+
+// ============================================================================
+// Hash Functions
+// ============================================================================
+
+fn hashKey(key: []const u8) u8 {
+    var h: u32 = 2166136261; // FNV-1a offset basis
+    for (key) |b| {
+        h ^= b;
+        h *%= 16777619; // FNV-1a prime
+    }
+    return @truncate(h);
+}
+
+fn insertIntoHash(entry: *CacheEntry) void {
+    const bucket = hashKey(entry.key[0..entry.key_len]);
+    entry.hash_next = hash_table[bucket];
+    hash_table[bucket] = entry;
+}
+
+fn removeFromHash(entry: *CacheEntry) void {
+    const bucket = hashKey(entry.key[0..entry.key_len]);
+    if (hash_table[bucket] == entry) {
+        hash_table[bucket] = entry.hash_next;
+    } else {
+        var prev = hash_table[bucket];
+        while (prev) |p| {
+            if (p.hash_next == entry) {
+                p.hash_next = entry.hash_next;
+                break;
+            }
+            prev = p.hash_next;
+        }
+    }
+    entry.hash_next = null;
+}
 
 // ============================================================================
 // Initialization
@@ -47,7 +85,7 @@ var initialized: bool = false;
 
 fn initPool() void {
     if (initialized) return;
-    
+
     for (&entries) |*e| {
         e.* = CacheEntry{
             .key = undefined,
@@ -56,6 +94,7 @@ fn initPool() void {
             .size = 0,
             .prev = null,
             .next = null,
+            .hash_next = null,
             .in_use = false,
         };
     }
@@ -63,6 +102,7 @@ fn initPool() void {
     head = null;
     tail = null;
     current_bytes = 0;
+    @memset(&hash_table, null);
     initialized = true;
 }
 
@@ -71,10 +111,13 @@ fn initPool() void {
 // ============================================================================
 
 fn findEntry(key: []const u8) ?*CacheEntry {
-    for (&entries) |*e| {
+    const bucket = hashKey(key);
+    var entry = hash_table[bucket];
+    while (entry) |e| {
         if (e.in_use and e.key_len == key.len and std.mem.eql(u8, e.key[0..e.key_len], key)) {
             return e;
         }
+        entry = e.hash_next;
     }
     return null;
 }
@@ -90,7 +133,7 @@ fn allocEntry() ?*CacheEntry {
 
 fn moveToHead(entry: *CacheEntry) void {
     if (entry == head) return;
-    
+
     removeNode(entry);
     addToHead(entry);
 }
@@ -98,12 +141,12 @@ fn moveToHead(entry: *CacheEntry) void {
 fn addToHead(entry: *CacheEntry) void {
     entry.next = head;
     entry.prev = null;
-    
+
     if (head) |h| {
         h.prev = entry;
     }
     head = entry;
-    
+
     if (tail == null) {
         tail = entry;
     }
@@ -115,13 +158,13 @@ fn removeNode(entry: *CacheEntry) void {
     } else {
         head = entry.next;
     }
-    
+
     if (entry.next) |n| {
         n.prev = entry.prev;
     } else {
         tail = entry.prev;
     }
-    
+
     entry.prev = null;
     entry.next = null;
 }
@@ -129,6 +172,7 @@ fn removeNode(entry: *CacheEntry) void {
 fn evictIfNeeded() void {
     while (current_bytes > max_bytes and tail != null) {
         const node = tail.?;
+        removeFromHash(node);
         removeNode(node);
         current_bytes -= node.size;
         node.in_use = false;
@@ -148,7 +192,7 @@ pub export fn bufferPoolInit(max_size: usize) void {
 }
 
 /// Get cached data by key
-/// Returns pointer and size via out parameters, returns 1 if found, 0 otherwise
+/// Returns 1 if found, 0 otherwise
 pub export fn bufferPoolGet(
     key_ptr: [*]const u8,
     key_len: usize,
@@ -156,12 +200,12 @@ pub export fn bufferPoolGet(
     out_size: *usize,
 ) u32 {
     if (!initialized) initPool();
-    
+
     const key = key_ptr[0..key_len];
     const entry = findEntry(key) orelse return 0;
-    
+
     moveToHead(entry);
-    
+
     if (entry.data) |data| {
         out_data_ptr.* = data.ptr;
         out_size.* = entry.size;
@@ -180,54 +224,51 @@ pub export fn bufferPoolSet(
 ) u32 {
     if (!initialized) initPool();
     if (key_len > 128) return 0;
-    
+
     const key = key_ptr[0..key_len];
-    
+
     // Check if entry already exists
     if (findEntry(key)) |existing| {
-        // Update existing entry
         current_bytes -= existing.size;
         current_bytes += data_len;
-        
-        // Allocate new buffer and copy data
+
         const buf = memory.wasmAlloc(data_len) orelse return 0;
         @memcpy(buf[0..data_len], data_ptr[0..data_len]);
         existing.data = buf[0..data_len];
         existing.size = data_len;
-        
+
         moveToHead(existing);
         evictIfNeeded();
         return 1;
     }
-    
-    // Allocate new entry
-    const entry = allocEntry() orelse {
-        // Pool is full, evict tail and try again
-        if (tail) |t| {
-            removeNode(t);
-            current_bytes -= t.size;
-            t.in_use = false;
-            t.data = null;
-            entry_count -= 1;
-        }
-        return bufferPoolSet(key_ptr, key_len, data_ptr, data_len);
+
+    // Allocate new entry — evict LRU tail if pool is full (no recursion)
+    const entry = allocEntry() orelse blk: {
+        const t = tail orelse return 0;
+        removeFromHash(t);
+        removeNode(t);
+        current_bytes -= t.size;
+        t.in_use = false;
+        t.data = null;
+        entry_count -= 1;
+        break :blk t;
     };
-    
-    // Allocate buffer and copy data
+
     const buf = memory.wasmAlloc(data_len) orelse return 0;
     @memcpy(buf[0..data_len], data_ptr[0..data_len]);
-    
-    // Initialize entry
+
     @memcpy(entry.key[0..key_len], key);
     entry.key_len = key_len;
     entry.data = buf[0..data_len];
     entry.size = data_len;
     entry.in_use = true;
-    
+    entry.hash_next = null;
+
+    insertIntoHash(entry);
     addToHead(entry);
     entry_count += 1;
     current_bytes += data_len;
-    
+
     evictIfNeeded();
     return 1;
 }
@@ -243,33 +284,36 @@ pub export fn bufferPoolHas(key_ptr: [*]const u8, key_len: usize) u32 {
 pub export fn bufferPoolDelete(key_ptr: [*]const u8, key_len: usize) u32 {
     if (!initialized) initPool();
     const key = key_ptr[0..key_len];
-    
+
     const entry = findEntry(key) orelse return 0;
-    
+
+    removeFromHash(entry);
     removeNode(entry);
     current_bytes -= entry.size;
     entry.in_use = false;
     entry.data = null;
     entry_count -= 1;
-    
+
     return 1;
 }
 
 /// Clear the entire cache
 pub export fn bufferPoolClear() void {
     if (!initialized) return;
-    
+
     for (&entries) |*e| {
         e.in_use = false;
         e.data = null;
         e.prev = null;
         e.next = null;
+        e.hash_next = null;
     }
-    
+
     head = null;
     tail = null;
     current_bytes = 0;
     entry_count = 0;
+    @memset(&hash_table, null);
 }
 
 /// Get current cache statistics

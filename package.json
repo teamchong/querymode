@@ -13,11 +13,14 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "build": "tsc",
+    "prepublishOnly": "pnpm run build",
+    "build": "pnpm run build:wasm && tsc",
+    "build:wasm": "cd wasm && zig build wasm && mkdir -p ../src/wasm && cp zig-out/bin/querymode.wasm ../src/wasm/",
+    "build:ts": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "wrangler deploy",
-    "wasm": "cd wasm && zig build wasm && cp zig-out/bin/querymode.wasm ../src/wasm/",
+    "deploy": "pnpm run build && wrangler deploy",
+    "wasm": "pnpm run build:wasm",
     "bench:seed": "npx tsx scripts/seed-local-r2.ts",
     "bench": "npx tsx scripts/bench.ts"
   },
