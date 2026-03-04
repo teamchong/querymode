@@ -191,24 +191,30 @@ async function main(): Promise<void> {
   }
   await new Promise(r => setTimeout(r, 500));
 
-  // Pre-register Iceberg tables by triggering lazy-load via a query
+  // Pre-register Iceberg tables by triggering lazy-load via a query (retry for R2 consistency)
   const icebergTables = ["bench_iceberg_100k"];
   for (const tbl of icebergTables) {
-    try {
-      const resp = await fetch(`${BASE_URL}/query`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ table: tbl, filters: [], projections: ["id"], limit: 1 }),
-      });
-      if (resp.ok) {
-        console.log(`  Iceberg OK: ${tbl}`);
-      } else {
-        const text = await resp.text();
-        console.log(`  Iceberg Skip: ${tbl} (${resp.status}: ${text.slice(0, 100)})`);
+    let ok = false;
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+      try {
+        const resp = await fetch(`${BASE_URL}/query`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ table: tbl, filters: [], projections: ["id"], limit: 1 }),
+        });
+        if (resp.ok) {
+          console.log(`  Iceberg OK: ${tbl}`);
+          ok = true;
+        } else {
+          const text = await resp.text();
+          console.log(`  Iceberg attempt ${attempt + 1}: ${tbl} (${resp.status}: ${text.slice(0, 80)})`);
+        }
+      } catch {
+        console.log(`  Iceberg attempt ${attempt + 1}: ${tbl} (fetch error)`);
       }
-    } catch {
-      console.log(`  Iceberg Skip: ${tbl}`);
     }
+    if (!ok) console.log(`  Iceberg Skip: ${tbl}`);
   }
   await new Promise(r => setTimeout(r, 500));
 
