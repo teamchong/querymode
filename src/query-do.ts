@@ -11,6 +11,7 @@ import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { VipCache } from "./vip-cache.js";
 import { parseLanceV2Columns } from "./lance-v2.js";
+import { parseAndValidateQuery } from "./query-schema.js";
 import wasmModule from "./wasm-module.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
@@ -246,11 +247,13 @@ export class QueryDO implements DurableObject {
 
   private async handleQuery(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-querymode-request-id") ?? crypto.randomUUID();
-    const body = await request.json() as Record<string, unknown>;
-    if (!body.table || typeof body.table !== "string") {
-      return this.json({ error: "Missing or invalid 'table' field" }, 400);
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try {
+      query = this.parseQuery(body);
+    } catch (err) {
+      return this.json({ error: (err as Error).message }, 400);
     }
-    const query = this.parseQuery(body);
     try {
       const result = await this.executeQuery(query);
       result.requestId = requestId;
@@ -291,25 +294,14 @@ export class QueryDO implements DurableObject {
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 
-  private parseQuery(request_body: Record<string, unknown>): QueryDescriptor {
-    return {
-      table: request_body.table as string,
-      filters: (request_body.filters ?? []) as QueryDescriptor["filters"],
-      projections: (request_body.projections ?? request_body.select ?? []) as string[],
-      sortColumn: request_body.sortColumn as string | undefined,
-      sortDirection: request_body.sortDirection as "asc" | "desc" | undefined,
-      limit: request_body.limit as number | undefined,
-      vectorSearch: request_body.vectorSearch as QueryDescriptor["vectorSearch"],
-      aggregates: request_body.aggregates as QueryDescriptor["aggregates"],
-      groupBy: request_body.groupBy as string[] | undefined,
-      cacheTTL: request_body.cacheTTL as number | undefined,
-    };
+  private parseQuery(body: unknown): QueryDescriptor {
+    return parseAndValidateQuery(body) as QueryDescriptor;
   }
 
   private async handleCount(request: Request): Promise<Response> {
-    const body = await request.json() as Record<string, unknown>;
-    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
-    const query = this.parseQuery(body);
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
     try {
       // Fast path: no filters — sum page rowCounts from cached metadata
       if (query.filters.length === 0) {
@@ -331,9 +323,9 @@ export class QueryDO implements DurableObject {
   }
 
   private async handleExists(request: Request): Promise<Response> {
-    const body = await request.json() as Record<string, unknown>;
-    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
-    const query = this.parseQuery(body);
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
     query.limit = 1;
     try {
       const result = await this.executeQuery(query);
@@ -344,9 +336,9 @@ export class QueryDO implements DurableObject {
   }
 
   private async handleFirst(request: Request): Promise<Response> {
-    const body = await request.json() as Record<string, unknown>;
-    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
-    const query = this.parseQuery(body);
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
     query.limit = 1;
     try {
       const result = await this.executeQuery(query);
@@ -357,9 +349,9 @@ export class QueryDO implements DurableObject {
   }
 
   private async handleExplain(request: Request): Promise<Response> {
-    const body = await request.json() as Record<string, unknown>;
-    if (!body.table || typeof body.table !== "string") return this.json({ error: "Missing 'table'" }, 400);
-    const query = this.parseQuery(body);
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
     try {
       let meta: TableMeta | undefined = this.footerCache.get(query.table);
       const metaCached = !!meta;
@@ -1358,7 +1350,9 @@ export class QueryDO implements DurableObject {
 
   /** Stream query results as NDJSON. */
   private async handleQueryStream(request: Request): Promise<Response> {
-    const query = (await request.json()) as QueryDescriptor;
+    const body = await request.json();
+    let query: QueryDescriptor;
+    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: (err as Error).message }, 400); }
     const result = await this.executeQuery(query);
 
     const { readable, writable } = new TransformStream<Uint8Array>();

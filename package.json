@@ -40,5 +40,8 @@
     "src/wasm/querymode.wasm"
   ],
   "license": "MIT",
-  "packageManager": "pnpm@10.21.0"
+  "packageManager": "pnpm@10.21.0",
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
 }
