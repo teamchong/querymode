@@ -182,10 +182,10 @@ class RemoteExecutor implements QueryExecutor {
 
             // Process complete frames
             while (pending.length >= 4) {
-              const frameLen = new DataView(pending.buffer, pending.byteOffset).getUint32(0, true);
+              const frameLen = new DataView(pending.buffer as ArrayBuffer, pending.byteOffset).getUint32(0, true);
               if (pending.length < 4 + frameLen) break; // wait for more data
 
-              const frameBuf = pending.buffer.slice(
+              const frameBuf = (pending.buffer as ArrayBuffer).slice(
                 pending.byteOffset + 4,
                 pending.byteOffset + 4 + frameLen,
               );
