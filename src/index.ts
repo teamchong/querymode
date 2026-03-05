@@ -178,7 +178,7 @@ class RemoteExecutor implements QueryExecutor {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            const chunk = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+            const chunk = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)) as Uint8Array<ArrayBuffer>;
             pending = pending.length > 0 ? concat(pending, chunk) : chunk;
 
             // Process complete frames
