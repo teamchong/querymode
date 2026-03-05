@@ -33,6 +33,7 @@
     "@cloudflare/workers-types": "^4.20250224.0",
     "@types/node": "^25.3.3",
     "duckdb": "^1.4.4",
+    "miniflare": "^4.20260301.1",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
     "wrangler": "^4.0.0"
@@ -47,6 +48,8 @@
     "zod": "^4.3.6"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["duckdb"]
+    "onlyBuiltDependencies": [
+      "duckdb"
+    ]
   }
 }

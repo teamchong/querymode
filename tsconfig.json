@@ -18,5 +18,5 @@
     "isolatedModules": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.bench.ts", "src/cloudflare-workers-polyfill.ts", "src/test-setup.ts"]
 }
