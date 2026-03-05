@@ -185,7 +185,7 @@ export class TableQuery<T extends Row = Row> {
     return this._executor.execute(this.toDescriptor()) as Promise<QueryResult<T>>;
   }
 
-  /** Execute and return an NDJSON stream of rows. Only works with RemoteExecutor. */
+  /** Execute and return a columnar binary stream of rows. Only works with RemoteExecutor. */
   async execStream(): Promise<ReadableStream<Row>> {
     if (!this._executor.executeStream) {
       throw new Error("execStream() requires a remote executor with streaming support");

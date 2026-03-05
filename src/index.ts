@@ -139,36 +139,47 @@ class RemoteExecutor implements QueryExecutor {
     return masterRpc.appendRpc(table, rows);
   }
 
-  /** Stream query results via RPC — native ReadableStream, no HTTP wrapper. */
+  /** Stream query results via RPC — columnar binary framed stream. */
   async executeStream(query: QueryDescriptor): Promise<ReadableStream<Row>> {
+    const { decodeColumnarRun } = await import("./r2-spill.js");
     const rpc = this.getQueryHandle();
     const byteStream = await rpc.streamRpc(query);
 
-    // Parse NDJSON byte stream into Row objects
-    const decoder = new TextDecoder();
-    const MAX_STREAM_BUFFER = 10 * 1024 * 1024;
-    let buffer = "";
-
+    // Parse length-prefixed columnar binary frames into Row objects
     return new ReadableStream<Row>({
       async start(controller) {
         const reader = byteStream.getReader();
+        let pending = new Uint8Array(0);
+
+        const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+          const out = new Uint8Array(a.length + b.length);
+          out.set(a, 0);
+          out.set(b, a.length);
+          return out;
+        };
+
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            if (buffer.length > MAX_STREAM_BUFFER) {
-              controller.error(new Error("Stream buffer exceeded 10MB"));
-              reader.cancel();
-              return;
-            }
-            const lines = buffer.split("\n");
-            buffer = lines.pop()!;
-            for (const line of lines) {
-              if (line.trim()) controller.enqueue(JSON.parse(line) as Row);
+            pending = pending.length > 0 ? concat(pending, value) : value;
+
+            // Process complete frames
+            while (pending.length >= 4) {
+              const frameLen = new DataView(pending.buffer, pending.byteOffset).getUint32(0, true);
+              if (pending.length < 4 + frameLen) break; // wait for more data
+
+              const frameBuf = pending.buffer.slice(
+                pending.byteOffset + 4,
+                pending.byteOffset + 4 + frameLen,
+              );
+              pending = pending.subarray(4 + frameLen);
+
+              for (const row of decodeColumnarRun(frameBuf)) {
+                controller.enqueue(row);
+              }
             }
           }
-          if (buffer.trim()) controller.enqueue(JSON.parse(buffer) as Row);
           controller.close();
         } catch (err) {
           controller.error(err);

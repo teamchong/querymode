@@ -9,7 +9,7 @@ import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
-import { R2SpillBackend } from "./r2-spill.js";
+import { R2SpillBackend, encodeColumnarRun } from "./r2-spill.js";
 import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline, estimateRowSize,
@@ -1806,7 +1806,7 @@ export class QueryDO extends DurableObject<Env> {
     }
   }
 
-  /** Stream query results as NDJSON. */
+  /** Stream query results as columnar binary batches. */
   private async handleQueryStream(request: Request): Promise<Response> {
     const body = await request.json();
     let query: QueryDescriptor;
@@ -1814,22 +1814,27 @@ export class QueryDO extends DurableObject<Env> {
     let result: QueryResult;
     try { result = await this.executeQuery(query); } catch (err) { return this.json({ error: this.errMsg(err) }, 500); }
 
-    const { readable, writable } = new TransformStream<Uint8Array>();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
+    // Encode as columnar binary with length-prefixed batches for streaming
+    const STREAM_BATCH_SIZE = 4096;
+    const rows = result.rows;
+    let idx = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (idx >= rows.length) { controller.close(); return; }
+        const end = Math.min(idx + STREAM_BATCH_SIZE, rows.length);
+        const batch = rows.slice(idx, end);
+        idx = end;
+        const buf = encodeColumnarRun(batch);
+        // Length-prefix each batch: 4 bytes little-endian uint32 + columnar payload
+        const frame = new Uint8Array(4 + buf.byteLength);
+        new DataView(frame.buffer).setUint32(0, buf.byteLength, true);
+        frame.set(new Uint8Array(buf), 4);
+        controller.enqueue(frame);
+      },
+    });
 
-    (async () => {
-      try {
-        for (const row of result.rows) {
-          await writer.write(encoder.encode(JSON.stringify(row, bigIntReplacer) + "\n"));
-        }
-      } finally {
-        await writer.close();
-      }
-    })();
-
-    return new Response(readable, {
-      headers: { "content-type": "application/x-ndjson" },
+    return new Response(stream, {
+      headers: { "content-type": "application/x-querymode-columnar" },
     });
   }
 
@@ -1873,13 +1878,21 @@ export class QueryDO extends DurableObject<Env> {
 
   async streamRpc(descriptor: unknown): Promise<ReadableStream<Uint8Array>> {
     const result = await this.executeQuery(await this.rpcParseQuery(descriptor));
-    const encoder = new TextEncoder();
     const rows = result.rows;
+    const STREAM_BATCH_SIZE = 4096;
     let idx = 0;
     return new ReadableStream<Uint8Array>({
       pull(controller) {
         if (idx >= rows.length) { controller.close(); return; }
-        controller.enqueue(encoder.encode(JSON.stringify(rows[idx++], bigIntReplacer) + "\n"));
+        const end = Math.min(idx + STREAM_BATCH_SIZE, rows.length);
+        const batch = rows.slice(idx, end);
+        idx = end;
+        const buf = encodeColumnarRun(batch);
+        // Length-prefix: 4 bytes LE uint32 + payload
+        const frame = new Uint8Array(4 + buf.byteLength);
+        new DataView(frame.buffer).setUint32(0, buf.byteLength, true);
+        frame.set(new Uint8Array(buf), 4);
+        controller.enqueue(frame);
       },
     });
   }

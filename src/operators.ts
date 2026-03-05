@@ -891,25 +891,12 @@ export function estimateRowSize(row: Row): number {
   return size;
 }
 
-/** JSON replacer for bigint values in NDJSON runs. */
-function bigIntJsonReplacer(_key: string, value: unknown): unknown {
-  return typeof value === "bigint" ? `__bigint__${value.toString()}` : value;
-}
-
-/** Parse a single NDJSON line, restoring bigint values. */
-function parseNdjsonRow(line: string): Row {
-  return JSON.parse(line, (_key, value) => {
-    if (typeof value === "string" && value.startsWith("__bigint__")) {
-      return BigInt(value.slice(10));
-    }
-    return value;
-  }) as Row;
-}
-
-// Re-export SpillBackend from r2-spill so consumers can import from either place
+// Re-export SpillBackend + columnar codec from r2-spill
 export type { SpillBackend } from "./r2-spill.js";
+export { encodeColumnarRun, decodeColumnarRun } from "./r2-spill.js";
+import { encodeColumnarRun, decodeColumnarRun } from "./r2-spill.js";
 
-/** Filesystem-backed spill for Node/Bun environments. */
+/** Filesystem-backed spill for Node/Bun environments using columnar binary format. */
 export class FsSpillBackend {
   private runFiles: string[] = [];
   private tmpDir: string | null = null;
@@ -925,30 +912,20 @@ export class FsSpillBackend {
     }
     const path = await import("node:path");
     const fs = await import("node:fs/promises");
-    const runPath = path.join(this.tmpDir!, `run_${this.runFiles.length}.ndjson`);
-    const lines = rows.map(row => JSON.stringify(row, bigIntJsonReplacer));
-    const body = lines.join("\n") + "\n";
-    this.bytesWritten += Buffer.byteLength(body, "utf8");
-    await fs.writeFile(runPath, body);
+    const runPath = path.join(this.tmpDir!, `run_${this.runFiles.length}.bin`);
+    const buf = encodeColumnarRun(rows);
+    this.bytesWritten += buf.byteLength;
+    await fs.writeFile(runPath, new Uint8Array(buf));
     this.runFiles.push(runPath);
     return runPath;
   }
 
   async *streamRun(spillId: string): AsyncGenerator<Row> {
-    const nodeFs = await import("node:fs");
-    const readline = await import("node:readline");
-    const stream = nodeFs.createReadStream(spillId);
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    try {
-      for await (const line of rl) {
-        if (line.length === 0) continue;
-        this.bytesRead += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
-        yield parseNdjsonRow(line);
-      }
-    } finally {
-      rl.close();
-      stream.destroy();
-    }
+    const fs = await import("node:fs/promises");
+    const fileData = await fs.readFile(spillId);
+    const buf = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
+    this.bytesRead += buf.byteLength;
+    yield* decodeColumnarRun(buf);
   }
 
   async cleanup(): Promise<void> {
