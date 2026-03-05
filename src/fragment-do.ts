@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { canSkipPage } from "./decode.js";

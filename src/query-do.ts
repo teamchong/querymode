@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, DataType, Env, ExplainResult, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";

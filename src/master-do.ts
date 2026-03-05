@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
