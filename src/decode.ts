@@ -348,7 +348,7 @@ function vectorSearch(
 
 // --- Filters ---
 
-/** Coerce bigint↔number for cross-type comparisons (JSON filter values are numbers, int64 columns decode as bigint). */
+/** Coerce bigint↔number for cross-type comparisons (filter values are numbers, int64 columns decode as bigint). */
 function coerceCompare(a: unknown, b: unknown): [unknown, unknown] {
   if (typeof a === "bigint" && typeof b === "number") return [a, BigInt(Math.trunc(b))];
   if (typeof a === "number" && typeof b === "bigint") return [BigInt(Math.trunc(a)), b];

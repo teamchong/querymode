@@ -337,10 +337,21 @@ export class LocalExecutor implements QueryExecutor {
     return cached;
   }
 
-  /** Build a cache key from query descriptor. */
+  /** Build a cache key from query descriptor — no serialization. */
   private queryCacheKey(query: QueryDescriptor): string {
-    const { table, filters, projections, sortColumn, sortDirection, limit, offset, aggregates, groupBy } = query;
-    return `qr:${table}:${JSON.stringify({ filters, projections, sortColumn, sortDirection, limit, offset, aggregates, groupBy })}`;
+    let h = 0x811c9dc5;
+    const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
+    feed(query.table);
+    for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+      feed(f.column); feed(f.op); feed(String(f.value));
+    }
+    for (const p of [...query.projections].sort()) feed(p);
+    if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
+    if (query.limit !== undefined) feed(String(query.limit));
+    if (query.offset !== undefined) feed(String(query.offset));
+    if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
+    if (query.groupBy) for (const g of query.groupBy) feed(g);
+    return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {
