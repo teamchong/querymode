@@ -165,7 +165,7 @@ class RemoteExecutor implements QueryExecutor {
     return new ReadableStream<Row>({
       async start(controller) {
         const reader = byteStream.getReader();
-        let pending = new Uint8Array(0);
+        let pending: Uint8Array = new Uint8Array(0);
 
         const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
           const out = new Uint8Array(a.length + b.length);
@@ -178,8 +178,7 @@ class RemoteExecutor implements QueryExecutor {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            const chunk = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)) as Uint8Array<ArrayBuffer>;
-            pending = pending.length > 0 ? concat(pending, chunk) : chunk;
+            pending = pending.length > 0 ? concat(pending, value) : value;
 
             // Process complete frames
             while (pending.length >= 4) {
