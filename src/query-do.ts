@@ -4,7 +4,7 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage, bigIntReplacer } from "./decode.js";
+import { canSkipPage } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -591,21 +591,18 @@ export class QueryDO extends DurableObject<Env> {
   }
 
   private queryKey(query: QueryDescriptor): string {
-    const normalized = {
-      t: query.table,
-      f: [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op)),
-      p: [...query.projections].sort(),
-      s: query.sortColumn, sd: query.sortDirection,
-      l: query.limit,
-      a: query.aggregates, g: query.groupBy,
-    };
-    const str = JSON.stringify(normalized, bigIntReplacer);
-    // FNV-1a hash
+    // FNV-1a hash over query components — no JSON serialization
     let h = 0x811c9dc5;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
+    const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
+    feed(query.table);
+    for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+      feed(f.column); feed(f.op); feed(String(f.value));
     }
+    for (const p of [...query.projections].sort()) feed(p);
+    if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
+    if (query.limit !== undefined) feed(String(query.limit));
+    if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
+    if (query.groupBy) for (const g of query.groupBy) feed(g);
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 
