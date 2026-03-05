@@ -3,7 +3,7 @@
  * DurableObject is a base class provided by the Workers runtime —
  * tests run in Node and need a minimal stand-in.
  */
-if (typeof globalThis.DurableObject === "undefined") {
+if (typeof (globalThis as Record<string, unknown>).DurableObject === "undefined") {
   (globalThis as Record<string, unknown>).DurableObject = class DurableObject {
     protected ctx: unknown;
     protected env: unknown;

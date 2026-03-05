@@ -178,7 +178,7 @@ class RemoteExecutor implements QueryExecutor {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            pending = pending.length > 0 ? concat(pending, value) : value;
+            pending = pending.length > 0 ? concat(pending, new Uint8Array(value)) : new Uint8Array(value);
 
             // Process complete frames
             while (pending.length >= 4) {
