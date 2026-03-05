@@ -48,6 +48,94 @@ Your app code IS the query execution. The WASM engine is a library function your
 - No fixed operator set — your code can do anything between query steps
 - Same binary everywhere — browser, Node/Bun, Cloudflare DO
 
+## Query engine as code
+
+Every SQL clause is a composable code primitive. They all implement the same pull-based `Operator` interface — `next() → RowBatch | null` — so you chain them however you want, not how a SQL planner decides.
+
+```
+SQL clause        Operator class              What it does
+─────────         ──────────────              ────────────
+WHERE             FilterOperator              Predicate pushdown on rows
+SELECT            ProjectOperator             Column projection
+ORDER BY          ExternalSortOperator        Disk-spilling merge sort
+                  InMemorySortOperator        In-memory sort (small datasets)
+GROUP BY + agg    AggregateOperator           Hash aggregate (sum/avg/min/max/count/stddev/median/percentile)
+LIMIT / OFFSET    LimitOperator               Row limiting with offset
+                  TopKOperator                Heap-based top-K (no full sort)
+JOIN              HashJoinOperator            Grace hash join with R2 spill
+PARTITION BY      WindowOperator              row_number, rank, dense_rank, lag, lead, rolling aggregates
+DISTINCT          DistinctOperator            Hash-based deduplication
+UNION/INTERSECT   SetOperator                 Set operations (union, union_all, intersect, except)
+computed column   ComputedColumnOperator      Arbitrary (row: Row) => value transforms
+IN (subquery)     SubqueryInOperator          Semi-join filter against a value set
+```
+
+### Compose operators directly
+
+```typescript
+import {
+  FilterOperator, AggregateOperator, HashJoinOperator,
+  WindowOperator, TopKOperator, drainPipeline,
+  type Operator, type RowBatch,
+} from "querymode"
+
+// Your data source — any async batch producer
+const source: Operator = {
+  async next() { /* return RowBatch or null */ },
+  async close() {},
+}
+
+// Chain operators like function calls — no query planner, no SQL string
+const filtered = new FilterOperator(source, [{ column: "age", op: "gt", value: 25 }])
+const aggregated = new AggregateOperator(filtered, {
+  table: "users", filters: [], projections: [],
+  groupBy: ["region"],
+  aggregates: [{ fn: "sum", column: "amount", alias: "total" }],
+})
+const top10 = new TopKOperator(aggregated, "total", true, 10)
+
+// Pull results — zero-copy, no serialization between stages
+const rows = await drainPipeline(top10)
+```
+
+### Or use the DataFrame API
+
+The same operators power the fluent API — `.filter()` becomes `FilterOperator`, `.sort()` becomes `ExternalSortOperator`, etc:
+
+```typescript
+const qm = QueryMode.local()
+const results = await qm
+  .table("orders")
+  .filter("amount", "gt", 100)
+  .groupBy("region")
+  .aggregate("sum", "amount", "total")
+  .sort("total", "desc")
+  .limit(10)
+  .exec()
+```
+
+Both paths produce the same pull-based pipeline. The DataFrame API is sugar; the operators are the engine.
+
+### Memory-bounded with R2 spill
+
+Operators that accumulate state (sort, join, aggregate) accept a memory budget. When exceeded, they spill to R2 via `SpillBackend` — same interface whether running on Cloudflare edge or local disk:
+
+```typescript
+import { HashJoinOperator, ExternalSortOperator, R2SpillBackend } from "querymode"
+
+const spill = new R2SpillBackend(env.DATA_BUCKET, "__spill/query-123")
+const join = new HashJoinOperator(left, right, "user_id", "id", "inner", 32 * 1024 * 1024, spill)
+const sorted = new ExternalSortOperator(join, "created_at", true, 0, 32 * 1024 * 1024, spill)
+const rows = await drainPipeline(sorted)
+await spill.cleanup()
+```
+
+### Why this matters
+
+Traditional engines give you SQL or a DataFrame API. You can't put a window function before a join, run custom logic between pipeline stages, or swap the sort implementation. The planner decides.
+
+With QueryMode, operators are building blocks. Your code assembles the pipeline, controls the memory budget, decides when to spill. The query engine isn't a service you call — it's a library your code composes.
+
 ## What exists
 
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
@@ -61,13 +149,13 @@ Your app code IS the query execution. The WASM engine is a library function your
 - **Multi-format support** — Lance, Parquet, and Iceberg tables
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
 - **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 20 slots per datacenter)
-- **112 unit tests + 20 integration tests** — footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration (skipped without binary)
+- **112 unit tests + 26 conformance tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration; conformance tests validate every operator against DuckDB at 1M-5M row scale
+- **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to GitHub Actions summary
 
 ## What doesn't exist yet
 
 - No deployed instance
 - No browser mode
-- No benchmarks against real data
 - No npm package published
 
 ## Architecture
