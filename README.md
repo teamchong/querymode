@@ -50,24 +50,49 @@ Your app code IS the query execution. The WASM engine is a library function your
 
 ## Query engine as code
 
-Every SQL clause is a composable code primitive. They all implement the same pull-based `Operator` interface — `next() → RowBatch | null` — so you chain them however you want, not how a SQL planner decides.
+Every query operation is a composable code primitive. They all implement the same pull-based `Operator` interface — `next() → RowBatch | null` — so you chain them however you want.
 
 ```
-SQL clause        Operator class              What it does
+Operation         Operator class              What it does
 ─────────         ──────────────              ────────────
-WHERE             FilterOperator              Predicate pushdown on rows
-SELECT            ProjectOperator             Column projection
-ORDER BY          ExternalSortOperator        Disk-spilling merge sort
-                  InMemorySortOperator        In-memory sort (small datasets)
-GROUP BY + agg    AggregateOperator           Hash aggregate (sum/avg/min/max/count/stddev/median/percentile)
-LIMIT / OFFSET    LimitOperator               Row limiting with offset
-                  TopKOperator                Heap-based top-K (no full sort)
-JOIN              HashJoinOperator            Grace hash join with R2 spill
-PARTITION BY      WindowOperator              row_number, rank, dense_rank, lag, lead, rolling aggregates
-DISTINCT          DistinctOperator            Hash-based deduplication
-UNION/INTERSECT   SetOperator                 Set operations (union, union_all, intersect, except)
-computed column   ComputedColumnOperator      Arbitrary (row: Row) => value transforms
-IN (subquery)     SubqueryInOperator          Semi-join filter against a value set
+
+Filtering
+  predicate       FilterOperator              eq, neq, gt, gte, lt, lte, in
+  membership      SubqueryInOperator          Semi-join filter against a value set
+
+Projection
+  select          ProjectOperator             Column selection
+  transform       ComputedColumnOperator      Arbitrary (row: Row) => value per row
+
+Aggregation
+  group + reduce  AggregateOperator           sum, avg, min, max, count, count_distinct,
+                                              stddev, variance, median, percentile
+  having          FilterOperator              Filter after AggregateOperator — same primitive, you control order
+
+Sorting
+  full sort       ExternalSortOperator        Disk-spilling merge sort with R2 spill
+  in-memory sort  InMemorySortOperator        In-memory sort (small datasets)
+  top-K           TopKOperator                Heap-based top-K without full sort
+
+Joining
+  hash join       HashJoinOperator            inner, left, right, full, cross — Grace hash join with R2 spill
+
+Windowing
+  partition       WindowOperator              row_number, rank, dense_rank, lag, lead,
+                                              rolling sum/avg/min/max/count
+
+Deduplication
+  distinct        DistinctOperator            Hash-based deduplication on column set
+
+Set operations
+  combine         SetOperator                 union, union_all, intersect, except
+
+Limiting
+  limit/offset    LimitOperator               Row limiting with offset
+  sample          (planned)                   Random sampling
+
+Similarity
+  vector near     (planned)                   NEAR topK as composable operator — currently in scan layer
 ```
 
 ### Compose operators directly
@@ -85,14 +110,16 @@ const source: Operator = {
   async close() {},
 }
 
-// Chain operators like function calls — no query planner, no SQL string
+// Chain operators — no query planner, no SQL string
 const filtered = new FilterOperator(source, [{ column: "age", op: "gt", value: 25 }])
 const aggregated = new AggregateOperator(filtered, {
   table: "users", filters: [], projections: [],
   groupBy: ["region"],
   aggregates: [{ fn: "sum", column: "amount", alias: "total" }],
 })
-const top10 = new TopKOperator(aggregated, "total", true, 10)
+// "HAVING" is just a filter after aggregation — same operator, you control order
+const having = new FilterOperator(aggregated, [{ column: "total", op: "gt", value: 1000 }])
+const top10 = new TopKOperator(having, "total", true, 10)
 
 // Pull results — zero-copy, no serialization between stages
 const rows = await drainPipeline(top10)
@@ -130,9 +157,13 @@ const rows = await drainPipeline(sorted)
 await spill.cleanup()
 ```
 
+### Planned: SQL → AST → operators
+
+For users who prefer SQL syntax, a future layer can parse SQL into an AST and compile it to operator composition — same zero-copy pipeline underneath, SQL is just another frontend.
+
 ### Why this matters
 
-Traditional engines give you SQL or a DataFrame API. You can't put a window function before a join, run custom logic between pipeline stages, or swap the sort implementation. The planner decides.
+Traditional engines give you a fixed query language. You can't put a window function before a join, run custom logic between pipeline stages, or swap the sort implementation. The planner decides.
 
 With QueryMode, operators are building blocks. Your code assembles the pipeline, controls the memory budget, decides when to spill. The query engine isn't a service you call — it's a library your code composes.
 
