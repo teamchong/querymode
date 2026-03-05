@@ -32,6 +32,61 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+  conformance:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build (WASM + TypeScript)
+        run: pnpm build
+
+      - name: Conformance tests
+        run: npx vitest run src/operators-conformance.test.ts
+
+      - name: Generate benchmark data
+        run: npx tsx scripts/generate-bench-data.ts
+
+      - name: Start wrangler dev
+        run: |
+          pnpm dev &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
+              echo "Worker ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Seed local R2
+        run: npx tsx scripts/seed-local-r2.ts
+
+      - name: Operator benchmarks (QueryMode vs DuckDB)
+        run: npx vitest bench src/bench-vs-duckdb.bench.ts 2>&1 | tee /tmp/bench-output.txt
+
+      - name: Post benchmark results to summary
+        if: always()
+        run: |
+          echo "## Operator Benchmarks — QueryMode (Miniflare) vs DuckDB (native)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/bench-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
   bench:
     runs-on: ubuntu-latest
     needs: test
@@ -73,4 +128,13 @@ jobs:
         run: npx tsx scripts/seed-local-r2.ts
 
       - name: Run benchmarks
-        run: npx tsx scripts/bench.ts
+        run: npx tsx scripts/bench.ts 2>&1 | tee /tmp/bench-output.txt
+
+      - name: Post benchmark results to summary
+        if: always()
+        run: |
+          echo "## E2E Benchmarks — Full DO Stack" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/bench-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

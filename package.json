@@ -26,11 +26,13 @@
     "deploy": "pnpm run build && wrangler deploy",
     "wasm": "pnpm run build:wasm",
     "bench:seed": "npx tsx scripts/seed-local-r2.ts",
-    "bench": "npx tsx scripts/bench.ts"
+    "bench": "npx tsx scripts/bench.ts",
+    "bench:operators": "vitest bench src/bench-vs-duckdb.bench.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250224.0",
     "@types/node": "^25.3.3",
+    "duckdb": "^1.4.4",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",
     "wrangler": "^4.0.0"
@@ -43,5 +45,8 @@
   "packageManager": "pnpm@10.21.0",
   "dependencies": {
     "zod": "^4.3.6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["duckdb"]
   }
 }
