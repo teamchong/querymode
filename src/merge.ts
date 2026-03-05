@@ -140,13 +140,13 @@ export function mergeQueryResults(
     };
   }
 
-  // Sort + limit path: k-way merge
-  if (query.sortColumn && query.limit) {
+  // Sort path: k-way merge (works with or without limit)
+  if (query.sortColumn) {
     const rows = kWayMerge(
       partials.map((p) => p.rows),
       query.sortColumn,
       query.sortDirection ?? "asc",
-      query.limit,
+      query.limit ?? Infinity,
     );
     return {
       rows,
@@ -158,10 +158,19 @@ export function mergeQueryResults(
     };
   }
 
-  // Default: concat and apply limit
-  let rows = partials.flatMap((p) => p.rows);
-  if (query.limit && rows.length > query.limit) {
-    rows = rows.slice(0, query.limit);
+  // Unsorted: limit-aware concat with early termination
+  let rows: Row[];
+  if (query.limit) {
+    rows = [];
+    for (const p of partials) {
+      for (const row of p.rows) {
+        rows.push(row);
+        if (rows.length >= query.limit) break;
+      }
+      if (rows.length >= query.limit) break;
+    }
+  } else {
+    rows = partials.flatMap((p) => p.rows);
   }
 
   return {

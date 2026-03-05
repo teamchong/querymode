@@ -16,7 +16,7 @@ import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
-import { buildPipeline, drainPipeline, type FragmentSource, type PipelineOptions } from "./operators.js";
+import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, type FragmentSource, type PipelineOptions } from "./operators.js";
 
 /**
  * Executor for local mode (Node/Bun).
@@ -426,8 +426,11 @@ export class LocalExecutor implements QueryExecutor {
     // Step 3: Build streaming pipeline
     const wasm = await this.getWasm();
     const fragment = await this.makeFragmentSource(query.table, projectedColumns, isUrl);
-    const pipeOpts: PipelineOptions | undefined = this.memoryBudgetBytes
-      ? { memoryBudgetBytes: this.memoryBudgetBytes } : undefined;
+    const { FsSpillBackend } = await import("./operators.js");
+    const pipeOpts: PipelineOptions = {
+      memoryBudgetBytes: this.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET,
+      spill: new FsSpillBackend(),
+    };
 
     // If join is specified, build left + right pipelines and combine with HashJoinOperator
     if (query.join) {
@@ -581,13 +584,16 @@ export class LocalExecutor implements QueryExecutor {
     }
 
     // Hash join: right is build side, left is probe side
-    const { HashJoinOperator } = await import("./operators.js");
+    const { HashJoinOperator, FsSpillBackend: FsSpillJoin } = await import("./operators.js");
+    const joinSpill = pipeOpts?.spill ?? new FsSpillJoin();
+    const joinBudget = pipeOpts?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
     let pipeline: import("./operators.js").Operator = new HashJoinOperator(
       leftPipeline, rightPipeline, join.leftKey, join.rightKey, join.type ?? "inner",
+      joinBudget, joinSpill,
     );
 
     // Apply post-join sort/limit/aggregates
-    const { buildPipeline: _, TopKOperator, InMemorySortOperator, LimitOperator, ProjectOperator, AggregateOperator, ExternalSortOperator, DEFAULT_MEMORY_BUDGET } = await import("./operators.js");
+    const { buildPipeline: _, TopKOperator, InMemorySortOperator, LimitOperator, ProjectOperator, AggregateOperator, ExternalSortOperator } = await import("./operators.js");
     const hasAgg = query.aggregates && query.aggregates.length > 0;
 
     if (hasAgg) {
@@ -780,8 +786,11 @@ export class LocalExecutor implements QueryExecutor {
       ? query.projections
       : (dataset.fragmentMetas.values().next().value?.columns.map((c: ColumnMeta) => c.name) ?? []);
 
-    const pipeOpts: PipelineOptions | undefined = this.memoryBudgetBytes
-      ? { memoryBudgetBytes: this.memoryBudgetBytes } : undefined;
+    const { FsSpillBackend: FsSpill } = await import("./operators.js");
+    const pipeOpts: PipelineOptions = {
+      memoryBudgetBytes: this.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET,
+      spill: new FsSpill(),
+    };
     const { pipeline, scan, wasmAgg } = buildPipeline(fragments, query, wasm, outputColumns, pipeOpts);
     const rows = await drainPipeline(pipeline);
 

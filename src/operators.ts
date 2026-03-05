@@ -267,12 +267,12 @@ export class ProjectOperator implements Operator {
     const batch = await this.upstream.next();
     if (!batch) return null;
 
-    for (const row of batch) {
-      for (const key of Object.keys(row)) {
-        if (!this.keep.has(key)) delete row[key];
-      }
-    }
-    return batch;
+    // Create new projected row objects — no delete, no V8 hidden class deopt
+    return batch.map(row => {
+      const out: Row = {};
+      for (const k of this.keep) if (k in row) out[k] = row[k];
+      return out;
+    });
   }
 
   async close(): Promise<void> {
@@ -298,19 +298,18 @@ export class AggregateOperator implements Operator {
     if (this.consumed) return null;
     this.consumed = true;
 
-    // Stream all batches through partial aggregation
-    const partials: PartialAgg[] = [];
+    // Incrementally merge partials — O(groups) memory, not O(batches × groups)
+    let merged: PartialAgg | null = null;
     while (true) {
       const batch = await this.upstream.next();
       if (!batch) break;
-      partials.push(computePartialAgg(batch, this.query));
+      const partial = computePartialAgg(batch, this.query);
+      merged = merged ? mergePartialAggs([merged, partial]) : partial;
     }
 
-    if (partials.length === 0) {
+    if (!merged) {
       return finalizePartialAgg({ states: [] }, this.query);
     }
-
-    const merged = partials.length === 1 ? partials[0] : mergePartialAggs(partials);
     return finalizePartialAgg(merged, this.query);
   }
 
@@ -673,53 +672,92 @@ export class HashJoinOperator implements Operator {
   private async buildOrPartition(): Promise<void> {
     if (this.hashMap || this.partitionCount > 0) return;
 
-    const inMemoryRows: Row[] = [];
-    let exceeds = false;
-
-    // Consume right side, tracking memory
-    while (true) {
-      const batch = await this.right.next();
-      if (!batch) break;
-      for (const row of batch) {
-        const rowSize = estimateRowSize(row);
-        this.buildSizeBytes += rowSize;
-        inMemoryRows.push(row);
-
-        if (this.spill && this.buildSizeBytes > this.memoryBudget) {
-          exceeds = true;
-          break;
-        }
-      }
-      if (exceeds) break;
-    }
-
-    if (!exceeds) {
-      // Fits in memory — build hash map directly
+    // Sample first batch to estimate whether right side fits in memory.
+    // If estimated total exceeds budget, go straight to partitioned path
+    // instead of accumulating rows we'll have to re-spill.
+    const firstBatch = await this.right.next();
+    if (!firstBatch) {
+      // Empty right side — build empty hash map
       this.hashMap = new Map<string, Row[]>();
-      for (const row of inMemoryRows) {
-        const key = this.toJoinKey(row[this.rightKey]);
-        const bucket = this.hashMap.get(key);
-        if (bucket) bucket.push(row);
-        else this.hashMap.set(key, [row]);
-      }
       return;
     }
 
-    // Switch to Grace hash join: partition both sides with bounded memory.
-    // Use partitionCount that ensures each partition fits in memory budget.
-    this.buildExceeded = true;
-    this.partitionCount = Math.max(4, Math.ceil(this.buildSizeBytes / (this.memoryBudget / 2)));
-    const bucketBudget = Math.floor(this.memoryBudget / this.partitionCount);
+    let batchSizeBytes = 0;
+    for (const row of firstBatch) batchSizeBytes += estimateRowSize(row);
+    const avgRowSize = batchSizeBytes / firstBatch.length;
 
-    // Spill right-side rows we already consumed, flushing per-bucket when full
+    // Heuristic: if first batch already exceeds half the budget, go partitioned
+    const goPartitioned = this.spill && batchSizeBytes > this.memoryBudget / 2;
+
+    if (!goPartitioned) {
+      // Optimistic in-memory path: consume right side, tracking memory
+      const inMemoryRows: Row[] = [...firstBatch];
+      this.buildSizeBytes = batchSizeBytes;
+      let exceeds = false;
+
+      while (true) {
+        const batch = await this.right.next();
+        if (!batch) break;
+        for (const row of batch) {
+          const rowSize = estimateRowSize(row);
+          this.buildSizeBytes += rowSize;
+          inMemoryRows.push(row);
+
+          if (this.spill && this.buildSizeBytes > this.memoryBudget) {
+            exceeds = true;
+            break;
+          }
+        }
+        if (exceeds) break;
+      }
+
+      if (!exceeds) {
+        // Fits in memory — build hash map directly
+        this.hashMap = new Map<string, Row[]>();
+        for (const row of inMemoryRows) {
+          const key = this.toJoinKey(row[this.rightKey]);
+          const bucket = this.hashMap.get(key);
+          if (bucket) bucket.push(row);
+          else this.hashMap.set(key, [row]);
+        }
+        return;
+      }
+
+      // Fell through: exceeded budget mid-stream, partition what we have
+      this.buildExceeded = true;
+      this.partitionCount = Math.max(4, Math.ceil(this.buildSizeBytes / (this.memoryBudget / 2)));
+      await this.partitionRightRows(inMemoryRows);
+      inMemoryRows.length = 0;
+
+      // Continue consuming remaining right-side rows
+      await this.consumeRemainingRight();
+      return;
+    }
+
+    // Proactive partition path: first batch signals right side is large
+    this.buildExceeded = true;
+    this.buildSizeBytes = batchSizeBytes;
+    // Estimate partition count from first batch size × expected batch count
+    // Use conservative estimate: assume at least 4× more data coming
+    const estimatedTotal = batchSizeBytes * 4;
+    this.partitionCount = Math.max(4, Math.ceil(estimatedTotal / (this.memoryBudget / 2)));
+
+    await this.partitionRightRows(firstBatch);
+    await this.consumeRemainingRight();
+  }
+
+  /** Partition an array of right-side rows into spill buckets. */
+  private async partitionRightRows(rows: Row[]): Promise<void> {
+    const bucketBudget = Math.floor(this.memoryBudget / this.partitionCount);
     const rightBuckets: Row[][] = Array.from({ length: this.partitionCount }, () => []);
     const rightBucketBytes: number[] = new Array(this.partitionCount).fill(0);
-    this.rightPartitionIds = new Array(this.partitionCount).fill("");
+    if (!this.rightPartitionIds.length) {
+      this.rightPartitionIds = new Array(this.partitionCount).fill("");
+    }
 
-    const flushRightBucket = async (bi: number): Promise<void> => {
+    const flushBucket = async (bi: number): Promise<void> => {
       if (rightBuckets[bi].length === 0) return;
       const spillId = await this.spill!.writeRun(rightBuckets[bi]);
-      // Append to existing partition by tracking multiple spill IDs per partition
       this.rightPartitionIds[bi] = this.rightPartitionIds[bi]
         ? this.rightPartitionIds[bi] + "|" + spillId
         : spillId;
@@ -727,35 +765,51 @@ export class HashJoinOperator implements Operator {
       rightBucketBytes[bi] = 0;
     };
 
-    for (const row of inMemoryRows) {
+    for (const row of rows) {
       const bi = this.hashPartition(row[this.rightKey], this.partitionCount);
       const rowSize = estimateRowSize(row);
       if (rightBucketBytes[bi] + rowSize > bucketBudget && rightBuckets[bi].length > 0) {
-        await flushRightBucket(bi);
+        await flushBucket(bi);
       }
       rightBuckets[bi].push(row);
       rightBucketBytes[bi] += rowSize;
     }
-    // Free inMemoryRows — no longer needed
-    inMemoryRows.length = 0;
 
-    // Continue consuming remaining right-side rows
+    for (let bi = 0; bi < this.partitionCount; bi++) await flushBucket(bi);
+  }
+
+  /** Consume remaining right-side batches into partitions. */
+  private async consumeRemainingRight(): Promise<void> {
+    const bucketBudget = Math.floor(this.memoryBudget / this.partitionCount);
+    const rightBuckets: Row[][] = Array.from({ length: this.partitionCount }, () => []);
+    const rightBucketBytes: number[] = new Array(this.partitionCount).fill(0);
+
+    const flushBucket = async (bi: number): Promise<void> => {
+      if (rightBuckets[bi].length === 0) return;
+      const spillId = await this.spill!.writeRun(rightBuckets[bi]);
+      this.rightPartitionIds[bi] = this.rightPartitionIds[bi]
+        ? this.rightPartitionIds[bi] + "|" + spillId
+        : spillId;
+      rightBuckets[bi] = [];
+      rightBucketBytes[bi] = 0;
+    };
+
     while (true) {
       const batch = await this.right.next();
       if (!batch) break;
       for (const row of batch) {
         const bi = this.hashPartition(row[this.rightKey], this.partitionCount);
         const rowSize = estimateRowSize(row);
+        this.buildSizeBytes += rowSize;
         if (rightBucketBytes[bi] + rowSize > bucketBudget && rightBuckets[bi].length > 0) {
-          await flushRightBucket(bi);
+          await flushBucket(bi);
         }
         rightBuckets[bi].push(row);
         rightBucketBytes[bi] += rowSize;
       }
     }
 
-    // Flush remaining right buckets
-    for (let bi = 0; bi < this.partitionCount; bi++) await flushRightBucket(bi);
+    for (let bi = 0; bi < this.partitionCount; bi++) await flushBucket(bi);
 
     // Consume and partition left side with same bounded approach
     const leftBuckets: Row[][] = Array.from({ length: this.partitionCount }, () => []);
