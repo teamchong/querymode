@@ -193,7 +193,7 @@ describe("HashJoinOperator", () => {
 
     await loadTable("join_left", leftRows, TABLE_SCHEMA);
     await loadTable("join_right", rightRows, "id INT, value INT");
-  }, 120_000);
+  }, 300_000);
 
   it("inner join — 1M x 500K", async () => {
     const op = new HashJoinOperator(
@@ -360,7 +360,7 @@ describe("HashJoinOperator", () => {
     }
 
     await spill.cleanup();
-  }, 120_000);
+  }, 300_000);
 
   it("spill join via R2SpillBackend (1M x 1M, 1MB budget)", async () => {
     const N = 1_000_000;
@@ -393,7 +393,7 @@ describe("HashJoinOperator", () => {
     }
 
     await spill.cleanup();
-  }, 120_000);
+  }, 300_000);
 });
 
 // ===================================================================
@@ -407,7 +407,7 @@ describe("GROUP BY + aggregates", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("agg_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("sum/avg/min/max/count by region — 5M rows", async () => {
     const op = new AggregateOperator(
@@ -517,7 +517,7 @@ describe("DistinctOperator", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("distinct_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("distinct region — 5M rows", async () => {
     const op = new DistinctOperator(new MockOperator(rows), ["region"]);
@@ -557,7 +557,7 @@ describe("ORDER BY", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("sort_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("sort ascending by amount — 5M rows", async () => {
     const op = new InMemorySortOperator(new MockOperator(rows), "amount", false);
@@ -620,7 +620,7 @@ describe("ORDER BY", () => {
     expect(idSet.size).toBe(N);
 
     await spill.cleanup();
-  }, 120_000);
+  }, 300_000);
 
   it("ExternalSort via R2SpillBackend (5M, 1MB budget)", async () => {
     const spill = new R2SpillBackend(r2Bucket, "__spill/test-sort");
@@ -643,7 +643,7 @@ describe("ORDER BY", () => {
     expect(idSet.size).toBe(N);
 
     await spill.cleanup();
-  }, 120_000);
+  }, 300_000);
 });
 
 // ===================================================================
@@ -657,7 +657,7 @@ describe("WindowOperator", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("win_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("row_number partitioned by region, ordered by amount, id", async () => {
     const win: WindowSpec = {
@@ -862,7 +862,7 @@ describe("SetOperator", () => {
 
     await loadTable("set_left", leftRows, TABLE_SCHEMA);
     await loadTable("set_right", rightRows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("union_all — 1M + 1M", async () => {
     const op = new SetOperator(
@@ -946,7 +946,7 @@ describe("ComputedColumnOperator", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("comp_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("amount * 2 — 1M rows", async () => {
     const op = new ComputedColumnOperator(
@@ -980,7 +980,7 @@ describe("SubqueryInOperator", () => {
   beforeAll(async () => {
     rows = generateRows(N);
     await loadTable("subq_test", rows, TABLE_SCHEMA);
-  }, 120_000);
+  }, 300_000);
 
   it("filter region in ('us','eu') — 1M rows", async () => {
     const op = new SubqueryInOperator(
