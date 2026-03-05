@@ -1,4 +1,4 @@
-import { TableQuery } from "./client.js";
+import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
@@ -6,10 +6,20 @@ import { LocalExecutor } from "./local-executor.js";
 export { MasterDO } from "./master-do.js";
 export { QueryDO } from "./query-do.js";
 export { FragmentDO } from "./fragment-do.js";
-export { TableQuery } from "./client.js";
+export { WorkerPool, R2Partitioner } from "./worker-pool.js";
+export { WorkerDO } from "./worker-do.js";
+export type { R2Partition, WorkerDORpc } from "./worker-pool.js";
+export { ReaderRegistry, FileDataSource, UrlDataSource } from "./reader.js";
+export type { FormatReader, DataSource } from "./reader.js";
+export { DataFrame, TableQuery } from "./client.js";
+export { LazyResultHandle } from "./client.js";
 export { QueryModeError } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
 export { bigIntReplacer } from "./decode.js";
+export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js";
+export type { HnswOptions } from "./hnsw.js";
+export { MaterializationCache, queryHashKey } from "./lazy.js";
+export type { MaterializationCacheOptions } from "./lazy.js";
 export type { QueryExecutor, QueryDescriptor } from "./client.js";
 export type {
   Env,
@@ -25,6 +35,10 @@ export type {
   FilterOp,
   AggregateOp,
   JoinDescriptor,
+  JoinKeys,
+  JoinType,
+  WindowSpec,
+  VectorOpts,
   QueryResult,
   Row,
   VectorSearchParams,
@@ -33,6 +47,8 @@ export type {
   AppendResult,
   ExplainResult,
   VectorIndexInfo,
+  VersionInfo,
+  DiffResult,
   QueryDORpc,
   MasterDORpc,
 } from "./types.js";
@@ -81,9 +97,9 @@ export class QueryMode {
     return new QueryMode(executor);
   }
 
-  /** Start building a query against a table. */
-  table(name: string): TableQuery {
-    return new TableQuery(name, this.executor);
+  /** Start building a query against a table. Returns a lazy DataFrame. */
+  table(name: string): DataFrame {
+    return new DataFrame(name, this.executor);
   }
 
   /**

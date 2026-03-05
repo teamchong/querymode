@@ -6,7 +6,7 @@
  * .wasm import syntax that crashes in Node).
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { AppendResult, ColumnMeta, DataType, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta } from "./types.js";
+import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -36,6 +36,10 @@ export class LocalExecutor implements QueryExecutor {
   private wasmModule?: WebAssembly.Module;
   private wasmEngine?: WasmEngine;
   private memoryBudgetBytes?: number;
+  /** Pluggable format readers (CSV, JSON, Arrow IPC, etc.) — lazy-initialized. */
+  private readerRegistry?: import("./reader.js").ReaderRegistry;
+  /** Cache of reader-produced FragmentSources keyed by table path. */
+  private readerFragmentCache: Map<string, import("./operators.js").FragmentSource[]> = new Map();
 
   constructor(wasmModuleOrOpts?: WebAssembly.Module | LocalExecutorOptions) {
     if (wasmModuleOrOpts && typeof wasmModuleOrOpts === "object" && "wasmModule" in wasmModuleOrOpts) {
@@ -44,6 +48,28 @@ export class LocalExecutor implements QueryExecutor {
     } else {
       this.wasmModule = wasmModuleOrOpts as WebAssembly.Module | undefined;
     }
+  }
+
+  /** Get or create the reader registry with built-in format readers. */
+  private async getReaderRegistry(): Promise<import("./reader.js").ReaderRegistry> {
+    if (this.readerRegistry) return this.readerRegistry;
+    const { ReaderRegistry, FileDataSource } = await import("./reader.js");
+    const registry = new ReaderRegistry();
+    // Register built-in readers
+    try {
+      const { CsvReader } = await import("./readers/csv-reader.js");
+      registry.register(new CsvReader());
+    } catch { /* csv reader not available */ }
+    try {
+      const { JsonReader } = await import("./readers/json-reader.js");
+      registry.register(new JsonReader());
+    } catch { /* json reader not available */ }
+    try {
+      const { ArrowReader } = await import("./readers/arrow-reader.js");
+      registry.register(new ArrowReader());
+    } catch { /* arrow reader not available */ }
+    this.readerRegistry = registry;
+    return registry;
   }
 
   private async getWasm(): Promise<WasmEngine> {
@@ -351,6 +377,7 @@ export class LocalExecutor implements QueryExecutor {
     if (query.offset !== undefined) feed(String(query.offset));
     if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
     if (query.groupBy) for (const g of query.groupBy) feed(g);
+    if (query.version !== undefined) feed(`v${query.version}`);
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 
@@ -425,7 +452,9 @@ export class LocalExecutor implements QueryExecutor {
 
     // Step 3: Build streaming pipeline
     const wasm = await this.getWasm();
-    const fragment = await this.makeFragmentSource(query.table, projectedColumns, isUrl);
+    // Use reader-produced fragments if available (CSV, JSON, Arrow IPC, etc.)
+    const readerFragments = this.readerFragmentCache.get(query.table);
+    const fragment = readerFragments ? readerFragments[0] : await this.makeFragmentSource(query.table, projectedColumns, isUrl);
     const { FsSpillBackend } = await import("./operators.js");
     const pipeOpts: PipelineOptions = {
       memoryBudgetBytes: this.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET,
@@ -587,8 +616,9 @@ export class LocalExecutor implements QueryExecutor {
     const { HashJoinOperator, FsSpillBackend: FsSpillJoin } = await import("./operators.js");
     const joinSpill = pipeOpts?.spill ?? new FsSpillJoin();
     const joinBudget = pipeOpts?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
+    const joinType = join.type ?? "inner";
     let pipeline: import("./operators.js").Operator = new HashJoinOperator(
-      leftPipeline, rightPipeline, join.leftKey, join.rightKey, join.type ?? "inner",
+      leftPipeline, rightPipeline, join.leftKey, join.rightKey, joinType,
       joinBudget, joinSpill,
     );
 
@@ -635,9 +665,79 @@ export class LocalExecutor implements QueryExecutor {
     };
   }
 
+  /** List all versions of a Lance dataset. */
+  async versions(table: string): Promise<VersionInfo[]> {
+    const fs = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+
+    const versionsDir = pathMod.join(table, "_versions");
+    const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
+    const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
+
+    const results: VersionInfo[] = [];
+    for (const manifestFile of manifests) {
+      const manifestBuf = await fs.readFile(pathMod.join(versionsDir, manifestFile));
+      const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
+      const manifest = parseManifest(ab);
+      if (!manifest) continue;
+
+      const stat = await fs.stat(pathMod.join(versionsDir, manifestFile));
+      results.push({
+        version: manifest.version,
+        timestamp: stat.mtimeMs,
+        rowCount: manifest.totalRows,
+        fragmentCount: manifest.fragments.length,
+      });
+    }
+
+    return results.sort((a, b) => a.version - b.version);
+  }
+
+  /** Compute diff between two versions of a Lance dataset. */
+  async diff(table: string, fromVersion: number, toVersion: number): Promise<DiffResult> {
+    const fs = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+
+    const versionsDir = pathMod.join(table, "_versions");
+
+    const loadManifestFragments = async (version: number): Promise<{ paths: Set<string>; manifest: import("./types.js").ManifestInfo }> => {
+      const manifestFile = `${version}.manifest`;
+      const manifestBuf = await fs.readFile(pathMod.join(versionsDir, manifestFile));
+      const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
+      const manifest = parseManifest(ab);
+      if (!manifest) throw new Error(`Failed to parse manifest for version ${version}`);
+      return { paths: new Set(manifest.fragments.map(f => f.filePath)), manifest };
+    };
+
+    const from = await loadManifestFragments(fromVersion);
+    const to = await loadManifestFragments(toVersion);
+
+    const addedFragments: string[] = [];
+    const removedFragments: string[] = [];
+
+    for (const frag of to.paths) {
+      if (!from.paths.has(frag)) addedFragments.push(frag);
+    }
+    for (const frag of from.paths) {
+      if (!to.paths.has(frag)) removedFragments.push(frag);
+    }
+
+    let added = 0;
+    for (const frag of to.manifest.fragments) {
+      if (addedFragments.includes(frag.filePath)) added += frag.physicalRows;
+    }
+    let removed = 0;
+    for (const frag of from.manifest.fragments) {
+      if (removedFragments.includes(frag.filePath)) removed += frag.physicalRows;
+    }
+
+    return { added, removed, addedFragments, removedFragments };
+  }
+
   /** Load or retrieve cached dataset metadata for a Lance directory. */
-  private async getOrLoadDataset(table: string): Promise<DatasetMeta> {
-    let dataset = this.datasetCache.get(table);
+  private async getOrLoadDataset(table: string, version?: number): Promise<DatasetMeta> {
+    const cacheKey = version != null ? `${table}@v${version}` : table;
+    let dataset = this.datasetCache.get(cacheKey);
     if (dataset) return dataset;
 
     const fs = await import("node:fs/promises");
@@ -650,11 +750,19 @@ export class LocalExecutor implements QueryExecutor {
       throw new Error(`No manifests found in ${versionsDir}`);
     }
 
-    const latestManifest = manifests[manifests.length - 1];
-    const manifestBuf = await fs.readFile(pathMod.join(versionsDir, latestManifest));
+    let targetManifest: string;
+    if (version != null) {
+      targetManifest = `${version}.manifest`;
+      if (!manifests.includes(targetManifest)) {
+        throw new Error(`Version ${version} not found in ${versionsDir}. Available: ${manifests.join(", ")}`);
+      }
+    } else {
+      targetManifest = manifests[manifests.length - 1];
+    }
+    const manifestBuf = await fs.readFile(pathMod.join(versionsDir, targetManifest));
     const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
     const manifest = parseManifest(ab);
-    if (!manifest) throw new Error(`Failed to parse manifest ${latestManifest}`);
+    if (!manifest) throw new Error(`Failed to parse manifest ${targetManifest}`);
 
     const fragmentMetas = new Map<number, TableMeta>();
     for (const frag of manifest.fragments) {
@@ -723,7 +831,7 @@ export class LocalExecutor implements QueryExecutor {
       totalRows: manifest.totalRows,
       updatedAt: Date.now(),
     };
-    this.datasetCache.set(table, dataset);
+    this.datasetCache.set(cacheKey, dataset);
     if (this.datasetCache.size > 100) {
       const firstKey = this.datasetCache.keys().next().value;
       if (firstKey) this.datasetCache.delete(firstKey);
@@ -733,7 +841,7 @@ export class LocalExecutor implements QueryExecutor {
 
   /** Execute a query against a multi-fragment Lance dataset directory. */
   private async executeDatasetQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
-    const dataset = await this.getOrLoadDataset(query.table);
+    const dataset = await this.getOrLoadDataset(query.table, query.version);
 
     // Validate column references against schema
     const schemaColumnNames = new Set(dataset.manifest.schema.map(f => f.name));
@@ -839,9 +947,29 @@ export class LocalExecutor implements QueryExecutor {
         return { columns: tableMeta.columns, fileSize };
       }
 
-      // Lance format (default)
+      // Lance format (default) — but try ReaderRegistry first for non-Lance/Parquet formats
       const footer = parseFooter(tailAb);
-      if (!footer) throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}`);
+      if (!footer) {
+        // Not Lance or Parquet — try pluggable readers (CSV, JSON, Arrow IPC, etc.)
+        const registry = await this.getReaderRegistry();
+        const ext = path.substring(path.lastIndexOf("."));
+        let reader = registry.getByExtension(ext);
+        if (!reader) {
+          const { FileDataSource } = await import("./reader.js");
+          const source = new FileDataSource(path);
+          reader = await registry.detect(source);
+        }
+        if (reader) {
+          const { FileDataSource } = await import("./reader.js");
+          const source = new FileDataSource(path);
+          const meta = await reader.readMeta(source);
+          // Cache fragment sources for later use in execute()
+          const fragments = await reader.createFragments(source, meta.columns);
+          this.readerFragmentCache.set(path, fragments);
+          return { columns: meta.columns, fileSize };
+        }
+        throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}`);
+      }
 
       // Read column metadata (protobuf region)
       const metaStart = Number(footer.columnMetaStart);

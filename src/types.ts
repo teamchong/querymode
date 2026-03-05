@@ -91,10 +91,28 @@ export interface FilterOp {
 
 /** Aggregation specification */
 export interface AggregateOp {
-  fn: "sum" | "avg" | "min" | "max" | "count";
+  fn: "sum" | "avg" | "min" | "max" | "count" | "count_distinct" | "stddev" | "variance" | "median" | "percentile";
   column: string;
   /** Output alias (defaults to fn_column, e.g., "sum_amount") */
   alias?: string;
+  /** For percentile: target percentile (0-1) */
+  percentileTarget?: number;
+}
+
+/** Window function specification (serializable — no callbacks) */
+export interface WindowSpec {
+  fn: "row_number" | "rank" | "dense_rank" | "lag" | "lead" | "sum" | "avg" | "min" | "max" | "count";
+  args?: { offset?: number; default_?: unknown };
+  partitionBy: string[];
+  orderBy: { column: string; direction: "asc" | "desc" }[];
+  alias: string;
+  frame?: { type: "rows" | "range"; start: number | "unbounded"; end: number | "current" | "unbounded" };
+}
+
+/** Join key specification */
+export interface JoinKeys {
+  left: string;
+  right: string;
 }
 
 /** Join specification for code-first JOINs */
@@ -106,14 +124,48 @@ export interface JoinDescriptor {
   /** Right join key column */
   rightKey: string;
   /** Join type (default: "inner") */
-  type?: "inner" | "left";
+  type?: "inner" | "left" | "right" | "full" | "cross";
 }
+
+/** Join type union */
+export type JoinType = "inner" | "left" | "right" | "full" | "cross";
 
 /** Vector search parameters */
 export interface VectorSearchParams {
   column: string;
   queryVector: Float32Array;
   topK: number;
+  /** Distance metric (default: "cosine") */
+  metric?: "cosine" | "l2" | "dot";
+  /** IVF-PQ tuning: number of probes */
+  nprobe?: number;
+  /** HNSW tuning: search beam width */
+  efSearch?: number;
+}
+
+/** Vector search options (client-facing, allows encoder) */
+export interface VectorOpts {
+  metric?: "cosine" | "l2" | "dot";
+  nprobe?: number;
+  efSearch?: number;
+  /** Client-side encoder for text-to-vector conversion */
+  encoder?: (text: string) => Promise<Float32Array>;
+}
+
+/** Version info for time travel */
+export interface VersionInfo {
+  version: number;
+  timestamp: number;
+  rowCount: number;
+  fragmentCount: number;
+}
+
+/** Diff result for time travel */
+export interface DiffResult {
+  added: number;
+  removed: number;
+  addedFragments: string[];
+  removedFragments: string[];
 }
 
 /** Query result row — typed at runtime from footer schema */

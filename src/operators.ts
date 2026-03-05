@@ -164,6 +164,439 @@ function decodePageBatch(
 }
 
 // ---------------------------------------------------------------------------
+// ComputedColumnOperator — adds computed columns via callbacks
+// ---------------------------------------------------------------------------
+
+export class ComputedColumnOperator implements Operator {
+  private upstream: Operator;
+  private computations: { alias: string; fn: (row: Row) => unknown }[];
+
+  constructor(upstream: Operator, computations: { alias: string; fn: (row: Row) => unknown }[]) {
+    this.upstream = upstream;
+    this.computations = computations;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    const batch = await this.upstream.next();
+    if (!batch) return null;
+
+    for (const row of batch) {
+      for (const comp of this.computations) {
+        row[comp.alias] = comp.fn(row) as Row[string];
+      }
+    }
+    return batch;
+  }
+
+  async close(): Promise<void> {
+    await this.upstream.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SubqueryInOperator — filters rows where column value is in a pre-computed set
+// ---------------------------------------------------------------------------
+
+export class SubqueryInOperator implements Operator {
+  private upstream: Operator;
+  private column: string;
+  private valueSet: Set<string>;
+
+  constructor(upstream: Operator, column: string, valueSet: Set<string>) {
+    this.upstream = upstream;
+    this.column = column;
+    this.valueSet = valueSet;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    while (true) {
+      const batch = await this.upstream.next();
+      if (!batch) return null;
+
+      const filtered: Row[] = [];
+      for (const row of batch) {
+        const val = row[this.column];
+        const key = val === null ? "__null__" : typeof val === "bigint" ? val.toString() : String(val);
+        if (this.valueSet.has(key)) {
+          filtered.push(row);
+        }
+      }
+      if (filtered.length > 0) return filtered;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.upstream.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WindowOperator — window functions with partition-and-sort
+// ---------------------------------------------------------------------------
+
+import type { WindowSpec } from "./types.js";
+
+export class WindowOperator implements Operator {
+  private upstream: Operator;
+  private windows: WindowSpec[];
+  private consumed = false;
+
+  constructor(upstream: Operator, windows: WindowSpec[]) {
+    this.upstream = upstream;
+    this.windows = windows;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    if (this.consumed) return null;
+    this.consumed = true;
+
+    // Collect all rows (window functions need full partition)
+    const allRows: Row[] = [];
+    while (true) {
+      const batch = await this.upstream.next();
+      if (!batch) break;
+      for (const row of batch) allRows.push(row);
+    }
+
+    if (allRows.length === 0) return null;
+
+    for (const win of this.windows) {
+      this.evaluateWindow(allRows, win);
+    }
+
+    return allRows;
+  }
+
+  private evaluateWindow(rows: Row[], win: WindowSpec): void {
+    // Group by partitionBy keys
+    const partitions = new Map<string, number[]>();
+    for (let i = 0; i < rows.length; i++) {
+      const key = win.partitionBy.length > 0
+        ? win.partitionBy.map(c => String(rows[i][c] ?? "")).join("\x00")
+        : "__all__";
+      const indices = partitions.get(key);
+      if (indices) indices.push(i);
+      else partitions.set(key, [i]);
+    }
+
+    // Process each partition
+    for (const indices of partitions.values()) {
+      // Sort indices by orderBy
+      if (win.orderBy.length > 0) {
+        indices.sort((a, b) => {
+          for (const ob of win.orderBy) {
+            const av = rows[a][ob.column], bv = rows[b][ob.column];
+            if (av === null && bv === null) continue;
+            if (av === null) return ob.direction === "asc" ? 1 : -1;
+            if (bv === null) return ob.direction === "asc" ? -1 : 1;
+            if (av < bv) return ob.direction === "asc" ? -1 : 1;
+            if (av > bv) return ob.direction === "asc" ? 1 : -1;
+          }
+          return 0;
+        });
+      }
+
+      this.applyWindowFn(rows, indices, win);
+    }
+  }
+
+  private applyWindowFn(rows: Row[], indices: number[], win: WindowSpec): void {
+    const { fn, alias, orderBy } = win;
+
+    switch (fn) {
+      case "row_number":
+        for (let i = 0; i < indices.length; i++) {
+          rows[indices[i]][alias] = i + 1;
+        }
+        break;
+
+      case "rank": {
+        let rank = 1;
+        for (let i = 0; i < indices.length; i++) {
+          if (i > 0 && !this.orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
+            rank = i + 1;
+          }
+          rows[indices[i]][alias] = rank;
+        }
+        break;
+      }
+
+      case "dense_rank": {
+        let rank = 1;
+        for (let i = 0; i < indices.length; i++) {
+          if (i > 0 && !this.orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
+            rank++;
+          }
+          rows[indices[i]][alias] = rank;
+        }
+        break;
+      }
+
+      case "lag": {
+        const offset = win.args?.offset ?? 1;
+        const defaultVal = win.args?.default_ ?? null;
+        for (let i = 0; i < indices.length; i++) {
+          const srcIdx = i - offset;
+          if (srcIdx >= 0 && srcIdx < indices.length && orderBy.length > 0) {
+            rows[indices[i]][alias] = rows[indices[srcIdx]][orderBy[0].column] as Row[string];
+          } else {
+            rows[indices[i]][alias] = defaultVal as Row[string];
+          }
+        }
+        break;
+      }
+
+      case "lead": {
+        const offset = win.args?.offset ?? 1;
+        const defaultVal = win.args?.default_ ?? null;
+        for (let i = 0; i < indices.length; i++) {
+          const srcIdx = i + offset;
+          if (srcIdx >= 0 && srcIdx < indices.length && orderBy.length > 0) {
+            rows[indices[i]][alias] = rows[indices[srcIdx]][orderBy[0].column] as Row[string];
+          } else {
+            rows[indices[i]][alias] = defaultVal as Row[string];
+          }
+        }
+        break;
+      }
+
+      case "sum": case "avg": case "min": case "max": case "count": {
+        const col = orderBy.length > 0 ? orderBy[0].column : "";
+        this.applyAggregateWindow(rows, indices, win, col);
+        break;
+      }
+    }
+  }
+
+  private applyAggregateWindow(rows: Row[], indices: number[], win: WindowSpec, col: string): void {
+    const { fn, alias, frame } = win;
+    const frameType = frame?.type ?? "range";
+    const frameStart = frame?.start ?? "unbounded";
+    const frameEnd = frame?.end ?? "current";
+
+    for (let i = 0; i < indices.length; i++) {
+      let start: number, end: number;
+
+      if (frameStart === "unbounded") start = 0;
+      else start = Math.max(0, i + (frameStart as number));
+
+      if (frameEnd === "unbounded") end = indices.length - 1;
+      else if (frameEnd === "current") end = i;
+      else end = Math.min(indices.length - 1, i + (frameEnd as number));
+
+      let sum = 0, count = 0, min = Infinity, max = -Infinity;
+      for (let j = start; j <= end; j++) {
+        const val = rows[indices[j]][col];
+        if (val === null || val === undefined) continue;
+        const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
+        sum += n;
+        count++;
+        if (n < min) min = n;
+        if (n > max) max = n;
+      }
+
+      switch (fn) {
+        case "sum": rows[indices[i]][alias] = sum; break;
+        case "avg": rows[indices[i]][alias] = count === 0 ? 0 : sum / count; break;
+        case "min": rows[indices[i]][alias] = min === Infinity ? null : min; break;
+        case "max": rows[indices[i]][alias] = max === -Infinity ? null : max; break;
+        case "count": rows[indices[i]][alias] = count; break;
+      }
+    }
+  }
+
+  private orderByEqual(rows: Row[], idx1: number, idx2: number, orderBy: WindowSpec["orderBy"]): boolean {
+    for (const ob of orderBy) {
+      const a = rows[idx1][ob.column], b = rows[idx2][ob.column];
+      if (a !== b) return false;
+    }
+    return true;
+  }
+
+  async close(): Promise<void> {
+    await this.upstream.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DistinctOperator — deduplication by column keys
+// ---------------------------------------------------------------------------
+
+export class DistinctOperator implements Operator {
+  private upstream: Operator;
+  private columns: string[];
+  private seen = new Set<string>();
+
+  constructor(upstream: Operator, columns: string[]) {
+    this.upstream = upstream;
+    this.columns = columns;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    while (true) {
+      const batch = await this.upstream.next();
+      if (!batch) return null;
+
+      const unique: Row[] = [];
+      for (const row of batch) {
+        const key = this.columns.length > 0
+          ? this.columns.map(c => String(row[c] ?? "")).join("\x00")
+          : Object.keys(row).map(k => String(row[k] ?? "")).join("\x00");
+        if (!this.seen.has(key)) {
+          this.seen.add(key);
+          unique.push(row);
+        }
+      }
+      if (unique.length > 0) return unique;
+    }
+  }
+
+  async close(): Promise<void> {
+    this.seen.clear();
+    await this.upstream.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SetOperator — union/intersect/except of two operator streams
+// ---------------------------------------------------------------------------
+
+export class SetOperator implements Operator {
+  private left: Operator;
+  private right: Operator;
+  private mode: "union" | "union_all" | "intersect" | "except";
+  private phase: "left" | "right" | "done" = "left";
+  private seen: Set<string> | null = null;
+  private rightKeys: Set<string> | null = null;
+
+  constructor(
+    left: Operator,
+    right: Operator,
+    mode: "union" | "union_all" | "intersect" | "except",
+  ) {
+    this.left = left;
+    this.right = right;
+    this.mode = mode;
+    if (mode !== "union_all") this.seen = new Set();
+  }
+
+  private rowKey(row: Row): string {
+    return Object.keys(row).sort().map(k => `${k}=${String(row[k] ?? "")}`).join("\x00");
+  }
+
+  async next(): Promise<RowBatch | null> {
+    if (this.mode === "union_all") {
+      return this.nextUnionAll();
+    }
+    if (this.mode === "union") {
+      return this.nextUnion();
+    }
+    if (this.mode === "intersect") {
+      return this.nextIntersect();
+    }
+    if (this.mode === "except") {
+      return this.nextExcept();
+    }
+    return null;
+  }
+
+  private async nextUnionAll(): Promise<RowBatch | null> {
+    if (this.phase === "left") {
+      const batch = await this.left.next();
+      if (batch) return batch;
+      this.phase = "right";
+    }
+    if (this.phase === "right") {
+      const batch = await this.right.next();
+      if (batch) return batch;
+      this.phase = "done";
+    }
+    return null;
+  }
+
+  private async nextUnion(): Promise<RowBatch | null> {
+    while (this.phase !== "done") {
+      const source = this.phase === "left" ? this.left : this.right;
+      const batch = await source.next();
+      if (!batch) {
+        if (this.phase === "left") { this.phase = "right"; continue; }
+        this.phase = "done";
+        return null;
+      }
+      const unique: Row[] = [];
+      for (const row of batch) {
+        const key = this.rowKey(row);
+        if (!this.seen!.has(key)) {
+          this.seen!.add(key);
+          unique.push(row);
+        }
+      }
+      if (unique.length > 0) return unique;
+    }
+    return null;
+  }
+
+  private async nextIntersect(): Promise<RowBatch | null> {
+    // First call: collect all right keys
+    if (!this.rightKeys) {
+      this.rightKeys = new Set();
+      while (true) {
+        const batch = await this.right.next();
+        if (!batch) break;
+        for (const row of batch) this.rightKeys.add(this.rowKey(row));
+      }
+    }
+
+    while (true) {
+      const batch = await this.left.next();
+      if (!batch) return null;
+      const matches: Row[] = [];
+      for (const row of batch) {
+        const key = this.rowKey(row);
+        if (this.rightKeys.has(key) && !this.seen!.has(key)) {
+          this.seen!.add(key);
+          matches.push(row);
+        }
+      }
+      if (matches.length > 0) return matches;
+    }
+  }
+
+  private async nextExcept(): Promise<RowBatch | null> {
+    // First call: collect all right keys
+    if (!this.rightKeys) {
+      this.rightKeys = new Set();
+      while (true) {
+        const batch = await this.right.next();
+        if (!batch) break;
+        for (const row of batch) this.rightKeys.add(this.rowKey(row));
+      }
+    }
+
+    while (true) {
+      const batch = await this.left.next();
+      if (!batch) return null;
+      const unmatched: Row[] = [];
+      for (const row of batch) {
+        const key = this.rowKey(row);
+        if (!this.rightKeys.has(key) && !this.seen!.has(key)) {
+          this.seen!.add(key);
+          unmatched.push(row);
+        }
+      }
+      if (unmatched.length > 0) return unmatched;
+    }
+  }
+
+  async close(): Promise<void> {
+    this.seen?.clear();
+    this.rightKeys?.clear();
+    await this.left.close();
+    await this.right.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // FilterOperator — applies row-level filters
 // ---------------------------------------------------------------------------
 
@@ -608,7 +1041,7 @@ export class HashJoinOperator implements Operator {
   private right: Operator;
   private leftKey: string;
   private rightKey: string;
-  private joinType: "inner" | "left";
+  private joinType: "inner" | "left" | "right" | "full" | "cross";
   private memoryBudget: number;
   private spill: import("./r2-spill.js").SpillBackend | null;
 
@@ -616,6 +1049,18 @@ export class HashJoinOperator implements Operator {
   private hashMap: Map<string, Row[]> | null = null;
   private buildExceeded = false;
   private buildSizeBytes = 0;
+
+  // For right/full joins: track which right rows were matched
+  private rightMatched: Set<string> | null = null;
+  private rightUnmatchedEmitted = false;
+
+  // For cross join: buffer right side, iterate left × right
+  private crossRightBuffer: Row[] | null = null;
+  private crossLeftRow: Row | null = null;
+  private crossLeftBatch: Row[] | null = null;
+  private crossLeftIdx = 0;
+  private crossRightIdx = 0;
+  private crossDone = false;
 
   // Partitioned spill state (Grace hash join)
   private partitionCount = 0;
@@ -630,7 +1075,7 @@ export class HashJoinOperator implements Operator {
     right: Operator,
     leftKey: string,
     rightKey: string,
-    joinType: "inner" | "left" = "inner",
+    joinType: "inner" | "left" | "right" | "full" | "cross" = "inner",
     memoryBudget = DEFAULT_MEMORY_BUDGET,
     spill?: import("./r2-spill.js").SpillBackend,
   ) {
@@ -668,9 +1113,44 @@ export class HashJoinOperator implements Operator {
     return merged;
   }
 
+  /** Create a row ID for tracking matched right rows (for right/full joins). */
+  private rightRowId(key: string, idx: number): string {
+    return `${key}\x00${idx}`;
+  }
+
+  /** Emit unmatched right rows with null-filled left columns. */
+  private emitUnmatchedRight(): Row[] {
+    if (!this.hashMap || !this.rightMatched) return [];
+    const result: Row[] = [];
+    for (const [key, rows] of this.hashMap) {
+      for (let i = 0; i < rows.length; i++) {
+        if (!this.rightMatched.has(this.rightRowId(key, i))) {
+          result.push({ ...rows[i] });
+        }
+      }
+    }
+    return result;
+  }
+
   /** Try to build hash map in memory. If build side exceeds budget, switch to partition mode. */
   private async buildOrPartition(): Promise<void> {
-    if (this.hashMap || this.partitionCount > 0) return;
+    if (this.hashMap || this.partitionCount > 0 || this.crossRightBuffer) return;
+
+    // Cross join: buffer entire right side (no key-based hash)
+    if (this.joinType === "cross") {
+      this.crossRightBuffer = [];
+      while (true) {
+        const batch = await this.right.next();
+        if (!batch) break;
+        this.crossRightBuffer.push(...batch);
+      }
+      return;
+    }
+
+    // Initialize match tracker for right/full joins
+    if (this.joinType === "right" || this.joinType === "full") {
+      this.rightMatched = new Set();
+    }
 
     // Sample first batch to estimate whether right side fits in memory.
     // If estimated total exceeds budget, go straight to partitioned path
@@ -863,17 +1343,32 @@ export class HashJoinOperator implements Operator {
       else rightMap.set(key, [row]);
     }
 
+    // Track matched right rows for right/full joins
+    const matched = (this.joinType === "right" || this.joinType === "full") ? new Set<string>() : null;
+
     // Probe with left partition
     const result: Row[] = [];
     for await (const leftRow of this.streamPartition(this.leftPartitionIds[partIdx])) {
       const key = this.toJoinKey(leftRow[this.leftKey]);
       const rightRows = rightMap.get(key);
       if (rightRows) {
-        for (const rightRow of rightRows) {
-          result.push(this.mergeRow(leftRow, rightRow));
+        for (let i = 0; i < rightRows.length; i++) {
+          result.push(this.mergeRow(leftRow, rightRows[i]));
+          if (matched) matched.add(`${key}\x00${i}`);
         }
-      } else if (this.joinType === "left") {
+      } else if (this.joinType === "left" || this.joinType === "full") {
         result.push({ ...leftRow });
+      }
+    }
+
+    // Emit unmatched right rows for right/full joins
+    if (matched) {
+      for (const [key, rows] of rightMap) {
+        for (let i = 0; i < rows.length; i++) {
+          if (!matched.has(`${key}\x00${i}`)) {
+            result.push({ ...rows[i] });
+          }
+        }
       }
     }
 
@@ -883,21 +1378,61 @@ export class HashJoinOperator implements Operator {
   async next(): Promise<RowBatch | null> {
     await this.buildOrPartition();
 
+    // Cross join path: nested loop (left × right)
+    if (this.crossRightBuffer) {
+      if (this.crossDone || this.crossRightBuffer.length === 0) return null;
+
+      while (true) {
+        // Need a new left batch?
+        if (!this.crossLeftBatch || this.crossLeftIdx >= this.crossLeftBatch.length) {
+          const batch = await this.left.next();
+          if (!batch) { this.crossDone = true; return null; }
+          this.crossLeftBatch = batch;
+          this.crossLeftIdx = 0;
+          this.crossRightIdx = 0;
+        }
+
+        const result: Row[] = [];
+        const leftRow = this.crossLeftBatch[this.crossLeftIdx];
+        const batchLimit = 1024;
+        while (this.crossRightIdx < this.crossRightBuffer.length && result.length < batchLimit) {
+          result.push(this.mergeRow(leftRow, this.crossRightBuffer[this.crossRightIdx]));
+          this.crossRightIdx++;
+        }
+
+        if (this.crossRightIdx >= this.crossRightBuffer.length) {
+          this.crossLeftIdx++;
+          this.crossRightIdx = 0;
+        }
+
+        if (result.length > 0) return result;
+      }
+    }
+
     // In-memory path (no spill)
     if (this.hashMap) {
       while (true) {
         const batch = await this.left.next();
-        if (!batch) return null;
+        if (!batch) {
+          // After exhausting left side, emit unmatched right rows for right/full joins
+          if (!this.rightUnmatchedEmitted && (this.joinType === "right" || this.joinType === "full")) {
+            this.rightUnmatchedEmitted = true;
+            const unmatched = this.emitUnmatchedRight();
+            if (unmatched.length > 0) return unmatched;
+          }
+          return null;
+        }
 
         const result: Row[] = [];
         for (const leftRow of batch) {
           const key = this.toJoinKey(leftRow[this.leftKey]);
           const rightRows = this.hashMap.get(key);
           if (rightRows) {
-            for (const rightRow of rightRows) {
-              result.push(this.mergeRow(leftRow, rightRow));
+            for (let i = 0; i < rightRows.length; i++) {
+              result.push(this.mergeRow(leftRow, rightRows[i]));
+              if (this.rightMatched) this.rightMatched.add(this.rightRowId(key, i));
             }
-          } else if (this.joinType === "left") {
+          } else if (this.joinType === "left" || this.joinType === "full") {
             result.push({ ...leftRow });
           }
         }
@@ -921,6 +1456,9 @@ export class HashJoinOperator implements Operator {
 
   async close(): Promise<void> {
     this.hashMap = null;
+    this.rightMatched = null;
+    this.crossRightBuffer = null;
+    this.crossLeftBatch = null;
     await this.left.close();
     await this.right.close();
   }
@@ -1253,6 +1791,28 @@ export function buildPipeline(
     pipeline = new FilterOperator(pipeline, query.filters);
   }
 
+  // SubqueryIn filters (pre-computed value sets)
+  if (query.subqueryIn) {
+    for (const sq of query.subqueryIn) {
+      pipeline = new SubqueryInOperator(pipeline, sq.column, sq.valueSet);
+    }
+  }
+
+  // Computed columns (in-process callbacks)
+  if (query.computedColumns) {
+    pipeline = new ComputedColumnOperator(pipeline, query.computedColumns);
+  }
+
+  // Window functions
+  if (query.windows && query.windows.length > 0) {
+    pipeline = new WindowOperator(pipeline, query.windows);
+  }
+
+  // Distinct
+  if (query.distinct) {
+    pipeline = new DistinctOperator(pipeline, query.distinct);
+  }
+
   const hasAgg = query.aggregates && query.aggregates.length > 0;
 
   if (hasAgg) {
@@ -1315,6 +1875,28 @@ export function buildEdgePipeline(
 
   if (query.filters.length > 0) {
     pipeline = new FilterOperator(pipeline, query.filters);
+  }
+
+  // SubqueryIn filters
+  if (query.subqueryIn) {
+    for (const sq of query.subqueryIn) {
+      pipeline = new SubqueryInOperator(pipeline, sq.column, sq.valueSet);
+    }
+  }
+
+  // Computed columns
+  if (query.computedColumns) {
+    pipeline = new ComputedColumnOperator(pipeline, query.computedColumns);
+  }
+
+  // Window functions
+  if (query.windows && query.windows.length > 0) {
+    pipeline = new WindowOperator(pipeline, query.windows);
+  }
+
+  // Distinct
+  if (query.distinct) {
+    pipeline = new DistinctOperator(pipeline, query.distinct);
   }
 
   const hasAgg = query.aggregates && query.aggregates.length > 0;
