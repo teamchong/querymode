@@ -610,7 +610,21 @@ export class HashJoinOperator implements Operator {
   private leftKey: string;
   private rightKey: string;
   private joinType: "inner" | "left";
+  private memoryBudget: number;
+  private spill: import("./r2-spill.js").SpillBackend | null;
+
+  // In-memory build phase state
   private hashMap: Map<string, Row[]> | null = null;
+  private buildExceeded = false;
+  private buildSizeBytes = 0;
+
+  // Partitioned spill state (Grace hash join)
+  private partitionCount = 0;
+  private leftPartitionIds: string[] = [];
+  private rightPartitionIds: string[] = [];
+  private currentPartition = 0;
+  private partitionedResult: Row[] | null = null;
+  private partitionedDrained = false;
 
   constructor(
     left: Operator,
@@ -618,30 +632,16 @@ export class HashJoinOperator implements Operator {
     leftKey: string,
     rightKey: string,
     joinType: "inner" | "left" = "inner",
+    memoryBudget = DEFAULT_MEMORY_BUDGET,
+    spill?: import("./r2-spill.js").SpillBackend,
   ) {
     this.left = left;
     this.right = right;
     this.leftKey = leftKey;
     this.rightKey = rightKey;
     this.joinType = joinType;
-  }
-
-  private async buildHashMap(): Promise<Map<string, Row[]>> {
-    if (this.hashMap) return this.hashMap;
-    this.hashMap = new Map<string, Row[]>();
-
-    while (true) {
-      const batch = await this.right.next();
-      if (!batch) break;
-      for (const row of batch) {
-        const key = this.toJoinKey(row[this.rightKey]);
-        const bucket = this.hashMap.get(key);
-        if (bucket) bucket.push(row);
-        else this.hashMap.set(key, [row]);
-      }
-    }
-
-    return this.hashMap;
+    this.memoryBudget = memoryBudget;
+    this.spill = spill ?? null;
   }
 
   private toJoinKey(val: Row[string]): string {
@@ -650,36 +650,219 @@ export class HashJoinOperator implements Operator {
     return String(val);
   }
 
-  async next(): Promise<RowBatch | null> {
-    const map = await this.buildHashMap();
+  private hashPartition(val: Row[string], numPartitions: number): number {
+    const key = this.toJoinKey(val);
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = ((h << 5) - h + key.charCodeAt(i)) | 0;
+    }
+    return ((h % numPartitions) + numPartitions) % numPartitions;
+  }
+
+  private mergeRow(leftRow: Row, rightRow: Row): Row {
+    const merged: Row = { ...leftRow };
+    for (const k in rightRow) {
+      if (k === this.rightKey) continue;
+      const outKey = k in merged ? `right_${k}` : k;
+      merged[outKey] = rightRow[k];
+    }
+    return merged;
+  }
+
+  /** Try to build hash map in memory. If build side exceeds budget, switch to partition mode. */
+  private async buildOrPartition(): Promise<void> {
+    if (this.hashMap || this.partitionCount > 0) return;
+
+    const inMemoryRows: Row[] = [];
+    let exceeds = false;
+
+    // Consume right side, tracking memory
+    while (true) {
+      const batch = await this.right.next();
+      if (!batch) break;
+      for (const row of batch) {
+        const rowSize = estimateRowSize(row);
+        this.buildSizeBytes += rowSize;
+        inMemoryRows.push(row);
+
+        if (this.spill && this.buildSizeBytes > this.memoryBudget) {
+          exceeds = true;
+          break;
+        }
+      }
+      if (exceeds) break;
+    }
+
+    if (!exceeds) {
+      // Fits in memory — build hash map directly
+      this.hashMap = new Map<string, Row[]>();
+      for (const row of inMemoryRows) {
+        const key = this.toJoinKey(row[this.rightKey]);
+        const bucket = this.hashMap.get(key);
+        if (bucket) bucket.push(row);
+        else this.hashMap.set(key, [row]);
+      }
+      return;
+    }
+
+    // Switch to Grace hash join: partition both sides with bounded memory.
+    // Use partitionCount that ensures each partition fits in memory budget.
+    this.buildExceeded = true;
+    this.partitionCount = Math.max(4, Math.ceil(this.buildSizeBytes / (this.memoryBudget / 2)));
+    const bucketBudget = Math.floor(this.memoryBudget / this.partitionCount);
+
+    // Spill right-side rows we already consumed, flushing per-bucket when full
+    const rightBuckets: Row[][] = Array.from({ length: this.partitionCount }, () => []);
+    const rightBucketBytes: number[] = new Array(this.partitionCount).fill(0);
+    this.rightPartitionIds = new Array(this.partitionCount).fill("");
+
+    const flushRightBucket = async (bi: number): Promise<void> => {
+      if (rightBuckets[bi].length === 0) return;
+      const spillId = await this.spill!.writeRun(rightBuckets[bi]);
+      // Append to existing partition by tracking multiple spill IDs per partition
+      this.rightPartitionIds[bi] = this.rightPartitionIds[bi]
+        ? this.rightPartitionIds[bi] + "|" + spillId
+        : spillId;
+      rightBuckets[bi] = [];
+      rightBucketBytes[bi] = 0;
+    };
+
+    for (const row of inMemoryRows) {
+      const bi = this.hashPartition(row[this.rightKey], this.partitionCount);
+      const rowSize = estimateRowSize(row);
+      if (rightBucketBytes[bi] + rowSize > bucketBudget && rightBuckets[bi].length > 0) {
+        await flushRightBucket(bi);
+      }
+      rightBuckets[bi].push(row);
+      rightBucketBytes[bi] += rowSize;
+    }
+    // Free inMemoryRows — no longer needed
+    inMemoryRows.length = 0;
+
+    // Continue consuming remaining right-side rows
+    while (true) {
+      const batch = await this.right.next();
+      if (!batch) break;
+      for (const row of batch) {
+        const bi = this.hashPartition(row[this.rightKey], this.partitionCount);
+        const rowSize = estimateRowSize(row);
+        if (rightBucketBytes[bi] + rowSize > bucketBudget && rightBuckets[bi].length > 0) {
+          await flushRightBucket(bi);
+        }
+        rightBuckets[bi].push(row);
+        rightBucketBytes[bi] += rowSize;
+      }
+    }
+
+    // Flush remaining right buckets
+    for (let bi = 0; bi < this.partitionCount; bi++) await flushRightBucket(bi);
+
+    // Consume and partition left side with same bounded approach
+    const leftBuckets: Row[][] = Array.from({ length: this.partitionCount }, () => []);
+    const leftBucketBytes: number[] = new Array(this.partitionCount).fill(0);
+    this.leftPartitionIds = new Array(this.partitionCount).fill("");
+
+    const flushLeftBucket = async (bi: number): Promise<void> => {
+      if (leftBuckets[bi].length === 0) return;
+      const spillId = await this.spill!.writeRun(leftBuckets[bi]);
+      this.leftPartitionIds[bi] = this.leftPartitionIds[bi]
+        ? this.leftPartitionIds[bi] + "|" + spillId
+        : spillId;
+      leftBuckets[bi] = [];
+      leftBucketBytes[bi] = 0;
+    };
 
     while (true) {
       const batch = await this.left.next();
-      if (!batch) return null;
-
-      const result: Row[] = [];
-      for (const leftRow of batch) {
-        const key = this.toJoinKey(leftRow[this.leftKey]);
-        const rightRows = map.get(key);
-
-        if (rightRows) {
-          for (const rightRow of rightRows) {
-            const merged: Row = { ...leftRow };
-            for (const k in rightRow) {
-              if (k === this.rightKey) continue; // skip duplicate join key
-              // Prefix right-side columns with right table name if they conflict
-              const outKey = k in merged ? `right_${k}` : k;
-              merged[outKey] = rightRow[k];
-            }
-            result.push(merged);
-          }
-        } else if (this.joinType === "left") {
-          result.push({ ...leftRow });
+      if (!batch) break;
+      for (const row of batch) {
+        const bi = this.hashPartition(row[this.leftKey], this.partitionCount);
+        const rowSize = estimateRowSize(row);
+        if (leftBucketBytes[bi] + rowSize > bucketBudget && leftBuckets[bi].length > 0) {
+          await flushLeftBucket(bi);
         }
+        leftBuckets[bi].push(row);
+        leftBucketBytes[bi] += rowSize;
       }
-
-      if (result.length > 0) return result;
     }
+
+    // Flush remaining left buckets
+    for (let bi = 0; bi < this.partitionCount; bi++) await flushLeftBucket(bi);
+  }
+
+  /** Stream rows from a potentially multi-spill partition ("|"-delimited spill IDs). */
+  private async *streamPartition(partitionIds: string): AsyncGenerator<Row> {
+    if (!partitionIds) return;
+    for (const spillId of partitionIds.split("|")) {
+      yield* this.spill!.streamRun(spillId);
+    }
+  }
+
+  /** Process one partition: load right → build map → probe left → emit matches. */
+  private async processPartition(partIdx: number): Promise<Row[]> {
+    // Load right partition into hash map
+    const rightMap = new Map<string, Row[]>();
+    for await (const row of this.streamPartition(this.rightPartitionIds[partIdx])) {
+      const key = this.toJoinKey(row[this.rightKey]);
+      const bucket = rightMap.get(key);
+      if (bucket) bucket.push(row);
+      else rightMap.set(key, [row]);
+    }
+
+    // Probe with left partition
+    const result: Row[] = [];
+    for await (const leftRow of this.streamPartition(this.leftPartitionIds[partIdx])) {
+      const key = this.toJoinKey(leftRow[this.leftKey]);
+      const rightRows = rightMap.get(key);
+      if (rightRows) {
+        for (const rightRow of rightRows) {
+          result.push(this.mergeRow(leftRow, rightRow));
+        }
+      } else if (this.joinType === "left") {
+        result.push({ ...leftRow });
+      }
+    }
+
+    return result;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    await this.buildOrPartition();
+
+    // In-memory path (no spill)
+    if (this.hashMap) {
+      while (true) {
+        const batch = await this.left.next();
+        if (!batch) return null;
+
+        const result: Row[] = [];
+        for (const leftRow of batch) {
+          const key = this.toJoinKey(leftRow[this.leftKey]);
+          const rightRows = this.hashMap.get(key);
+          if (rightRows) {
+            for (const rightRow of rightRows) {
+              result.push(this.mergeRow(leftRow, rightRow));
+            }
+          } else if (this.joinType === "left") {
+            result.push({ ...leftRow });
+          }
+        }
+
+        if (result.length > 0) return result;
+      }
+    }
+
+    // Partitioned spill path: process one partition at a time
+    if (this.partitionedDrained) return null;
+
+    while (this.currentPartition < this.partitionCount) {
+      const rows = await this.processPartition(this.currentPartition);
+      this.currentPartition++;
+      if (rows.length > 0) return rows;
+    }
+
+    this.partitionedDrained = true;
+    return null;
   }
 
   async close(): Promise<void> {
@@ -690,14 +873,14 @@ export class HashJoinOperator implements Operator {
 }
 
 // ---------------------------------------------------------------------------
-// ExternalSortOperator — ORDER BY without LIMIT, spills to temp files
+// Spill backends — filesystem (Node/Bun) and pluggable (R2 via SpillBackend)
 // ---------------------------------------------------------------------------
 
 /** Default memory budget for external sort: 256MB */
 export const DEFAULT_MEMORY_BUDGET = 256 * 1024 * 1024;
 
 /** Rough estimate of a row's memory footprint in bytes. */
-function estimateRowSize(row: Row): number {
+export function estimateRowSize(row: Row): number {
   let size = 64; // object overhead
   for (const key in row) {
     const val = row[key];
@@ -706,182 +889,6 @@ function estimateRowSize(row: Row): number {
     else size += 16;
   }
   return size;
-}
-
-export class ExternalSortOperator implements Operator {
-  private upstream: Operator;
-  private col: string;
-  private desc: boolean;
-  private offset: number;
-  private memoryBudget: number;
-  private consumed = false;
-  private runFiles: string[] = [];
-  private cleanup: (() => Promise<void>) | null = null;
-
-  constructor(
-    upstream: Operator,
-    sortColumn: string,
-    desc: boolean,
-    offset = 0,
-    memoryBudget = DEFAULT_MEMORY_BUDGET,
-  ) {
-    this.upstream = upstream;
-    this.col = sortColumn;
-    this.desc = desc;
-    this.offset = offset;
-    this.memoryBudget = memoryBudget;
-  }
-
-  async next(): Promise<RowBatch | null> {
-    if (this.consumed) return null;
-    this.consumed = true;
-
-    const col = this.col;
-    const dir = this.desc ? -1 : 1;
-    const compareFn = (a: Row, b: Row): number => {
-      const av = a[col], bv = b[col];
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      return av < bv ? -dir : av > bv ? dir : 0;
-    };
-
-    // Phase 1: Generate sorted runs
-    const fs = await import("node:fs/promises");
-    const os = await import("node:os");
-    const path = await import("node:path");
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "qm-sort-"));
-
-    let currentRun: Row[] = [];
-    let currentRunBytes = 0;
-
-    const flushRun = async (): Promise<void> => {
-      if (currentRun.length === 0) return;
-      currentRun.sort(compareFn);
-      const runPath = path.join(tmpDir, `run_${this.runFiles.length}.ndjson`);
-      const lines = currentRun.map(row => JSON.stringify(row, bigIntJsonReplacer));
-      await fs.writeFile(runPath, lines.join("\n") + "\n");
-      this.runFiles.push(runPath);
-      currentRun = [];
-      currentRunBytes = 0;
-    };
-
-    while (true) {
-      const batch = await this.upstream.next();
-      if (!batch) break;
-      for (const row of batch) {
-        const rowSize = estimateRowSize(row);
-        if (currentRunBytes + rowSize > this.memoryBudget && currentRun.length > 0) {
-          await flushRun();
-        }
-        currentRun.push(row);
-        currentRunBytes += rowSize;
-      }
-    }
-
-    // If everything fit in one run, no temp files needed
-    if (this.runFiles.length === 0) {
-      currentRun.sort(compareFn);
-      // Cleanup empty temp dir
-      await fs.rmdir(tmpDir).catch(() => {});
-      return this.offset > 0 ? currentRun.slice(this.offset) : currentRun;
-    }
-
-    // Flush final run
-    await flushRun();
-
-    // Phase 2: K-way merge using min-heap
-    const result = await this.kWayMerge(compareFn);
-
-    // Schedule cleanup
-    this.cleanup = async () => {
-      for (const f of this.runFiles) await fs.unlink(f).catch(() => {});
-      await fs.rmdir(tmpDir).catch(() => {});
-    };
-    await this.cleanup();
-    this.cleanup = null;
-
-    return this.offset > 0 ? result.slice(this.offset) : result;
-  }
-
-  private async kWayMerge(compareFn: (a: Row, b: Row) => number): Promise<Row[]> {
-    const fs = await import("node:fs/promises");
-    const readline = await import("node:readline");
-    const nodeFs = await import("node:fs");
-
-    // Open all run files as line readers
-    type RunReader = { rl: ReturnType<typeof readline.createInterface>; lines: AsyncIterator<string>; current: Row | null; stream: ReturnType<typeof nodeFs.createReadStream> };
-    const readers: RunReader[] = [];
-
-    for (const filePath of this.runFiles) {
-      const stream = nodeFs.createReadStream(filePath);
-      const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-      const lines = rl[Symbol.asyncIterator]();
-      const first = await lines.next();
-      const current = first.done ? null : parseNdjsonRow(first.value);
-      readers.push({ rl, lines, current, stream });
-    }
-
-    // Min-heap of reader indices
-    const heap: number[] = [];
-    for (let i = 0; i < readers.length; i++) {
-      if (readers[i].current !== null) {
-        heap.push(i);
-      }
-    }
-
-    // Build heap
-    const heapCmp = (a: number, b: number): number => {
-      return compareFn(readers[a].current!, readers[b].current!);
-    };
-
-    const siftDown = (i: number): void => {
-      while (true) {
-        let t = i;
-        const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < heap.length && heapCmp(heap[l], heap[t]) < 0) t = l;
-        if (r < heap.length && heapCmp(heap[r], heap[t]) < 0) t = r;
-        if (t === i) break;
-        [heap[i], heap[t]] = [heap[t], heap[i]];
-        i = t;
-      }
-    };
-
-    // Build min-heap
-    for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) siftDown(i);
-
-    const result: Row[] = [];
-    while (heap.length > 0) {
-      const minIdx = heap[0];
-      result.push(readers[minIdx].current!);
-
-      // Advance the reader
-      const next = await readers[minIdx].lines.next();
-      if (next.done) {
-        readers[minIdx].current = null;
-        // Remove from heap: swap with last, pop, sift down
-        heap[0] = heap[heap.length - 1];
-        heap.pop();
-        if (heap.length > 0) siftDown(0);
-      } else {
-        readers[minIdx].current = parseNdjsonRow(next.value);
-        siftDown(0);
-      }
-    }
-
-    // Close all readers
-    for (const r of readers) {
-      r.rl.close();
-      r.stream.destroy();
-    }
-
-    return result;
-  }
-
-  async close(): Promise<void> {
-    if (this.cleanup) await this.cleanup();
-    await this.upstream.close();
-  }
 }
 
 /** JSON replacer for bigint values in NDJSON runs. */
@@ -899,6 +906,277 @@ function parseNdjsonRow(line: string): Row {
   }) as Row;
 }
 
+// Re-export SpillBackend from r2-spill so consumers can import from either place
+export type { SpillBackend } from "./r2-spill.js";
+
+/** Filesystem-backed spill for Node/Bun environments. */
+export class FsSpillBackend {
+  private runFiles: string[] = [];
+  private tmpDir: string | null = null;
+  bytesWritten = 0;
+  bytesRead = 0;
+
+  async writeRun(rows: Row[]): Promise<string> {
+    if (!this.tmpDir) {
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      this.tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "qm-sort-"));
+    }
+    const path = await import("node:path");
+    const fs = await import("node:fs/promises");
+    const runPath = path.join(this.tmpDir!, `run_${this.runFiles.length}.ndjson`);
+    const lines = rows.map(row => JSON.stringify(row, bigIntJsonReplacer));
+    const body = lines.join("\n") + "\n";
+    this.bytesWritten += Buffer.byteLength(body, "utf8");
+    await fs.writeFile(runPath, body);
+    this.runFiles.push(runPath);
+    return runPath;
+  }
+
+  async *streamRun(spillId: string): AsyncGenerator<Row> {
+    const nodeFs = await import("node:fs");
+    const readline = await import("node:readline");
+    const stream = nodeFs.createReadStream(spillId);
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        if (line.length === 0) continue;
+        this.bytesRead += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
+        yield parseNdjsonRow(line);
+      }
+    } finally {
+      rl.close();
+      stream.destroy();
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    const fs = await import("node:fs/promises");
+    for (const f of this.runFiles) await fs.unlink(f).catch(() => {});
+    if (this.tmpDir) await fs.rmdir(this.tmpDir).catch(() => {});
+    this.runFiles = [];
+    this.tmpDir = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ExternalSortOperator — ORDER BY without LIMIT, spills via SpillBackend
+// ---------------------------------------------------------------------------
+
+const MERGE_BATCH_SIZE = 4096;
+
+export class ExternalSortOperator implements Operator {
+  private upstream: Operator;
+  private col: string;
+  private desc: boolean;
+  private offset: number;
+  private memoryBudget: number;
+  private spill: FsSpillBackend | import("./r2-spill.js").SpillBackend;
+  private runsGenerated = false;
+  private spillIds: string[] = [];
+  private inMemoryResult: Row[] | null = null;
+  private inMemoryYielded = false;
+
+  // K-way merge state (persists across next() calls)
+  private mergeReaders: { iter: AsyncGenerator<Row>; current: Row | null }[] | null = null;
+  private mergeHeap: number[] | null = null;
+  private mergeCompareFn: ((a: Row, b: Row) => number) | null = null;
+  private skipped = 0;
+
+  constructor(
+    upstream: Operator,
+    sortColumn: string,
+    desc: boolean,
+    offset = 0,
+    memoryBudget = DEFAULT_MEMORY_BUDGET,
+    spill?: import("./r2-spill.js").SpillBackend,
+  ) {
+    this.upstream = upstream;
+    this.col = sortColumn;
+    this.desc = desc;
+    this.offset = offset;
+    this.memoryBudget = memoryBudget;
+    this.spill = spill ?? new FsSpillBackend();
+  }
+
+  private getCompareFn(): (a: Row, b: Row) => number {
+    if (this.mergeCompareFn) return this.mergeCompareFn;
+    const col = this.col;
+    const dir = this.desc ? -1 : 1;
+    this.mergeCompareFn = (a: Row, b: Row): number => {
+      const av = a[col], bv = b[col];
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return av < bv ? -dir : av > bv ? dir : 0;
+    };
+    return this.mergeCompareFn;
+  }
+
+  /** Phase 1: consume upstream, generate sorted runs. */
+  private async generateRuns(): Promise<void> {
+    if (this.runsGenerated) return;
+    this.runsGenerated = true;
+
+    const compareFn = this.getCompareFn();
+    let currentRun: Row[] = [];
+    let currentRunBytes = 0;
+
+    const flushRun = async (): Promise<void> => {
+      if (currentRun.length === 0) return;
+      currentRun.sort(compareFn);
+      const spillId = await this.spill.writeRun(currentRun);
+      this.spillIds.push(spillId);
+      currentRun = [];
+      currentRunBytes = 0;
+    };
+
+    while (true) {
+      const batch = await this.upstream.next();
+      if (!batch) break;
+      for (const row of batch) {
+        const rowSize = estimateRowSize(row);
+        if (currentRunBytes + rowSize > this.memoryBudget && currentRun.length > 0) {
+          await flushRun();
+        }
+        currentRun.push(row);
+        currentRunBytes += rowSize;
+      }
+    }
+
+    // If everything fit in one run, keep in memory — no spill needed
+    if (this.spillIds.length === 0) {
+      currentRun.sort(compareFn);
+      this.inMemoryResult = this.offset > 0 ? currentRun.slice(this.offset) : currentRun;
+      return;
+    }
+
+    // Flush final run
+    await flushRun();
+  }
+
+  /** Initialize k-way merge state. */
+  private async initMerge(): Promise<void> {
+    type RunReader = { iter: AsyncGenerator<Row>; current: Row | null };
+    const readers: RunReader[] = [];
+
+    for (const spillId of this.spillIds) {
+      const iter = this.spill.streamRun(spillId);
+      const first = await iter.next();
+      const current = first.done ? null : first.value;
+      readers.push({ iter, current });
+    }
+
+    const heap: number[] = [];
+    for (let i = 0; i < readers.length; i++) {
+      if (readers[i].current !== null) heap.push(i);
+    }
+
+    const compareFn = this.getCompareFn();
+    const heapCmp = (a: number, b: number): number =>
+      compareFn(readers[a].current!, readers[b].current!);
+
+    const siftDown = (arr: number[], i: number): void => {
+      while (true) {
+        let t = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < arr.length && heapCmp(arr[l], arr[t]) < 0) t = l;
+        if (r < arr.length && heapCmp(arr[r], arr[t]) < 0) t = r;
+        if (t === i) break;
+        [arr[i], arr[t]] = [arr[t], arr[i]];
+        i = t;
+      }
+    };
+
+    for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) siftDown(heap, i);
+
+    this.mergeReaders = readers;
+    this.mergeHeap = heap;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    await this.generateRuns();
+
+    // In-memory path (no spill)
+    if (this.inMemoryResult !== null) {
+      if (this.inMemoryYielded) return null;
+      this.inMemoryYielded = true;
+      return this.inMemoryResult;
+    }
+
+    // Initialize merge on first call
+    if (!this.mergeReaders) await this.initMerge();
+
+    const readers = this.mergeReaders!;
+    const heap = this.mergeHeap!;
+    const compareFn = this.getCompareFn();
+
+    const heapCmp = (a: number, b: number): number =>
+      compareFn(readers[a].current!, readers[b].current!);
+
+    const siftDown = (i: number): void => {
+      while (true) {
+        let t = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < heap.length && heapCmp(heap[l], heap[t]) < 0) t = l;
+        if (r < heap.length && heapCmp(heap[r], heap[t]) < 0) t = r;
+        if (t === i) break;
+        [heap[i], heap[t]] = [heap[t], heap[i]];
+        i = t;
+      }
+    };
+
+    if (heap.length === 0) {
+      await this.spill.cleanup();
+      return null;
+    }
+
+    // Yield one batch of MERGE_BATCH_SIZE rows from the merge
+    const batch: Row[] = [];
+    while (heap.length > 0 && batch.length < MERGE_BATCH_SIZE) {
+      const minIdx = heap[0];
+      const row = readers[minIdx].current!;
+
+      // Handle offset — skip rows
+      if (this.skipped < this.offset) {
+        this.skipped++;
+      } else {
+        batch.push(row);
+      }
+
+      const next = await readers[minIdx].iter.next();
+      if (next.done) {
+        readers[minIdx].current = null;
+        heap[0] = heap[heap.length - 1];
+        heap.pop();
+        if (heap.length > 0) siftDown(0);
+      } else {
+        readers[minIdx].current = next.value;
+        siftDown(0);
+      }
+    }
+
+    if (batch.length === 0) {
+      // All rows were skipped by offset but merge exhausted
+      await this.spill.cleanup();
+      return null;
+    }
+
+    // If merge is now exhausted, cleanup
+    if (heap.length === 0) {
+      await this.spill.cleanup();
+    }
+
+    return batch;
+  }
+
+  async close(): Promise<void> {
+    await this.spill.cleanup();
+    await this.upstream.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline builder
 // ---------------------------------------------------------------------------
@@ -913,6 +1191,8 @@ export interface PipelineResult {
 export interface PipelineOptions {
   /** Memory budget in bytes for external sort (default 256MB). */
   memoryBudgetBytes?: number;
+  /** Spill backend for external sort/join (default: FsSpillBackend). */
+  spill?: import("./r2-spill.js").SpillBackend;
 }
 
 /**
@@ -973,7 +1253,7 @@ export function buildPipeline(
       // Full sort without limit — use external sort to handle TB+ data
       pipeline = new ExternalSortOperator(
         pipeline, query.sortColumn, query.sortDirection === "desc",
-        query.offset ?? 0, memBudget,
+        query.offset ?? 0, memBudget, options?.spill,
       );
     }
   } else if (query.offset || query.limit !== undefined) {
@@ -987,6 +1267,63 @@ export function buildPipeline(
   }
 
   return { pipeline, scan };
+}
+
+/**
+ * Build an operator pipeline from a pre-existing scan operator (edge path).
+ * Same logic as buildPipeline but doesn't create the ScanOperator itself.
+ */
+export function buildEdgePipeline(
+  scan: Operator,
+  query: QueryDescriptor,
+  outputColumns: string[],
+  options?: PipelineOptions,
+): Operator {
+  let pipeline: Operator = scan;
+  const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
+
+  if (query.filters.length > 0) {
+    pipeline = new FilterOperator(pipeline, query.filters);
+  }
+
+  const hasAgg = query.aggregates && query.aggregates.length > 0;
+
+  if (hasAgg) {
+    pipeline = new AggregateOperator(pipeline, query);
+    if (query.sortColumn && query.limit !== undefined) {
+      pipeline = new TopKOperator(
+        pipeline, query.sortColumn, query.sortDirection === "desc",
+        query.limit, query.offset ?? 0,
+      );
+    } else if (query.sortColumn) {
+      pipeline = new InMemorySortOperator(
+        pipeline, query.sortColumn, query.sortDirection === "desc",
+        query.offset ?? 0,
+      );
+    } else if (query.offset || query.limit !== undefined) {
+      pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
+    }
+  } else if (query.sortColumn) {
+    if (query.limit !== undefined) {
+      pipeline = new TopKOperator(
+        pipeline, query.sortColumn, query.sortDirection === "desc",
+        query.limit, query.offset ?? 0,
+      );
+    } else {
+      pipeline = new ExternalSortOperator(
+        pipeline, query.sortColumn, query.sortDirection === "desc",
+        query.offset ?? 0, memBudget, options?.spill,
+      );
+    }
+  } else if (query.offset || query.limit !== undefined) {
+    pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
+  }
+
+  if (outputColumns.length > 0) {
+    pipeline = new ProjectOperator(pipeline, outputColumns);
+  }
+
+  return pipeline;
 }
 
 /**

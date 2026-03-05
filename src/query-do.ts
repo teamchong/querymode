@@ -9,6 +9,13 @@ import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import { R2SpillBackend } from "./r2-spill.js";
+import {
+  type Operator, type RowBatch,
+  buildEdgePipeline, drainPipeline, estimateRowSize,
+  FilterOperator, HashJoinOperator, ProjectOperator,
+  DEFAULT_MEMORY_BUDGET,
+} from "./operators.js";
 import { VipCache } from "./vip-cache.js";
 import { parseLanceV2Columns } from "./lance-v2.js";
 import { parseAndValidateQuery } from "./query-schema.js";
@@ -22,10 +29,329 @@ const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from evic
 const DATASET_CACHE_MAX = 100; // Max cached datasets before eviction
 const RESULT_CACHE_MAX = 200; // Max cached query results
 const RESULT_VIP_THRESHOLD = 2; // Accesses needed for VIP result cache
+const EDGE_MEMORY_BUDGET = 32 * 1024 * 1024; // 32MB — DO has 128MB total, need room for WASM + caches
+
+/**
+ * EdgeScanOperator — yields RowBatch per page from R2, using 3-tier cache.
+ * Wraps the same I/O logic as scanPages() but as a pull-based Operator.
+ * WASM handles per-page decoding; TypeScript operators handle cross-page orchestration.
+ */
+class EdgeScanOperator implements Operator {
+  private bucket: R2Bucket;
+  private wasmEngine: WasmEngine;
+  private meta: TableMeta;
+  private query: QueryDescriptor;
+  private footerCache: VipCache<string, TableMeta>;
+  private edgeCacheGet: (r2Key: string, offset: number, length: number) => Promise<ArrayBuffer | null>;
+  private edgeCachePut: (r2Key: string, offset: number, length: number, data: ArrayBuffer) => void;
+
+  // Pre-computed per-column page info (after skip)
+  private columnPageInfos = new Map<string, TableMeta["columns"][0]["pages"]>();
+  private columnData = new Map<string, ArrayBuffer[]>();
+  private cols: ColumnMeta[] = [];
+  private fetched = false;
+  private pageCount = 0;
+  private currentPage = 0;
+
+  // Stats
+  bytesRead = 0;
+  pagesSkipped = 0;
+  cacheHits = 0;
+  cacheMisses = 0;
+  edgeCacheHits = 0;
+  edgeCacheMisses = 0;
+  r2ReadMs = 0;
+  wasmExecMs = 0;
+
+  constructor(
+    bucket: R2Bucket,
+    wasmEngine: WasmEngine,
+    meta: TableMeta,
+    query: QueryDescriptor,
+    footerCache: VipCache<string, TableMeta>,
+    edgeCacheGet: (r2Key: string, offset: number, length: number) => Promise<ArrayBuffer | null>,
+    edgeCachePut: (r2Key: string, offset: number, length: number, data: ArrayBuffer) => void,
+  ) {
+    this.bucket = bucket;
+    this.wasmEngine = wasmEngine;
+    this.meta = meta;
+    this.query = query;
+    this.footerCache = footerCache;
+    this.edgeCacheGet = edgeCacheGet;
+    this.edgeCachePut = edgeCachePut;
+  }
+
+  /** Compute column/page metadata once. Does NOT fetch page data. */
+  private initColumns(): void {
+    if (this.fetched) return;
+    this.fetched = true;
+
+    const query = this.query;
+    const meta = this.meta;
+
+    let cols = query.projections.length > 0
+      ? meta.columns.filter(c => query.projections.includes(c.name))
+      : meta.columns;
+
+    if (query.vectorSearch) {
+      const vc = query.vectorSearch.column;
+      if (!cols.some(c => c.name === vc)) {
+        const ec = meta.columns.find(c => c.name === vc);
+        if (ec) cols = [...cols, ec];
+      }
+    }
+    this.cols = cols;
+
+    for (const col of cols) {
+      const keptPages: typeof col.pages = [];
+      for (const page of col.pages) {
+        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
+          this.pagesSkipped++;
+          continue;
+        }
+        keptPages.push(page);
+      }
+      this.columnPageInfos.set(col.name, keptPages);
+    }
+
+    // Count total pages from first column
+    const firstCol = cols[0];
+    if (firstCol) {
+      const keptPages = this.columnPageInfos.get(firstCol.name) ?? firstCol.pages;
+      this.pageCount = keptPages.length;
+    }
+  }
+
+  /**
+   * Fetch page data for a single page index across all columns.
+   * Uses 3-tier cache: L1 (WASM pool) → L2 (caches.default) → L3 (R2).
+   * Returns a Map of column name → ArrayBuffer for this page.
+   */
+  private async fetchPageData(pageIdx: number): Promise<Map<string, ArrayBuffer>> {
+    const meta = this.meta;
+    const result = new Map<string, ArrayBuffer>();
+    const tableIsVip = this.footerCache.accessCount(this.query.table) >= VIP_THRESHOLD;
+
+    // Build ranges for this single page across all columns
+    type R = { column: string; offset: number; length: number };
+    const ranges: R[] = [];
+    for (const col of this.cols) {
+      const keptPages = this.columnPageInfos.get(col.name) ?? col.pages;
+      const page = keptPages[pageIdx];
+      if (!page) continue;
+      ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
+    }
+
+    // L1: WASM buffer pool
+    const l1Misses: R[] = [];
+    for (const r of ranges) {
+      const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
+      const cached = this.wasmEngine.cacheGet(cacheKey);
+      if (cached) {
+        this.cacheHits++;
+        result.set(r.column, cached);
+      } else {
+        this.cacheMisses++;
+        l1Misses.push(r);
+      }
+    }
+
+    // L2: caches.default (VIP tables only)
+    const uncachedRanges: R[] = [];
+    if (tableIsVip && l1Misses.length > 0) {
+      const edgeChecks = await Promise.all(
+        l1Misses.map(async (r) => {
+          const data = await this.edgeCacheGet(meta.r2Key, r.offset, r.length);
+          return { range: r, data };
+        }),
+      );
+      for (const { range: r, data } of edgeChecks) {
+        if (data) {
+          this.edgeCacheHits++;
+          result.set(r.column, data);
+          this.wasmEngine.cacheSet(`${meta.r2Key}:${r.offset}:${r.length}`, data);
+        } else {
+          this.edgeCacheMisses++;
+          uncachedRanges.push(r);
+        }
+      }
+    } else {
+      for (const r of l1Misses) uncachedRanges.push(r);
+    }
+
+    // L3: R2
+    if (uncachedRanges.length > 0) {
+      const r2Start = Date.now();
+      const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+      const fetched = await fetchBounded(
+        coalesced.map(c => () =>
+          withRetry(() =>
+            withTimeout(
+              (async () => {
+                const obj = await this.bucket.get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
+                return obj ? { ...c, data: await obj.arrayBuffer() } : null;
+              })(),
+              R2_TIMEOUT_MS,
+            ),
+          ),
+        ),
+        8,
+      );
+      for (const f of fetched) {
+        if (!f) continue;
+        this.bytesRead += f.data.byteLength;
+        for (const sub of f.ranges) {
+          const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
+          result.set(sub.column, slice);
+          this.wasmEngine.cacheSet(`${meta.r2Key}:${sub.offset}:${sub.length}`, slice);
+          if (tableIsVip) {
+            this.edgeCachePut(meta.r2Key, sub.offset, sub.length, slice);
+          }
+        }
+      }
+      this.r2ReadMs += Date.now() - r2Start;
+    }
+
+    return result;
+  }
+
+  /**
+   * Fetch ALL pages upfront. Used for Lance path which requires all pages
+   * registered at once in WASM. NOT used for Parquet (which fetches per-page).
+   */
+  private async fetchAllPages(): Promise<void> {
+    for (let pi = 0; pi < this.pageCount; pi++) {
+      const pageData = await this.fetchPageData(pi);
+      for (const [colName, buf] of pageData) {
+        const arr = this.columnData.get(colName) ?? [];
+        arr.push(buf);
+        this.columnData.set(colName, arr);
+      }
+    }
+  }
+
+  async next(): Promise<RowBatch | null> {
+    this.initColumns();
+
+    if (this.meta.format === "parquet") {
+      return this.nextParquetPage();
+    }
+
+    // Lance path: must register all pages at once (WASM constraint)
+    if (this.currentPage > 0) return null;
+    this.currentPage = 1;
+
+    await this.fetchAllPages();
+
+    const wasmStart = Date.now();
+    this.wasmEngine.exports.resetHeap();
+    const fragTable = `__edge_${this.meta.r2Key}`;
+    for (const col of this.cols) {
+      const pages = this.columnData.get(col.name);
+      if (!pages?.length) continue;
+      const keptPageInfos = this.columnPageInfos.get(col.name) ?? col.pages;
+      if (!this.wasmEngine.registerColumn(fragTable, col.name, col.dtype, pages, keptPageInfos, col.listDimension)) {
+        throw new Error(`WASM OOM: failed to register column "${col.name}"`);
+      }
+    }
+
+    const decodeQuery: QueryDescriptor = {
+      ...this.query,
+      table: fragTable,
+      sortColumn: undefined,
+      limit: undefined,
+      offset: undefined,
+      aggregates: undefined,
+      join: undefined,
+    };
+    const rows = this.wasmEngine.executeQuery(decodeQuery);
+    if (!rows) throw new Error(`WASM query execution failed`);
+    this.wasmEngine.clearTable(fragTable);
+    this.columnData.clear(); // Release page buffers immediately
+    this.wasmExecMs += Date.now() - wasmStart;
+
+    return rows;
+  }
+
+  /** Yield one Parquet page at a time — fetches and decodes one page per call. */
+  private async nextParquetPage(): Promise<RowBatch | null> {
+    if (this.currentPage >= this.pageCount) return null;
+    const pi = this.currentPage++;
+
+    const cols = this.cols;
+    const meta = this.meta;
+
+    // Fetch page data for this single page (bounded: one page across all columns)
+    const pageBuffers = await this.fetchPageData(pi);
+
+    const wasmStart = Date.now();
+    const colNames = cols.map(c => c.name);
+    const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
+
+    for (const col of cols) {
+      let chunkBuf = pageBuffers.get(col.name);
+      if (!chunkBuf) { decodedColumns.set(col.name, []); continue; }
+      const keptPageInfos = this.columnPageInfos.get(col.name) ?? col.pages;
+      const pageInfo = keptPageInfos[pi];
+      const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" as const };
+
+      if (encoding.dictionaryPageOffset !== undefined && encoding.dictionaryPageLength) {
+        const dictOffset = Number(encoding.dictionaryPageOffset);
+        const pageOffset = Number(pageInfo.byteOffset);
+        if (dictOffset < pageOffset) {
+          const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
+          let dictBuf = this.wasmEngine.cacheGet(dictKey);
+          if (!dictBuf) {
+            const dictObj = await this.bucket.get(meta.r2Key, {
+              range: { offset: dictOffset, length: encoding.dictionaryPageLength },
+            });
+            if (dictObj) {
+              dictBuf = await dictObj.arrayBuffer();
+              this.wasmEngine.cacheSet(dictKey, dictBuf);
+              this.bytesRead += dictBuf.byteLength;
+            }
+          }
+          if (dictBuf) {
+            const combined = new Uint8Array(dictBuf.byteLength + chunkBuf.byteLength);
+            combined.set(new Uint8Array(dictBuf), 0);
+            combined.set(new Uint8Array(chunkBuf), dictBuf.byteLength);
+            chunkBuf = combined.buffer;
+          }
+        }
+      }
+
+      const decoded = decodeParquetColumnChunk(
+        chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
+      );
+      decodedColumns.set(col.name, decoded);
+    }
+
+    // Assemble rows for this single page
+    let numRows = 0;
+    for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
+    if (numRows === 0) return this.next(); // skip empty pages
+
+    const rows: Row[] = [];
+    for (let i = 0; i < numRows; i++) {
+      const row: Row = {};
+      for (const name of colNames) {
+        const vals = decodedColumns.get(name);
+        row[name] = vals && i < vals.length ? vals[i] : null;
+      }
+      rows.push(row);
+    }
+    this.wasmExecMs += Date.now() - wasmStart;
+    return rows;
+  }
+
+  async close(): Promise<void> {
+    this.columnData.clear();
+  }
+}
 
 /**
  * Query DO — per-region reader with cached footers.
- * WASM (Zig SIMD) handles all compute; TS handles I/O orchestration only.
+ * WASM (Zig SIMD) handles per-page compute; TS operators handle cross-page orchestration.
  */
 export class QueryDO extends DurableObject<Env> {
   private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
@@ -495,6 +821,15 @@ export class QueryDO extends DurableObject<Env> {
       if (cached) return { ...cached, durationMs: 0 };
     }
 
+    // Join path: use operator pipeline with R2 spill
+    if (query.join) {
+      const result = await this.executeJoin(query, t0);
+      if (cacheable) {
+        this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL!);
+      }
+      return result;
+    }
+
     // Multi-fragment dataset path
     const dataset = this.datasetCache.get(query.table);
     let result: QueryResult;
@@ -507,12 +842,23 @@ export class QueryDO extends DurableObject<Env> {
         if (!meta) throw new Error(`Table "${query.table}" not found`);
       }
 
-      // Lance whole-file path: if no page byte ranges, load entire file into WASM
-      const hasPages = meta.columns.some(c => c.pages.length > 0);
-      if (!hasPages && meta.format === "lance" && meta.r2Key) {
-        result = await this.executeLanceWholeFile(query, meta, t0);
+      // Use operator pipeline for any query that could produce unbounded results:
+      // - ORDER BY without LIMIT (needs external sort with spill)
+      // - No LIMIT at all (unbounded scan — needs streaming)
+      // - Has aggregates without LIMIT (high-cardinality GROUP BY could be large)
+      // Exceptions: vector search (uses IVF-PQ index, always bounded by topK)
+      const hasLimit = query.limit !== undefined;
+      const needsPipeline = !query.vectorSearch && !hasLimit;
+      if (needsPipeline) {
+        result = await this.executeWithPipeline(query, meta, t0);
       } else {
-        result = await this.scanPages(query, meta, t0);
+        // Bounded queries (has LIMIT or vector search) — safe to materialize in WASM
+        const hasPages = meta.columns.some(c => c.pages.length > 0);
+        if (!hasPages && meta.format === "lance" && meta.r2Key) {
+          result = await this.executeLanceWholeFile(query, meta, t0);
+        } else {
+          result = await this.scanPages(query, meta, t0);
+        }
       }
     }
 
@@ -852,6 +1198,132 @@ export class QueryDO extends DurableObject<Env> {
       r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
       edgeCacheHits, edgeCacheMisses,
     };
+  }
+
+  /**
+   * Execute a query using the streaming operator pipeline with R2 spill.
+   * Handles ORDER BY without LIMIT, large GROUP BY, etc. on edge.
+   */
+  private async executeWithPipeline(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
+    const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+    try {
+      const scan = new EdgeScanOperator(
+        this.env.DATA_BUCKET, this.wasmEngine, meta, query, this.footerCache,
+        (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
+        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+      );
+
+      const outputColumns = query.projections.length > 0
+        ? query.projections
+        : meta.columns.map(c => c.name);
+
+      const pipeline = buildEdgePipeline(scan, query, outputColumns, {
+        memoryBudgetBytes: EDGE_MEMORY_BUDGET,
+        spill,
+      });
+      const rows = await drainPipeline(pipeline);
+
+      return {
+        rows, rowCount: rows.length, columns: outputColumns,
+        bytesRead: scan.bytesRead, pagesSkipped: scan.pagesSkipped,
+        durationMs: Date.now() - t0,
+        r2ReadMs: scan.r2ReadMs, wasmExecMs: scan.wasmExecMs,
+        cacheHits: scan.cacheHits, cacheMisses: scan.cacheMisses,
+        edgeCacheHits: scan.edgeCacheHits, edgeCacheMisses: scan.edgeCacheMisses,
+        spillBytesWritten: spill.bytesWritten || undefined,
+        spillBytesRead: spill.bytesRead || undefined,
+      };
+    } finally {
+      await spill.cleanup();
+    }
+  }
+
+  /** Execute a join query on edge using operator pipeline with R2 spill. */
+  private async executeJoin(query: QueryDescriptor, t0: number): Promise<QueryResult> {
+    const join = query.join!;
+    const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+
+    try {
+      // Load left table meta
+      let leftMeta: TableMeta | undefined = this.footerCache.get(query.table);
+      if (!leftMeta) {
+        leftMeta = (await this.loadTableFromR2(query.table)) ?? undefined;
+        if (!leftMeta) throw new Error(`Table "${query.table}" not found`);
+      }
+
+      // Build left scan (no sort/limit/agg — those apply after join)
+      const leftScan = new EdgeScanOperator(
+        this.env.DATA_BUCKET, this.wasmEngine, leftMeta,
+        { ...query, sortColumn: undefined, limit: undefined, offset: undefined, aggregates: undefined, join: undefined },
+        this.footerCache,
+        (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
+        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+      );
+      let leftPipeline: Operator = leftScan;
+      if (query.filters.length > 0) {
+        leftPipeline = new FilterOperator(leftPipeline, query.filters);
+      }
+
+      // Load right table meta
+      let rightMeta: TableMeta | undefined = this.footerCache.get(join.right.table);
+      if (!rightMeta) {
+        rightMeta = (await this.loadTableFromR2(join.right.table)) ?? undefined;
+        if (!rightMeta) throw new Error(`Table "${join.right.table}" not found`);
+      }
+
+      // Build right scan
+      const rightScan = new EdgeScanOperator(
+        this.env.DATA_BUCKET, this.wasmEngine, rightMeta, join.right,
+        this.footerCache,
+        (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
+        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+      );
+      let rightPipeline: Operator = rightScan;
+      if (join.right.filters.length > 0) {
+        rightPipeline = new FilterOperator(rightPipeline, join.right.filters);
+      }
+
+      // Hash join: right is build side, left is probe side
+      let pipeline: Operator = new HashJoinOperator(
+        leftPipeline, rightPipeline, join.leftKey, join.rightKey,
+        join.type ?? "inner", EDGE_MEMORY_BUDGET, spill,
+      );
+
+      // Apply post-join operators
+      const outputColumns = query.projections.length > 0
+        ? query.projections
+        : [...new Set([
+            ...leftMeta.columns.map(c => c.name),
+            ...rightMeta.columns.map(c => c.name),
+          ])];
+
+      pipeline = buildEdgePipeline(pipeline, {
+        ...query, filters: [], join: undefined,
+      }, outputColumns, { memoryBudgetBytes: EDGE_MEMORY_BUDGET, spill });
+
+      // The buildEdgePipeline already applies sort/limit/agg/project — but we passed
+      // filters: [] since we already filtered above. We also cleared join to prevent recursion.
+      // However buildEdgePipeline re-applies FilterOperator if filters > 0, so clearing is correct.
+
+      const rows = await drainPipeline(pipeline);
+
+      return {
+        rows, rowCount: rows.length, columns: outputColumns,
+        bytesRead: leftScan.bytesRead + rightScan.bytesRead,
+        pagesSkipped: leftScan.pagesSkipped + rightScan.pagesSkipped,
+        durationMs: Date.now() - t0,
+        r2ReadMs: leftScan.r2ReadMs + rightScan.r2ReadMs,
+        wasmExecMs: leftScan.wasmExecMs + rightScan.wasmExecMs,
+        cacheHits: leftScan.cacheHits + rightScan.cacheHits,
+        cacheMisses: leftScan.cacheMisses + rightScan.cacheMisses,
+        edgeCacheHits: leftScan.edgeCacheHits + rightScan.edgeCacheHits,
+        edgeCacheMisses: leftScan.edgeCacheMisses + rightScan.edgeCacheMisses,
+        spillBytesWritten: spill.bytesWritten || undefined,
+        spillBytesRead: spill.bytesRead || undefined,
+      };
+    } finally {
+      await spill.cleanup();
+    }
   }
 
   /** Try IVF-PQ indexed vector search. Returns null if no index available. */
@@ -1230,7 +1702,18 @@ export class QueryDO extends DurableObject<Env> {
       return this.executeWithFragmentDOs(query, dataset, t0);
     }
 
-    // Small datasets: scan locally
+    // For unbounded queries, use per-fragment pipeline with spill
+    const hasLimit = query.limit !== undefined;
+    if (!hasLimit && !query.vectorSearch) {
+      // Build a pipeline per fragment using executeWithPipeline, then merge
+      const partials: QueryResult[] = [];
+      for (const meta of fragments) {
+        partials.push(await this.executeWithPipeline(query, meta, t0));
+      }
+      return mergeQueryResults(partials, query);
+    }
+
+    // Bounded queries: safe to materialize per-fragment
     const partials: QueryResult[] = [];
     for (const meta of fragments) {
       const hasPages = meta.columns.some(c => c.pages.length > 0);

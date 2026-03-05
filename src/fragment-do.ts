@@ -3,6 +3,11 @@ import type { QueryDescriptor } from "./client.js";
 import { canSkipPage, bigIntReplacer } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import { R2SpillBackend } from "./r2-spill.js";
+import {
+  type Operator, type RowBatch,
+  buildEdgePipeline, drainPipeline,
+} from "./operators.js";
 import wasmModule from "./wasm-module.js";
 
 const R2_TIMEOUT_MS = 10_000;
@@ -193,9 +198,50 @@ export class FragmentDO extends DurableObject<Env> {
       totalWasmExecMs += Date.now() - wasmStart;
     }
 
+    // If query needs cross-page orchestration (ORDER BY without LIMIT),
+    // run through operator pipeline with R2 spill using streaming batches
+    const needsPipeline = query.sortColumn && query.limit === undefined;
+    let finalRows = allRows;
+    let spillBytesWritten: number | undefined;
+    let spillBytesRead: number | undefined;
+
+    if (needsPipeline && allRows.length > 0) {
+      const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+      try {
+        // Yield allRows in bounded batches to avoid holding 2x copies
+        const BATCH_SIZE = 4096;
+        let batchIdx = 0;
+        const batchSource: Operator = {
+          async next(): Promise<RowBatch | null> {
+            if (batchIdx >= allRows.length) return null;
+            const end = Math.min(batchIdx + BATCH_SIZE, allRows.length);
+            const batch = allRows.slice(batchIdx, end);
+            batchIdx = end;
+            return batch;
+          },
+          async close() {},
+        };
+
+        const outputColumns = query.projections.length > 0
+          ? query.projections
+          : (fragments[0]?.meta.columns.map(c => c.name) ?? []);
+
+        const FRAG_MEMORY_BUDGET = 32 * 1024 * 1024;
+        const pipeline = buildEdgePipeline(batchSource, query, outputColumns, {
+          memoryBudgetBytes: FRAG_MEMORY_BUDGET,
+          spill,
+        });
+        finalRows = await drainPipeline(pipeline);
+        spillBytesWritten = spill.bytesWritten || undefined;
+        spillBytesRead = spill.bytesRead || undefined;
+      } finally {
+        await spill.cleanup();
+      }
+    }
+
     return {
-      rows: allRows,
-      rowCount: allRows.length,
+      rows: finalRows,
+      rowCount: finalRows.length,
       columns: query.projections.length > 0
         ? query.projections
         : (fragments[0]?.meta.columns.map(c => c.name) ?? []),
@@ -206,6 +252,8 @@ export class FragmentDO extends DurableObject<Env> {
       wasmExecMs: totalWasmExecMs,
       cacheHits: totalCacheHits,
       cacheMisses: totalCacheMisses,
+      spillBytesWritten,
+      spillBytesRead,
     };
   }
 

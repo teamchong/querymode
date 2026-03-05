@@ -147,6 +147,10 @@ export interface QueryResult<T extends Row = Row> {
   edgeCacheHits?: number;
   /** Number of caches.default misses (L2) */
   edgeCacheMisses?: number;
+  /** Total bytes written to spill storage (R2 or filesystem) during sort/join */
+  spillBytesWritten?: number;
+  /** Total bytes read back from spill storage during sort/join */
+  spillBytesRead?: number;
 }
 
 /** Schema field extracted from Lance manifest */
