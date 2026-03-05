@@ -398,8 +398,8 @@ export class MasterDO extends DurableObject<Env> {
     const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
     const payload = {
       table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
-      footerBytes: Array.from(new Uint8Array(footer.raw)),
-      fileSize: footer.fileSize.toString(), timestamp: Date.now(),
+      footerRaw: footer.raw,
+      fileSize: footer.fileSize, timestamp: Date.now(),
       ...(opts?.totalRows != null ? { totalRows: opts.totalRows } : {}),
       ...(opts?.r2Prefix != null ? { r2Prefix: opts.r2Prefix } : {}),
     };

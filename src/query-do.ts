@@ -540,8 +540,8 @@ export class QueryDO extends DurableObject<Env> {
   }
 
   private async executeInvalidation(body: {
-    table: string; r2Key: string; footerBytes: number[];
-    columns?: ColumnMeta[]; fileSize?: string; timestamp: number;
+    table: string; r2Key: string; footerRaw: ArrayBuffer;
+    columns?: ColumnMeta[]; fileSize: bigint; timestamp: number;
     format?: "lance" | "parquet" | "iceberg";
     totalRows?: number; r2Prefix?: string;
   }): Promise<void> {
@@ -565,8 +565,8 @@ export class QueryDO extends DurableObject<Env> {
       // Parquet invalidation — columns already parsed by Master
       columns = body.columns;
     } else {
-      // Lance invalidation — parse footer from raw bytes
-      const parsed = parseFooter(new Uint8Array(body.footerBytes).buffer);
+      // Lance invalidation — parse footer from raw ArrayBuffer (zero-copy via RPC)
+      const parsed = parseFooter(body.footerRaw);
       if (!parsed) throw new Error("Invalid footer");
       footer = parsed;
       columns = body.columns ?? await this.readColumnMeta(body.r2Key, parsed);
@@ -579,7 +579,7 @@ export class QueryDO extends DurableObject<Env> {
     const meta: TableMeta = {
       name: body.table, footer, format: fmt, columns,
       totalRows,
-      fileSize: body.fileSize ? BigInt(body.fileSize) : 0n,
+      fileSize: body.fileSize,
       r2Key: body.r2Key, updatedAt: body.timestamp,
     };
 
