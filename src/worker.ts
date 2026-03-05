@@ -1,115 +1,195 @@
-import type { Env } from "./types.js";
+import type { Env, QueryDORpc, MasterDORpc } from "./types.js";
+import { bigIntReplacer } from "./decode.js";
 import { MasterDO } from "./master-do.js";
 import { QueryDO } from "./query-do.js";
 import { FragmentDO } from "./fragment-do.js";
 
 export { MasterDO, QueryDO, FragmentDO };
 
+function json(body: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
+  return new Response(JSON.stringify(body, bigIntReplacer), {
+    status, headers: { "content-type": "application/json", ...extraHeaders },
+  });
+}
+
+/** Get the regional Query DO (typed as RPC). */
+function getQueryDo(request: Request, env: Env): { rpc: QueryDORpc & { setRegion(region: string): Promise<void> }; regionName: string } {
+  const cfRay = request.headers.get("cf-ray") ?? "";
+  const datacenter = cfRay.split("-").pop() ?? "default";
+  const regionName = `query-${datacenter}`;
+  const queryId = env.QUERY_DO.idFromName(regionName);
+  const rpc = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint }) as unknown as QueryDORpc & { setRegion(region: string): Promise<void> };
+  return { rpc, regionName };
+}
+
+/** Get the Master DO (typed as RPC). */
+function getMasterDo(env: Env): MasterDORpc {
+  const masterId = env.MASTER_DO.idFromName("master");
+  return env.MASTER_DO.get(masterId) as unknown as MasterDORpc;
+}
+
 /**
- * Cloudflare Worker entry point.
- * Routes incoming requests to the appropriate Durable Object.
+ * Cloudflare Worker entry point — the only HTTP layer.
+ * Parses HTTP requests, calls DO RPC methods, returns HTTP responses.
  *
  * Routes:
- *   POST /query          → Regional Query DO (nearest to caller)
- *   POST /write          → Master DO (single writer)
- *   POST /refresh        → Master DO (re-read footer from R2)
- *   GET  /tables         → Regional Query DO (list cached tables)
- *   GET  /meta?table=X   → Regional Query DO (table metadata)
- *   GET  /health         → Health check (optional ?deep=true for diagnostics)
+ *   POST /query          → queryDo.queryRpc(body)
+ *   POST /query/stream   → queryDo.streamRpc(body)
+ *   POST /query/count    → queryDo.countRpc(body)
+ *   POST /query/exists   → queryDo.existsRpc(body)
+ *   POST /query/first    → queryDo.firstRpc(body)
+ *   POST /query/explain  → queryDo.explainRpc(body)
+ *   GET  /tables         → queryDo.listTablesRpc()
+ *   GET  /meta?table=X   → queryDo.getMetaRpc(table)
+ *   GET  /health?deep    → queryDo.diagnosticsRpc()
+ *   POST /register-iceberg → queryDo.registerIcebergRpc(body)
+ *   POST /write          → master.writeRpc(body)
+ *   POST /refresh        → master.refreshRpc(body)
+ *   POST /register       → master.registerRpc(id, region)
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+    const headers = { "x-querymode-request-id": requestId };
 
-    // Health check
-    if (url.pathname === "/health") {
-      const base = {
-        status: "ok",
-        service: "querymode",
-        region: request.headers.get("cf-ray")?.split("-").pop() ?? "unknown",
-        timestamp: new Date().toISOString(),
-      };
+    try {
+      // Health check
+      if (url.pathname === "/health") {
+        const base = {
+          status: "ok",
+          service: "querymode",
+          region: request.headers.get("cf-ray")?.split("-").pop() ?? "unknown",
+          timestamp: new Date().toISOString(),
+        };
 
-      if (url.searchParams.get("deep") === "true") {
-        try {
-          const cfRay = request.headers.get("cf-ray") ?? "";
-          const datacenter = cfRay.split("-").pop() ?? "default";
-          const regionName = `query-${datacenter}`;
-          const queryId = env.QUERY_DO.idFromName(regionName);
-          const queryDo = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint });
-
-          const diagResp = await queryDo.fetch(new Request("http://internal/diagnostics"));
-          const diagnostics = await diagResp.json();
-          return new Response(JSON.stringify({ ...base, diagnostics }), {
-            headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
-          });
-        } catch (err) {
-          return new Response(JSON.stringify({ ...base, diagnostics: { error: String(err) } }), {
-            headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
-          });
+        if (url.searchParams.get("deep") === "true") {
+          try {
+            const { rpc, regionName } = getQueryDo(request, env);
+            rpc.setRegion(regionName).catch(() => {});
+            const diagnostics = await rpc.diagnosticsRpc();
+            return json({ ...base, diagnostics }, 200, headers);
+          } catch (err) {
+            return json({ ...base, diagnostics: { error: String(err) } }, 200, headers);
+          }
         }
+
+        return json(base, 200, headers);
       }
 
-      return new Response(JSON.stringify(base), {
-        headers: { "content-type": "application/json", "x-querymode-request-id": requestId },
+      // Direct R2 upload (local dev only)
+      if (url.pathname === "/upload" && request.method === "POST") {
+        const key = url.searchParams.get("key");
+        if (!key) return new Response("Missing ?key=", { status: 400 });
+        await env.DATA_BUCKET.put(key, request.body);
+        return json({ uploaded: key });
+      }
+
+      // ── Master DO routes ──────────────────────────────────────────────
+
+      if (url.pathname === "/write") {
+        const body = await request.json();
+        const result = await getMasterDo(env).writeRpc(body);
+        return json(result, 200, headers);
+      }
+
+      if (url.pathname === "/refresh") {
+        const body = await request.json();
+        const result = await getMasterDo(env).refreshRpc(body);
+        return json(result, 200, headers);
+      }
+
+      if (url.pathname === "/register") {
+        const { queryDoId, region } = (await request.json()) as { queryDoId: string; region: string };
+        const result = await getMasterDo(env).registerRpc(queryDoId, region);
+        return json(result, 200, headers);
+      }
+
+      // ── Query DO routes ───────────────────────────────────────────────
+
+      if (url.pathname === "/query") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const result = await rpc.queryRpc(body);
+        result.requestId = requestId;
+        return json(result, 200, headers);
+      }
+
+      if (url.pathname === "/query/stream") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const stream = await rpc.streamRpc(body);
+        return new Response(stream, {
+          headers: { "content-type": "application/x-querymode-columnar", ...headers },
+        });
+      }
+
+      if (url.pathname === "/query/count") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const count = await rpc.countRpc(body);
+        return json({ count }, 200, headers);
+      }
+
+      if (url.pathname === "/query/exists") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const exists = await rpc.existsRpc(body);
+        return json({ exists }, 200, headers);
+      }
+
+      if (url.pathname === "/query/first") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const row = await rpc.firstRpc(body);
+        return json({ row }, 200, headers);
+      }
+
+      if (url.pathname === "/query/explain") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const result = await rpc.explainRpc(body);
+        return json(result, 200, headers);
+      }
+
+      if (url.pathname === "/tables") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const result = await rpc.listTablesRpc();
+        return json(result, 200, headers);
+      }
+
+      if (url.pathname === "/meta") {
+        const table = url.searchParams.get("table");
+        if (!table) return json({ error: "Missing ?table= parameter" }, 400, headers);
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const meta = await rpc.getMetaRpc(table);
+        if (!meta) return json({ error: `Table "${table}" not found` }, 404, headers);
+        return json(meta, 200, headers);
+      }
+
+      if (url.pathname === "/register-iceberg") {
+        const { rpc, regionName } = getQueryDo(request, env);
+        rpc.setRegion(regionName).catch(() => {});
+        const body = await request.json();
+        const result = await rpc.registerIcebergRpc(body);
+        return json(result, 200, headers);
+      }
+
+      return new Response("Not found. Routes: /query, /write, /refresh, /tables, /meta, /health", {
+        status: 404,
       });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = msg.includes("CAS failed") ? 409 : msg.includes("not found") ? 404 : 500;
+      return json({ error: msg }, status, headers);
     }
-
-    // Direct R2 upload (local dev only — used by seed script to avoid miniflare list() inconsistency)
-    if (url.pathname === "/upload" && request.method === "POST") {
-      const key = url.searchParams.get("key");
-      if (!key) return new Response("Missing ?key=", { status: 400 });
-      await env.DATA_BUCKET.put(key, request.body);
-      return new Response(JSON.stringify({ uploaded: key }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    // Write operations go to the Master DO (single writer)
-    if (url.pathname === "/write" || url.pathname === "/refresh") {
-      const masterId = env.MASTER_DO.idFromName("master");
-      const master = env.MASTER_DO.get(masterId);
-      return master.fetch(request);
-    }
-
-    // Read operations go to the nearest regional Query DO
-    if (
-      url.pathname === "/query" ||
-      url.pathname === "/query/stream" ||
-      url.pathname === "/tables" ||
-      url.pathname === "/meta" ||
-      url.pathname === "/register-iceberg"
-    ) {
-      // Use a deterministic name per region so each region gets one Query DO.
-      // The CF-Ray header contains the datacenter code (e.g., "SJC", "NRT").
-      const cfRay = request.headers.get("cf-ray") ?? "";
-      const datacenter = cfRay.split("-").pop() ?? "default";
-      const regionName = `query-${datacenter}`;
-
-      const queryId = env.QUERY_DO.idFromName(regionName);
-      const queryDo = env.QUERY_DO.get(queryId, { locationHint: datacenter as DurableObjectLocationHint });
-
-      // Pass region name + request ID via headers
-      const reqWithRegion = new Request(request.url, request);
-      reqWithRegion.headers.set("x-querymode-region", regionName);
-      reqWithRegion.headers.set("x-querymode-request-id", requestId);
-
-      const resp = await queryDo.fetch(reqWithRegion);
-      const respWithId = new Response(resp.body, resp);
-      respWithId.headers.set("x-querymode-request-id", requestId);
-      return respWithId;
-    }
-
-    // Register a regional Query DO with the Master DO
-    if (url.pathname === "/register") {
-      const masterId = env.MASTER_DO.idFromName("master");
-      const master = env.MASTER_DO.get(masterId);
-      return master.fetch(request);
-    }
-
-    return new Response("Not found. Routes: /query, /write, /refresh, /tables, /meta, /health", {
-      status: 404,
-    });
   },
 };

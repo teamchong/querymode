@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { FragmentDO } from "./fragment-do.js";
-import { bigIntReplacer } from "./decode.js";
 import type { TableMeta, ColumnMeta } from "./types.js";
 
 // Mock WASM module import (not available in vitest)
@@ -40,41 +39,23 @@ const mockEnv = {
   QUERY_DO: null,
 } as any;
 
-function makeScanRequest(url: string, body: unknown): Request {
-  return new Request(url, {
-    method: "POST",
-    body: JSON.stringify(body, bigIntReplacer),
-    headers: { "content-type": "application/json" },
-  });
-}
-
 describe("FragmentDO", () => {
   it("is constructible", () => {
     const fdo = new FragmentDO(mockState, mockEnv);
     expect(fdo).toBeDefined();
   });
 
-  it("returns 404 for unknown path", async () => {
+  it("returns valid result for scanRpc with empty fragments", async () => {
     const fdo = new FragmentDO(mockState, mockEnv);
-    const res = await fdo.fetch(new Request("http://internal/unknown"));
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe("Not found");
-  });
-
-  it("returns valid JSON for /scan with empty fragments", async () => {
-    const fdo = new FragmentDO(mockState, mockEnv);
-    const req = makeScanRequest("http://internal/scan", {
-      fragments: [],
-      query: { table: "test", filters: [], projections: [] },
-    });
-    const res = await fdo.fetch(req);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.rows).toEqual([]);
-    expect(body.rowCount).toBe(0);
-    expect(body.bytesRead).toBe(0);
-    expect(body.pagesSkipped).toBe(0);
-    expect(typeof body.durationMs).toBe("number");
+    const result = await fdo.scanRpc(
+      [],
+      { table: "test", filters: [], projections: [] } as any,
+    );
+    expect(result.rows).toEqual([]);
+    expect(result.rowCount).toBe(0);
+    expect(result.bytesRead).toBe(0);
+    expect(result.pagesSkipped).toBe(0);
+    expect(typeof result.durationMs).toBe("number");
   });
 
   it("handles scan with mock fragments gracefully when R2 returns null", async () => {
@@ -101,17 +82,14 @@ describe("FragmentDO", () => {
     };
 
     const fdo = new FragmentDO(mockState, mockEnv);
-    const req = makeScanRequest("http://internal/scan", {
-      fragments: [{ r2Key: "users.lance", meta }],
-      query: { table: "users", filters: [], projections: [] },
-    });
-    const res = await fdo.fetch(req);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    // R2 returns null so no data is read, but response is still valid
-    expect(body.rows).toEqual([]);
-    expect(body.rowCount).toBe(0);
-    expect(body.bytesRead).toBe(0);
-    expect(body.columns).toEqual(["id"]);
+    const result = await fdo.scanRpc(
+      [{ r2Key: "users.lance", meta }],
+      { table: "users", filters: [], projections: [] } as any,
+    );
+    // R2 returns null so no data is read, but result is still valid
+    expect(result.rows).toEqual([]);
+    expect(result.rowCount).toBe(0);
+    expect(result.bytesRead).toBe(0);
+    expect(result.columns).toEqual(["id"]);
   });
 });

@@ -452,37 +452,6 @@ export class QueryDO extends DurableObject<Env> {
     if (oldestKey) this.datasetCache.delete(oldestKey);
   }
 
-  private json(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body, bigIntReplacer), {
-      status, headers: { "content-type": "application/json" },
-    });
-  }
-
-  async fetch(request: Request): Promise<Response> {
-    const region = request.headers.get("x-querymode-region");
-    if (region) {
-      const stored = await this.ctx.storage.get<string>("region");
-      if (!stored) await this.ctx.storage.put("region", region);
-    }
-    await this.ensureInitialized();
-    if (!this.registeredWithMaster) this.registerWithMaster();
-
-    switch (new URL(request.url).pathname) {
-      case "/invalidate":   return this.handleInvalidation(request);
-      case "/query":        return this.handleQuery(request);
-      case "/query/stream": return this.handleQueryStream(request);
-      case "/query/count":  return this.handleCount(request);
-      case "/query/exists": return this.handleExists(request);
-      case "/query/first":  return this.handleFirst(request);
-      case "/query/explain": return this.handleExplain(request);
-      case "/tables":       return this.handleListTables();
-      case "/meta":         return this.handleGetMeta(request);
-      case "/diagnostics":  return this.handleDiagnostics();
-      case "/register-iceberg": return this.handleRegisterIceberg(request);
-      default:              return new Response("Not found", { status: 404 });
-    }
-  }
-
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
@@ -497,23 +466,15 @@ export class QueryDO extends DurableObject<Env> {
   }
 
   private registerWithMaster(): void {
-    const master = this.env.MASTER_DO.get(this.env.MASTER_DO.idFromName("master"));
+    const master = this.env.MASTER_DO.get(this.env.MASTER_DO.idFromName("master")) as unknown as import("./types.js").MasterDORpc;
     this.ctx.storage.get<string>("region").then(async (region) => {
       try {
-        const resp = await master.fetch(new Request("http://internal/register", {
-          method: "POST",
-          body: JSON.stringify({ queryDoId: this.ctx.id.toString(), region: region ?? "unknown" }),
-          headers: { "content-type": "application/json" },
-        }));
+        const body = await master.registerRpc(this.ctx.id.toString(), region ?? "unknown");
         this.registeredWithMaster = true;
         // Master returns current table timestamps — refresh any stale entries
         // This closes the gap where broadcasts were missed during hibernation
-        const body = await resp.json() as {
-          registered: boolean; region: string;
-          tableVersions?: Record<string, { r2Key: string; updatedAt: number }>;
-        };
         if (body.tableVersions) {
-          await this.refreshStaleTables(body.tableVersions);
+          await this.refreshStaleTables(body.tableVersions as Record<string, { r2Key: string; updatedAt: number }>);
         }
       } catch (err) {
         this.log("warn", "master_register_failed", {
@@ -578,14 +539,12 @@ export class QueryDO extends DurableObject<Env> {
     }
   }
 
-  private async handleInvalidation(request: Request): Promise<Response> {
-    const body = (await request.json()) as {
-      table: string; r2Key: string; footerBytes: number[];
-      columns?: ColumnMeta[]; fileSize?: string; timestamp: number;
-      format?: "lance" | "parquet" | "iceberg";
-      totalRows?: number; r2Prefix?: string;
-    };
-
+  private async executeInvalidation(body: {
+    table: string; r2Key: string; footerBytes: number[];
+    columns?: ColumnMeta[]; fileSize?: string; timestamp: number;
+    format?: "lance" | "parquet" | "iceberg";
+    totalRows?: number; r2Prefix?: string;
+  }): Promise<void> {
     // If broadcast includes r2Prefix, this is a dataset — lazy-load full dataset from R2
     if (body.r2Prefix) {
       this.datasetCache.delete(body.table);
@@ -594,9 +553,7 @@ export class QueryDO extends DurableObject<Env> {
       this.wasmEngine.cacheClear();
       // Trigger lazy-load of the full dataset (reads manifest + all fragments)
       const dataset = await this.loadDatasetFromR2(body.table);
-      if (dataset) {
-        return this.json({ updated: true, table: body.table, fragments: dataset.fragmentMetas.size });
-      }
+      if (dataset) return;
       // Fall through to single-fragment cache if dataset load fails
     }
 
@@ -610,7 +567,7 @@ export class QueryDO extends DurableObject<Env> {
     } else {
       // Lance invalidation — parse footer from raw bytes
       const parsed = parseFooter(new Uint8Array(body.footerBytes).buffer);
-      if (!parsed) return this.json({ error: "Invalid footer" }, 400);
+      if (!parsed) throw new Error("Invalid footer");
       footer = parsed;
       columns = body.columns ?? await this.readColumnMeta(body.r2Key, parsed);
     }
@@ -631,37 +588,6 @@ export class QueryDO extends DurableObject<Env> {
     this.wasmEngine.clearTable(body.table);
     this.wasmEngine.cacheClear();
     await this.ctx.storage.put(`table:${body.table}`, meta);
-    return this.json({ updated: true, table: body.table });
-  }
-
-  private async handleQuery(request: Request): Promise<Response> {
-    const requestId = request.headers.get("x-querymode-request-id") ?? crypto.randomUUID();
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try {
-      query = this.parseQuery(body);
-    } catch (err) {
-      return this.json({ error: this.errMsg(err) }, 400);
-    }
-    try {
-      const result = await this.executeQuery(query);
-      result.requestId = requestId;
-      this.log("info", "query_complete", {
-        requestId, table: query.table, rowCount: result.rowCount,
-        bytesRead: result.bytesRead, durationMs: result.durationMs,
-        r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
-        cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
-      });
-      return this.json(result);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.log("error", "query_error", {
-        requestId, table: query.table, error: msg, stack: err instanceof Error ? err.stack : undefined,
-        filterCount: query.filters.length,
-        projectionCount: query.projections.length,
-      });
-      return this.json({ error: msg }, 500);
-    }
   }
 
   private queryKey(query: QueryDescriptor): string {
@@ -699,57 +625,8 @@ export class QueryDO extends DurableObject<Env> {
     return (result.rows[0]?.["count_*"] as number) ?? 0;
   }
 
-  private errMsg(err: unknown): string {
-    return err instanceof Error ? err.message : String(err);
-  }
 
-  private async handleCount(request: Request): Promise<Response> {
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
-    try {
-      return this.json({ count: await this.executeCount(query) });
-    } catch (err) {
-      return this.json({ error: this.errMsg(err) }, 500);
-    }
-  }
-
-  private async handleExists(request: Request): Promise<Response> {
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
-    query.limit = 1;
-    try {
-      return this.json({ exists: (await this.executeQuery(query)).rowCount > 0 });
-    } catch (err) {
-      return this.json({ error: this.errMsg(err) }, 500);
-    }
-  }
-
-  private async handleFirst(request: Request): Promise<Response> {
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
-    query.limit = 1;
-    try {
-      return this.json({ row: (await this.executeQuery(query)).rows[0] ?? null });
-    } catch (err) {
-      return this.json({ error: this.errMsg(err) }, 500);
-    }
-  }
-
-  private async handleExplain(request: Request): Promise<Response> {
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
-    try {
-      return this.json(await this.executeExplain(query));
-    } catch (err) {
-      return this.json({ error: this.errMsg(err) }, 500);
-    }
-  }
-
-  /** Core explain logic shared by HTTP handler and RPC. */
+  /** Core explain logic. */
   private async executeExplain(query: QueryDescriptor): Promise<ExplainResult> {
     let meta: TableMeta | undefined = this.footerCache.get(query.table);
     const metaCached = !!meta;
@@ -1392,46 +1269,6 @@ export class QueryDO extends DurableObject<Env> {
     }
   }
 
-  private handleListTables(): Response {
-    const tables = [...this.footerCache.entries()].map(([name, entry]) => ({
-      name, columns: entry.value.columns.map(c => c.name), totalRows: entry.value.totalRows,
-      updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
-    }));
-    return this.json({ tables });
-  }
-
-  private handleGetMeta(request: Request): Response {
-    const table = new URL(request.url).searchParams.get("table");
-    if (!table) return this.json({ error: "Missing ?table= parameter" }, 400);
-    const meta = this.footerCache.get(table);
-    if (!meta) return this.json({ error: `Table "${table}" not found` }, 404);
-    return this.json(meta);
-  }
-
-  private handleDiagnostics(): Response {
-    const cache = this.wasmEngine.cacheStats();
-    return this.json({
-      tableCount: this.footerCache.size,
-      datasetCount: this.datasetCache.size,
-      tables: [...this.footerCache.entries()].map(([name, entry]) => ({
-        name, totalRows: entry.value.totalRows, columns: entry.value.columns.length,
-        updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
-        isVip: entry.accessCount >= VIP_THRESHOLD,
-      })),
-      footerCacheStats: this.footerCache.stats(),
-      cache: {
-        entries: cache.count,
-        bytesUsed: cache.bytes,
-        maxBytes: cache.maxBytes,
-        utilizationPct: cache.maxBytes > 0 ? Math.round((cache.bytes / cache.maxBytes) * 100) : 0,
-      },
-      wasm: {
-        memoryBytes: this.wasmEngine.exports.memory.buffer.byteLength,
-        memoryMB: Math.round(this.wasmEngine.exports.memory.buffer.byteLength / (1024 * 1024)),
-      },
-      activeFragmentSlots: this.activeFragmentSlots.size,
-    });
-  }
 
   private async readColumnMeta(r2Key: string, footer: Footer): Promise<ColumnMeta[]> {
     const len = Number(footer.columnMetaOffsetsStart) - Number(footer.columnMetaStart);
@@ -1627,16 +1464,6 @@ export class QueryDO extends DurableObject<Env> {
     return dataset;
   }
 
-  /** Register an Iceberg table by explicit metadata path (bypasses R2 list()). */
-  private async handleRegisterIceberg(request: Request): Promise<Response> {
-    const { table, metadataKey } = (await request.json()) as { table: string; metadataKey: string };
-    if (!table || !metadataKey) return this.json({ error: "Missing table or metadataKey" }, 400);
-
-    const result = await this.loadIcebergByKey(table, metadataKey);
-    if (!result) return this.json({ error: "Failed to load Iceberg metadata" }, 500);
-    return this.json({ registered: true, table, totalRows: result.totalRows, files: result.parquetFiles.length });
-  }
-
   /** Load an Iceberg table from an explicit metadata.json key (no R2 list() needed). */
   private async loadIcebergByKey(tableName: string, metadataKey: string): Promise<IcebergDatasetMeta | null> {
     const metaObj = await this.env.DATA_BUCKET.get(metadataKey);
@@ -1806,39 +1633,7 @@ export class QueryDO extends DurableObject<Env> {
     }
   }
 
-  /** Stream query results as columnar binary batches. */
-  private async handleQueryStream(request: Request): Promise<Response> {
-    const body = await request.json();
-    let query: QueryDescriptor;
-    try { query = this.parseQuery(body); } catch (err) { return this.json({ error: this.errMsg(err) }, 400); }
-    let result: QueryResult;
-    try { result = await this.executeQuery(query); } catch (err) { return this.json({ error: this.errMsg(err) }, 500); }
-
-    // Encode as columnar binary with length-prefixed batches for streaming
-    const STREAM_BATCH_SIZE = 4096;
-    const rows = result.rows;
-    let idx = 0;
-    const stream = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (idx >= rows.length) { controller.close(); return; }
-        const end = Math.min(idx + STREAM_BATCH_SIZE, rows.length);
-        const batch = rows.slice(idx, end);
-        idx = end;
-        const buf = encodeColumnarRun(batch);
-        // Length-prefix each batch: 4 bytes little-endian uint32 + columnar payload
-        const frame = new Uint8Array(4 + buf.byteLength);
-        new DataView(frame.buffer).setUint32(0, buf.byteLength, true);
-        frame.set(new Uint8Array(buf), 4);
-        controller.enqueue(frame);
-      },
-    });
-
-    return new Response(stream, {
-      headers: { "content-type": "application/x-querymode-columnar" },
-    });
-  }
-
-  // ── RPC methods (zero-serialization calls from RemoteExecutor) ────────
+  // ── RPC methods ────────────────────────────────────────────────────────
 
   /** Common RPC preamble — ensure WASM + footer cache is warm. */
   private async ensureReady(): Promise<void> {
@@ -1895,6 +1690,67 @@ export class QueryDO extends DurableObject<Env> {
         controller.enqueue(frame);
       },
     });
+  }
+
+  async invalidateRpc(payload: unknown): Promise<void> {
+    await this.ensureReady();
+    await this.executeInvalidation(payload as Parameters<typeof this.executeInvalidation>[0]);
+  }
+
+  async listTablesRpc(): Promise<{ tables: unknown[] }> {
+    await this.ensureReady();
+    const tables = [...this.footerCache.entries()].map(([name, entry]) => ({
+      name, columns: entry.value.columns.map(c => c.name), totalRows: entry.value.totalRows,
+      updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
+    }));
+    return { tables };
+  }
+
+  async getMetaRpc(table: string): Promise<TableMeta | null> {
+    await this.ensureReady();
+    return this.footerCache.get(table) ?? null;
+  }
+
+  async diagnosticsRpc(): Promise<Record<string, unknown>> {
+    await this.ensureReady();
+    const cache = this.wasmEngine.cacheStats();
+    return {
+      tableCount: this.footerCache.size,
+      datasetCount: this.datasetCache.size,
+      tables: [...this.footerCache.entries()].map(([name, entry]) => ({
+        name, totalRows: entry.value.totalRows, columns: entry.value.columns.length,
+        updatedAt: entry.value.updatedAt, accessCount: entry.accessCount,
+        isVip: entry.accessCount >= VIP_THRESHOLD,
+      })),
+      footerCacheStats: this.footerCache.stats(),
+      cache: {
+        entries: cache.count,
+        bytesUsed: cache.bytes,
+        maxBytes: cache.maxBytes,
+        utilizationPct: cache.maxBytes > 0 ? Math.round((cache.bytes / cache.maxBytes) * 100) : 0,
+      },
+      wasm: {
+        memoryBytes: this.wasmEngine.exports.memory.buffer.byteLength,
+        memoryMB: Math.round(this.wasmEngine.exports.memory.buffer.byteLength / (1024 * 1024)),
+      },
+      activeFragmentSlots: this.activeFragmentSlots.size,
+    };
+  }
+
+  async registerIcebergRpc(body: unknown): Promise<unknown> {
+    await this.ensureReady();
+    const { table, metadataKey } = body as { table: string; metadataKey: string };
+    if (!table || !metadataKey) throw new Error("Missing table or metadataKey");
+
+    const result = await this.loadIcebergByKey(table, metadataKey);
+    if (!result) throw new Error("Failed to load Iceberg metadata");
+    return { registered: true, table, totalRows: result.totalRows, files: result.parquetFiles.length };
+  }
+
+  /** Store the region name when called via Worker. */
+  async setRegion(region: string): Promise<void> {
+    const stored = await this.ctx.storage.get<string>("region");
+    if (!stored) await this.ctx.storage.put("region", region);
   }
 
   // ── Edge page cache (caches.default — L2, per-datacenter, shared) ────

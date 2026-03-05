@@ -2,7 +2,7 @@ import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult } fr
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
-import { bigIntReplacer } from "./decode.js";
+import type { QueryDORpc } from "./types.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import wasmModule from "./wasm-module.js";
 
@@ -15,25 +15,9 @@ export class MasterDO extends DurableObject<Env> {
     super(ctx, env);
   }
 
-  private json(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body), {
-      status, headers: { "content-type": "application/json" },
-    });
-  }
+  // ── RPC methods ────────────────────────────────────────────────────────
 
-  async fetch(request: Request): Promise<Response> {
-    switch (new URL(request.url).pathname) {
-      case "/register": return this.handleRegister(request);
-      case "/write":    return this.handleWrite(request);
-      case "/append":   return this.handleAppend(request);
-      case "/refresh":  return this.handleRefresh(request);
-      case "/tables":   return this.handleListTables();
-      default:          return new Response("Not found", { status: 404 });
-    }
-  }
-
-  private async handleRegister(request: Request): Promise<Response> {
-    const { queryDoId, region } = (await request.json()) as { queryDoId: string; region: string };
+  async registerRpc(queryDoId: string, region: string): Promise<{ registered: boolean; region: string; tableVersions?: Record<string, { r2Key: string; updatedAt: number }> }> {
     const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
     regions[region] = queryDoId;
     await this.ctx.storage.put("regions", regions);
@@ -45,22 +29,22 @@ export class MasterDO extends DurableObject<Env> {
       const name = key.replace("table:", "");
       tableVersions[name] = { r2Key: meta.r2Key ?? name, updatedAt: meta.updatedAt ?? 0 };
     }
-    return this.json({ registered: true, region, tableVersions });
+    return { registered: true, region, tableVersions };
   }
 
-  private async handleWrite(request: Request): Promise<Response> {
-    const { r2Key } = (await request.json()) as { r2Key: string };
+  async writeRpc(body: unknown): Promise<unknown> {
+    const { r2Key } = body as { r2Key: string };
     if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
-      return this.json({ error: "Invalid r2Key" }, 400);
+      throw new Error("Invalid r2Key");
     }
 
     // Check if this is a dataset directory (ends with / or .lance/)
     if (r2Key.endsWith("/") || r2Key.endsWith(".lance/")) {
-      return this.handleDatasetWrite(r2Key);
+      return this.executeDatasetWrite(r2Key);
     }
 
     const result = await this.readFooterAndColumns(r2Key);
-    if (!result) return this.json({ error: "Failed to read footer" }, 500);
+    if (!result) throw new Error("Failed to read footer");
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     const totalRows = result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
@@ -70,11 +54,11 @@ export class MasterDO extends DurableObject<Env> {
     };
     await this.ctx.storage.put(`table:${tableName}`, meta);
     await this.broadcast(tableName, r2Key, result, { totalRows });
-    return this.json({ success: true, table: tableName });
+    return { success: true, table: tableName };
   }
 
-  /** Handle write notification for a multi-fragment dataset directory. */
-  private async handleDatasetWrite(r2Prefix: string): Promise<Response> {
+  /** Write notification for a multi-fragment dataset directory. */
+  private async executeDatasetWrite(r2Prefix: string): Promise<unknown> {
     const tableName = r2Prefix.replace(/\/$/, "").replace(/\.lance$/, "").split("/").pop() ?? r2Prefix;
 
     // Find latest manifest
@@ -82,14 +66,14 @@ export class MasterDO extends DurableObject<Env> {
     const manifestKeys = listed.objects
       .filter(o => o.key.endsWith(".manifest"))
       .sort((a, b) => a.key.localeCompare(b.key));
-    if (manifestKeys.length === 0) return this.json({ error: "No manifests found" }, 404);
+    if (manifestKeys.length === 0) throw new Error("No manifests found");
 
     const latestKey = manifestKeys[manifestKeys.length - 1].key;
     const manifestObj = await this.env.DATA_BUCKET.get(latestKey);
-    if (!manifestObj) return this.json({ error: "Failed to read manifest" }, 500);
+    if (!manifestObj) throw new Error("Failed to read manifest");
 
     const manifest = parseManifest(await manifestObj.arrayBuffer());
-    if (!manifest) return this.json({ error: "Failed to parse manifest" }, 500);
+    if (!manifest) throw new Error("Failed to parse manifest");
 
     // Read first fragment's footer to broadcast (Query DOs will discover the rest)
     if (manifest.fragments.length > 0) {
@@ -110,7 +94,7 @@ export class MasterDO extends DurableObject<Env> {
       name: tableName, r2Prefix, manifest, totalRows: manifest.totalRows, updatedAt: Date.now(),
     });
 
-    return this.json({ success: true, table: tableName, fragments: manifest.fragments.length, totalRows: manifest.totalRows });
+    return { success: true, table: tableName, fragments: manifest.fragments.length, totalRows: manifest.totalRows };
   }
 
   private async getWasm(): Promise<WasmEngine> {
@@ -119,29 +103,7 @@ export class MasterDO extends DurableObject<Env> {
     return this.wasmEngine;
   }
 
-  /** Append rows to a table using CAS coordination.
-   *  1. Build Lance fragment from row data via WASM
-   *  2. PUT data file to R2 (unique name, no conflict)
-   *  3. CAS loop: read _latest → build new manifest → PUT with ETag match
-   */
-  private async handleAppend(request: Request): Promise<Response> {
-    const { table, rows } = (await request.json()) as {
-      table: string;
-      rows: Record<string, unknown>[];
-    };
-
-    if (!rows?.length) return this.json({ error: "No rows provided" }, 400);
-    try {
-      const result = await this.executeAppend(table, rows);
-      return this.json(result);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = msg.includes("CAS failed") ? 409 : 400;
-      return this.json({ error: msg }, status);
-    }
-  }
-
-  /** Core append logic shared by HTTP fetch handler and RPC. */
+  /** Core append logic. */
   private async executeAppend(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
     if (!rows?.length) throw new Error("No rows provided");
 
@@ -355,22 +317,22 @@ export class MasterDO extends DurableObject<Env> {
     return new Uint8Array(bytes);
   }
 
-  private async handleRefresh(request: Request): Promise<Response> {
-    const { r2Key } = (await request.json()) as { r2Key: string };
+  async refreshRpc(body: unknown): Promise<unknown> {
+    const { r2Key } = body as { r2Key: string };
     if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
-      return this.json({ error: "Invalid r2Key" }, 400);
+      throw new Error("Invalid r2Key");
     }
     const result = await this.readFooterAndColumns(r2Key);
-    if (!result) return this.json({ error: "Failed to read footer" }, 500);
+    if (!result) throw new Error("Failed to read footer");
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     await this.broadcast(tableName, r2Key, result);
-    return this.json({ refreshed: true, table: tableName });
+    return { refreshed: true, table: tableName };
   }
 
-  private async handleListTables(): Promise<Response> {
+  async listTablesRpc(): Promise<{ tables: string[] }> {
     const tables = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
-    return this.json({ tables: [...tables.keys()].map(k => k.replace("table:", "")) });
+    return { tables: [...tables.keys()].map(k => k.replace("table:", "")) };
   }
 
   /** Read footer + column metadata from R2 (2 range reads, done once by Master). */
@@ -427,28 +389,26 @@ export class MasterDO extends DurableObject<Env> {
     return { parsed, raw, fileSize, columns, format: "lance" };
   }
 
-  /** Broadcast invalidation with pre-parsed columns to all Query DOs. */
+  /** Broadcast invalidation with pre-parsed columns to all Query DOs via RPC. */
   private async broadcast(
     table: string, r2Key: string,
     footer: { raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[]; format?: "lance" | "parquet" },
     opts?: { totalRows?: number; r2Prefix?: string },
   ): Promise<void> {
     const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
-    const payload = JSON.stringify({
+    const payload = {
       table, r2Key, columns: footer.columns, format: footer.format ?? "lance",
       footerBytes: Array.from(new Uint8Array(footer.raw)),
       fileSize: footer.fileSize.toString(), timestamp: Date.now(),
       ...(opts?.totalRows != null ? { totalRows: opts.totalRows } : {}),
       ...(opts?.r2Prefix != null ? { r2Prefix: opts.r2Prefix } : {}),
-    }, bigIntReplacer);
+    };
 
     const deadRegions: string[] = [];
     await Promise.allSettled(Object.entries(regions).map(async ([region, doId]) => {
       try {
-        const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId));
-        await queryDo.fetch(new Request("http://internal/invalidate", {
-          method: "POST", body: payload, headers: { "content-type": "application/json" },
-        }));
+        const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId)) as unknown as QueryDORpc;
+        await queryDo.invalidateRpc(payload);
         this.broadcastFailures.delete(region);
       } catch {
         const count = (this.broadcastFailures.get(region) ?? 0) + 1;

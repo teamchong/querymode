@@ -1,11 +1,10 @@
 /**
  * Query DO integration tests — real WASM but mocked R2.
- * Verifies full query flow: HTTP request → column registration → SQL → result rows.
+ * Verifies full query flow: RPC call → column registration → SQL → result rows.
  * Skips gracefully if WASM binary not found.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import type { TableMeta, ColumnMeta, QueryResult, Row } from "./types.js";
-import { bigIntReplacer } from "./decode.js";
 
 let hasWasm = false;
 let wasmModule: WebAssembly.Module;
@@ -144,12 +143,12 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       },
     } as any;
 
-    const mockMasterDo = {
-      fetch: async () => new Response(JSON.stringify({ registered: true, region: "test" })),
+    const mockMasterRpc = {
+      registerRpc: async () => ({ registered: true, region: "test" }),
     };
     const mockMasterNs = {
       idFromName: () => "master-id",
-      get: () => mockMasterDo,
+      get: () => mockMasterRpc,
     };
 
     const mockEnv = {
@@ -161,30 +160,22 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
 
     const qdo = new QueryDO(mockState, mockEnv);
 
-    // Issue a query request
-    const queryReq = new Request("http://internal/query", {
-      method: "POST",
-      body: JSON.stringify({
-        table: tableName,
-        filters: [],
-        projections: [],
-      }),
-      headers: { "content-type": "application/json" },
+    // Issue a query via RPC
+    const result = await qdo.queryRpc({
+      table: tableName,
+      filters: [],
+      projections: [],
     });
 
-    const response = await qdo.fetch(queryReq);
-    expect(response.status).toBe(200);
-
-    const result = (await response.json()) as QueryResult;
     expect(result.rowCount).toBe(3);
     expect(result.rows.length).toBe(3);
-    // Verify actual data values
-    expect(result.rows[0].id).toBe("1"); // bigint serialized as string via bigIntReplacer
+    // Verify actual data values (RPC returns native types, not JSON-serialized)
+    expect(result.rows[0].id).toBe(1n);
     expect(Number(result.rows[0].value)).toBeCloseTo(10.5);
     expect(Number(result.rows[2].value)).toBeCloseTo(30.5);
   });
 
-  it("returns 404 for unknown path", async () => {
+  it("handles /tables via listTablesRpc", async () => {
     const { QueryDO } = await import("./query-do.js");
 
     const mockState = {
@@ -192,45 +183,19 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       storage: { get: async () => null, put: async () => {}, list: async () => new Map() },
     } as any;
 
-    const mockMasterDo = {
-      fetch: async () => new Response(JSON.stringify({ registered: true })),
+    const mockMasterRpc = {
+      registerRpc: async () => ({ registered: true }),
     };
 
     const mockEnv = {
       DATA_BUCKET: { get: async () => null, head: async () => null, list: async () => ({ objects: [] }) },
-      MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
+      MASTER_DO: { idFromName: () => "id", get: () => mockMasterRpc },
       QUERY_DO: { idFromString: () => "id", get: () => ({}) },
       FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
     } as any;
 
     const qdo = new QueryDO(mockState, mockEnv);
-    const res = await qdo.fetch(new Request("http://internal/unknown"));
-    expect(res.status).toBe(404);
-  });
-
-  it("handles /tables endpoint", async () => {
-    const { QueryDO } = await import("./query-do.js");
-
-    const mockState = {
-      id: { toString: () => "test-do" },
-      storage: { get: async () => null, put: async () => {}, list: async () => new Map() },
-    } as any;
-
-    const mockMasterDo = {
-      fetch: async () => new Response(JSON.stringify({ registered: true })),
-    };
-
-    const mockEnv = {
-      DATA_BUCKET: { get: async () => null, head: async () => null, list: async () => ({ objects: [] }) },
-      MASTER_DO: { idFromName: () => "id", get: () => mockMasterDo },
-      QUERY_DO: { idFromString: () => "id", get: () => ({}) },
-      FRAGMENT_DO: { idFromName: () => "id", get: () => ({}) },
-    } as any;
-
-    const qdo = new QueryDO(mockState, mockEnv);
-    const res = await qdo.fetch(new Request("http://internal/tables"));
-    expect(res.status).toBe(200);
-    const body = await res.json() as { tables: unknown[] };
-    expect(body.tables).toEqual([]);
+    const result = await qdo.listTablesRpc();
+    expect(result.tables).toEqual([]);
   });
 });

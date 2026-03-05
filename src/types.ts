@@ -246,7 +246,7 @@ export interface Env {
   FRAGMENT_DO: DurableObjectNamespace;
 }
 
-/** RPC interface exposed by QueryDO for zero-serialization calls from RemoteExecutor */
+/** RPC interface exposed by QueryDO for zero-serialization calls */
 export interface QueryDORpc {
   queryRpc(descriptor: unknown): Promise<QueryResult>;
   countRpc(descriptor: unknown): Promise<number>;
@@ -254,9 +254,18 @@ export interface QueryDORpc {
   firstRpc(descriptor: unknown): Promise<Row | null>;
   explainRpc(descriptor: unknown): Promise<ExplainResult>;
   streamRpc(descriptor: unknown): Promise<ReadableStream<Uint8Array>>;
+  invalidateRpc(payload: unknown): Promise<void>;
+  listTablesRpc(): Promise<{ tables: unknown[] }>;
+  getMetaRpc(table: string): Promise<TableMeta | null>;
+  diagnosticsRpc(): Promise<Record<string, unknown>>;
+  registerIcebergRpc(body: unknown): Promise<unknown>;
 }
 
-/** RPC interface exposed by MasterDO for zero-serialization append */
+/** RPC interface exposed by MasterDO for zero-serialization calls */
 export interface MasterDORpc {
   appendRpc(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
+  registerRpc(queryDoId: string, region: string): Promise<{ registered: boolean; tableVersions?: Record<string, unknown> }>;
+  writeRpc(body: unknown): Promise<unknown>;
+  refreshRpc(body: unknown): Promise<unknown>;
+  listTablesRpc(): Promise<{ tables: string[] }>;
 }

@@ -1,6 +1,6 @@
 import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
-import { canSkipPage, bigIntReplacer } from "./decode.js";
+import { canSkipPage } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend } from "./r2-spill.js";
@@ -39,14 +39,6 @@ export class FragmentDO extends DurableObject<Env> {
     );
   }
 
-  async fetch(request: Request): Promise<Response> {
-    await this.ensureInitialized();
-
-    const url = new URL(request.url);
-    if (url.pathname === "/scan") return this.handleScan(request);
-    return new Response("Not found", { status: 404 });
-  }
-
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
@@ -58,27 +50,7 @@ export class FragmentDO extends DurableObject<Env> {
     this.wasmEngine = await instantiateWasm(wasmModule);
   }
 
-  private json(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body, bigIntReplacer), {
-      status, headers: { "content-type": "application/json" },
-    });
-  }
-
-  private async handleScan(request: Request): Promise<Response> {
-    const { fragments, query } = (await request.json()) as ScanRequest;
-    const result = await this.executeScan(fragments, query);
-
-    this.log("info", "scan_complete", {
-      fragmentCount: fragments.length, rowCount: result.rowCount,
-      bytesRead: result.bytesRead, durationMs: result.durationMs,
-      r2ReadMs: result.r2ReadMs, wasmExecMs: result.wasmExecMs,
-      cacheHits: result.cacheHits, cacheMisses: result.cacheMisses,
-    });
-
-    return this.json(result);
-  }
-
-  /** Core scan logic shared by HTTP fetch handler and RPC. */
+  /** Core scan logic used by RPC. */
   private async executeScan(fragments: ScanRequest["fragments"], query: QueryDescriptor): Promise<QueryResult> {
     const t0 = Date.now();
     let totalBytesRead = 0;
