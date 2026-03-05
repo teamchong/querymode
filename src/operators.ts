@@ -1174,17 +1174,21 @@ export class HashJoinOperator implements Operator {
       const inMemoryRows: Row[] = [...firstBatch];
       this.buildSizeBytes = batchSizeBytes;
       let exceeds = false;
+      let exceededBatchTail: Row[] = [];
 
       while (true) {
         const batch = await this.right.next();
         if (!batch) break;
-        for (const row of batch) {
+        for (let ri = 0; ri < batch.length; ri++) {
+          const row = batch[ri];
           const rowSize = estimateRowSize(row);
           this.buildSizeBytes += rowSize;
           inMemoryRows.push(row);
 
           if (this.spill && this.buildSizeBytes > this.memoryBudget) {
             exceeds = true;
+            // Capture remaining rows in this batch that we haven't visited
+            exceededBatchTail = batch.slice(ri + 1);
             break;
           }
         }
@@ -1209,7 +1213,11 @@ export class HashJoinOperator implements Operator {
       await this.partitionRightRows(inMemoryRows);
       inMemoryRows.length = 0;
 
-      // Continue consuming remaining right-side rows
+      // Partition the remaining rows from the batch that triggered the exceed
+      if (exceededBatchTail.length > 0) {
+        await this.partitionRightRows(exceededBatchTail);
+      }
+      // Continue consuming remaining right-side batches
       await this.consumeRemainingRight();
       return;
     }

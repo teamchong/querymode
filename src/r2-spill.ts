@@ -219,19 +219,17 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
 
     switch (dtype) {
       case DTYPE_F64: {
-        const arr = new Float64Array(buf, offset, rowCount);
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          arr[ri] = typeof val === "number" ? val : 0;
+          view.setFloat64(offset + ri * 8, typeof val === "number" ? val : 0, true);
         }
         offset += rowCount * 8;
         break;
       }
       case DTYPE_I64: {
-        const arr = new BigInt64Array(buf, offset, rowCount);
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          arr[ri] = typeof val === "bigint" ? val : 0n;
+          view.setBigInt64(offset + ri * 8, typeof val === "bigint" ? val : 0n, true);
         }
         offset += rowCount * 8;
         break;
@@ -257,14 +255,13 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
 
         view.setUint32(offset, totalLen, true); offset += 4;
 
-        // Offsets array
-        const offsets = new Uint32Array(buf, offset, rowCount + 1);
+        // Offsets array (use DataView to avoid alignment issues)
         let strOff = 0;
         for (let ri = 0; ri < rowCount; ri++) {
-          offsets[ri] = strOff;
+          view.setUint32(offset + ri * 4, strOff, true);
           strOff += encodedStrs[ri].length;
         }
-        offsets[rowCount] = strOff;
+        view.setUint32(offset + rowCount * 4, strOff, true);
         offset += (rowCount + 1) * 4;
 
         // String data
