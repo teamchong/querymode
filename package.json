@@ -50,6 +50,13 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "duckdb"
-    ]
+    ],
+    "overrides": {
+      "tar": ">=7.5.10",
+      "minimatch@<3.1.4": "3.1.4",
+      "minimatch@>=5.0.0 <5.1.8": "5.1.8",
+      "rollup@>=4.0.0 <4.59.0": "4.59.0",
+      "@tootallnate/once": ">=3.0.1"
+    }
   }
 }
