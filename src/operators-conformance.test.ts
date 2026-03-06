@@ -10,7 +10,7 @@ import duckdb from "duckdb";
 import type { Row } from "./types.js";
 import type { AggregateOp, WindowSpec } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
-import { Miniflare } from "miniflare";
+import { getPlatformProxy } from "wrangler";
 import { R2SpillBackend } from "./r2-spill.js";
 import {
   type Operator,
@@ -35,24 +35,20 @@ import {
 
 let db: duckdb.Database;
 let con: duckdb.Connection;
-let mf: Miniflare;
+let platform: Awaited<ReturnType<typeof getPlatformProxy>>;
 let r2Bucket: R2Bucket;
 
 beforeAll(async () => {
   db = new duckdb.Database(":memory:");
   con = new duckdb.Connection(db);
-  mf = new Miniflare({
-    modules: true,
-    script: 'export default { fetch() { return new Response("ok") } }',
-    r2Buckets: ["TEST_BUCKET"],
-  });
-  r2Bucket = await mf.getR2Bucket("TEST_BUCKET");
+  platform = await getPlatformProxy();
+  r2Bucket = platform.env.DATA_BUCKET as unknown as R2Bucket;
 });
 
 afterAll(async () => {
   con.close();
   db.close();
-  await mf.dispose();
+  await platform.dispose();
 });
 
 function duckRun(sql: string): Promise<void> {
