@@ -2,6 +2,7 @@ import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
+import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 
 export { MasterDO } from "./master-do.js";
 export { QueryDO } from "./query-do.js";
@@ -11,16 +12,19 @@ export { WorkerDO } from "./worker-do.js";
 export type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 export { ReaderRegistry, FileDataSource, UrlDataSource } from "./reader.js";
 export type { FormatReader, DataSource } from "./reader.js";
-export { DataFrame, TableQuery } from "./client.js";
+export { DataFrame, TableQuery, MaterializedExecutor } from "./client.js";
 export { LazyResultHandle } from "./client.js";
 export { QueryModeError } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
 export { bigIntReplacer } from "./decode.js";
+export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
+export { formatResultSummary, formatExplain, formatBytes } from "./format.js";
+export type { LocalTimingInfo } from "./format.js";
 export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js";
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
 export type { MaterializationCacheOptions } from "./lazy.js";
-export type { QueryExecutor, QueryDescriptor } from "./client.js";
+export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions } from "./client.js";
 export type {
   Env,
   Footer,
@@ -108,6 +112,21 @@ export class QueryMode {
    */
   async query<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
+  }
+
+  /** Create a DataFrame from an in-memory array of objects. No files needed. */
+  static fromJSON<T extends Record<string, unknown>>(data: T[], tableName?: string): DataFrame {
+    return createFromJSON(data, tableName);
+  }
+
+  /** Create a DataFrame from a CSV string. Auto-detects delimiter and infers types. */
+  static fromCSV(csv: string, tableName?: string): Promise<DataFrame> {
+    return createFromCSV(csv, tableName);
+  }
+
+  /** Create a demo DataFrame with 1000 rows of sample data. No files needed. */
+  static demo(tableName?: string): DataFrame {
+    return createDemo(tableName);
   }
 }
 

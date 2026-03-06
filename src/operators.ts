@@ -53,6 +53,7 @@ export class ScanOperator implements Operator {
   private pageIdx = 0;
   pagesSkipped = 0;
   bytesRead = 0;
+  scanMs = 0;
 
   constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine) {
     this.fragments = fragments;
@@ -78,6 +79,8 @@ export class ScanOperator implements Operator {
           this.pagesSkipped += frag.columns.length;
           continue;
         }
+
+        const scanStart = Date.now();
 
         // Read + decode this page for all columns
         const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
@@ -109,6 +112,7 @@ export class ScanOperator implements Operator {
           }
           rows.push(row);
         }
+        this.scanMs += Date.now() - scanStart;
         return rows;
       }
 
@@ -938,6 +942,7 @@ export class WasmAggregateOperator implements Operator {
   private consumed = false;
   bytesRead = 0;
   pagesSkipped = 0;
+  scanMs = 0;
 
   constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine) {
     this.fragments = fragments;
@@ -954,6 +959,7 @@ export class WasmAggregateOperator implements Operator {
     const acc: { sum: number; count: number; min: number; max: number }[] =
       aggregates.map(() => ({ sum: 0, count: 0, min: Infinity, max: -Infinity }));
 
+    const scanStart = Date.now();
     for (const frag of this.fragments) {
       const colMap = new Map(frag.columns.map(c => [c.name, c]));
 
@@ -1011,6 +1017,7 @@ export class WasmAggregateOperator implements Operator {
         }
       }
     }
+    this.scanMs += Date.now() - scanStart;
 
     // Build result row
     const row: Row = {};

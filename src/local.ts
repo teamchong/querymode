@@ -11,9 +11,10 @@
  *   const result = await qm.table("./data/users.lance").select("name").exec();
  */
 
-import { TableQuery } from "./client.js";
+import { DataFrame, TableQuery } from "./client.js";
 import type { QueryExecutor } from "./client.js";
 import { LocalExecutor } from "./local-executor.js";
+import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 
 /**
  * QueryMode — local-only entry point (no Cloudflare DO dependencies).
@@ -40,13 +41,31 @@ export class QueryMode {
   async query<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
   }
+
+  /** Create a DataFrame from an in-memory array of objects. No files needed. */
+  static fromJSON<T extends Record<string, unknown>>(data: T[], tableName?: string): DataFrame {
+    return createFromJSON(data, tableName);
+  }
+
+  /** Create a DataFrame from a CSV string. Auto-detects delimiter and infers types. */
+  static fromCSV(csv: string, tableName?: string): Promise<DataFrame> {
+    return createFromCSV(csv, tableName);
+  }
+
+  /** Create a demo DataFrame with 1000 rows of sample data. No files needed. */
+  static demo(tableName?: string): DataFrame {
+    return createDemo(tableName);
+  }
 }
 
 export { LocalExecutor } from "./local-executor.js";
-export { TableQuery } from "./client.js";
+export { DataFrame, TableQuery, MaterializedExecutor } from "./client.js";
 export { QueryModeError } from "./errors.js";
 export { bigIntReplacer } from "./decode.js";
-export type { QueryExecutor, QueryDescriptor } from "./client.js";
+export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
+export { formatResultSummary, formatExplain, formatBytes } from "./format.js";
+export type { LocalTimingInfo } from "./format.js";
+export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions } from "./client.js";
 export type {
   Footer,
   TableMeta,

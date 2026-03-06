@@ -14,6 +14,26 @@ import type {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
+// Progress callback for collect()
+// ---------------------------------------------------------------------------
+
+/** Progress info emitted during query execution. */
+export interface ProgressInfo {
+  /** Number of row batches processed so far. */
+  batchesProcessed: number;
+  /** Total rows collected so far. */
+  rowsCollected: number;
+  /** Total bytes read so far (from executor, if available). */
+  bytesRead: number;
+}
+
+/** Options for collect(). */
+export interface CollectOptions {
+  /** Called after each batch is processed. Useful for long-running queries. */
+  onProgress?: (progress: ProgressInfo) => void;
+}
+
+// ---------------------------------------------------------------------------
 // Computed column definition (callback, not serializable)
 // ---------------------------------------------------------------------------
 
@@ -346,9 +366,38 @@ export class DataFrame<T extends Row = Row> {
   }
 
   /** Execute and fully materialize results. */
-  async collect(): Promise<QueryResult<T>> {
+  async collect(opts?: CollectOptions): Promise<QueryResult<T>> {
     const desc = await this.resolveDeferred();
-    return this._executor.execute(desc) as Promise<QueryResult<T>>;
+
+    // If no progress callback, fast path
+    if (!opts?.onProgress) {
+      return this._executor.execute(desc) as Promise<QueryResult<T>>;
+    }
+
+    // With progress: use streaming if available, otherwise fallback
+    const onProgress = opts.onProgress;
+    if (this._executor.cursor) {
+      const allRows: T[] = [];
+      let batches = 0;
+      for await (const batch of this._executor.cursor(desc, 1000)) {
+        for (const row of batch) allRows.push(row as T);
+        batches++;
+        onProgress({ batchesProcessed: batches, rowsCollected: allRows.length, bytesRead: 0 });
+      }
+      return {
+        rows: allRows,
+        rowCount: allRows.length,
+        columns: allRows.length > 0 ? Object.keys(allRows[0]) : desc.projections,
+        bytesRead: 0,
+        pagesSkipped: 0,
+        durationMs: 0,
+      } as QueryResult<T>;
+    }
+
+    // Fallback: single execute, report once at the end
+    const result = await this._executor.execute(desc) as QueryResult<T>;
+    onProgress({ batchesProcessed: 1, rowsCollected: result.rowCount, bytesRead: result.bytesRead });
+    return result;
   }
 
   /** Alias for .collect() — backward compatibility with TableQuery.exec(). */
@@ -401,6 +450,35 @@ export class DataFrame<T extends Row = Row> {
       throw new Error("explain() requires an executor with plan inspection support");
     }
     return this._executor.explain(this.toDescriptor());
+  }
+
+  /**
+   * Describe the table schema: column names, types, row count.
+   * Uses cached footer metadata — zero data scan cost.
+   * Falls back to a limit-1 query if explain() is not available.
+   */
+  async describe(): Promise<{ columns: { name: string; dtype: string }[]; totalRows: number }> {
+    if (this._executor.explain) {
+      const plan = await this._executor.explain(this.toDescriptor());
+      return {
+        columns: plan.columns.map(c => ({ name: c.name, dtype: c.dtype })),
+        totalRows: plan.totalRows,
+      };
+    }
+    // Fallback: execute a limit-1 query to infer column names
+    const result = await this._executor.execute({ ...this.toDescriptor(), limit: 1 });
+    return {
+      columns: result.columns.map(name => ({ name, dtype: "unknown" })),
+      totalRows: result.rowCount,
+    };
+  }
+
+  /** Return the first N rows. Sugar for `.limit(n).collect()`. */
+  async head(n = 5): Promise<T[]> {
+    const desc = await this.resolveDeferred();
+    desc.limit = n;
+    const result = await this._executor.execute(desc);
+    return result.rows as T[];
   }
 
   /** Streaming iteration over results in batches. */
@@ -525,7 +603,7 @@ export class LazyResultHandle<T extends Row = Row> {
 // MaterializedExecutor — executes queries against a pre-materialized result
 // ---------------------------------------------------------------------------
 
-class MaterializedExecutor implements QueryExecutor {
+export class MaterializedExecutor implements QueryExecutor {
   private result: QueryResult;
 
   constructor(result: QueryResult) {
@@ -561,6 +639,19 @@ class MaterializedExecutor implements QueryExecutor {
         const out: Row = {};
         for (const k of keep) if (k in row) out[k] = row[k];
         return out;
+      });
+    }
+
+    // Apply sort
+    if (query.sortColumn) {
+      const col = query.sortColumn;
+      const desc = query.sortDirection === "desc";
+      rows.sort((a, b) => {
+        const av = a[col], bv = b[col];
+        if (av === null || av === undefined) return 1;
+        if (bv === null || bv === undefined) return -1;
+        if (typeof av === "number" && typeof bv === "number") return desc ? bv - av : av - bv;
+        return desc ? String(bv).localeCompare(String(av)) : String(av).localeCompare(String(bv));
       });
     }
 

@@ -2,6 +2,38 @@
 
 > **Experimental** — early prototype, not production-ready. Architecture and API will change.
 
+## Quickstart
+
+```bash
+pnpm add querymode
+```
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+// Zero-config: demo data, no files needed
+const demo = QueryMode.demo()
+const top5 = await demo
+  .filter("category", "eq", "Electronics")
+  .sort("amount", "desc")
+  .limit(5)
+  .collect()
+
+console.log(top5.rows)
+
+// Or query your own files — Parquet, Lance, CSV, JSON, Arrow
+const qm = QueryMode.local()
+const result = await qm
+  .table("./data/events.parquet")
+  .filter("status", "eq", "active")
+  .filter("amount", "gte", 100)
+  .filter("amount", "lte", 500)
+  .select("id", "amount", "region")
+  .sort("amount", "desc")
+  .limit(20)
+  .collect()
+```
+
 A pluggable columnar query library — not a query engine you push data to, but a query capability your code uses directly. No data materialization, no engine boundary, no SQL transpilation.
 
 ## Why "mode" not "engine"
@@ -167,6 +199,25 @@ Traditional engines give you a fixed query language. You can't put a window func
 
 With QueryMode, operators are building blocks. Your code assembles the pipeline, controls the memory budget, decides when to spill. The query engine isn't a service you call — it's a library your code composes.
 
+### Beyond traditional engines
+
+These examples show what's possible when operators are composable building blocks, not a fixed plan:
+
+| Example | What it shows | Why DuckDB/Polars can't |
+|---------|--------------|------------------------|
+| [`examples/ml-scoring-pipeline.ts`](examples/ml-scoring-pipeline.ts) | Custom scoring runs **inside** the pipeline between Filter and TopK | UDFs serialize data across the engine boundary |
+| [`examples/adaptive-search.ts`](examples/adaptive-search.ts) | Vector search with adaptive threshold — recompose if too few results | Fixed query planner can't dynamically widen search |
+| [`examples/custom-spill-backend.ts`](examples/custom-spill-backend.ts) | Pluggable spill storage (memory, R2, S3) at 4KB budget | DuckDB: disk only. Polars: no spill at all |
+| [`examples/nextjs-api-route.ts`](examples/nextjs-api-route.ts) | Next.js/Vinext API route — query Parquet files, deploy to edge | DuckDB needs a sidecar process, can't run in Workers |
+
+Run any example:
+```bash
+npx tsx examples/ml-scoring-pipeline.ts
+npx tsx examples/adaptive-search.ts
+npx tsx examples/custom-spill-backend.ts
+npx tsx examples/nextjs-api-route.ts
+```
+
 ## What exists
 
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
@@ -181,7 +232,7 @@ With QueryMode, operators are building blocks. Your code assembles the pipeline,
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
 - **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 20 slots per datacenter)
 - **112 unit tests + 26 conformance tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration; conformance tests validate every operator against DuckDB at 1M-5M row scale
-- **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to GitHub Actions summary
+- **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to [GitHub Actions summary](https://github.com/teamchong/querymode/actions/workflows/ci.yml)
 
 ## What doesn't exist yet
 

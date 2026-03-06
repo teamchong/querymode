@@ -405,6 +405,7 @@ export class LocalExecutor implements QueryExecutor {
     }
 
     // Step 1: Get or cache table metadata (footer + column meta)
+    const metaStart = Date.now();
     let meta = this.metaCache.get(query.table);
     if (!meta) {
       meta = isUrl
@@ -416,6 +417,7 @@ export class LocalExecutor implements QueryExecutor {
         if (firstKey) this.metaCache.delete(firstKey);
       }
     }
+    const metaMs = Date.now() - metaStart;
 
     const { columns } = meta;
     const columnNames = new Set(columns.map(c => c.name));
@@ -472,7 +474,9 @@ export class LocalExecutor implements QueryExecutor {
     // Step 4: Drain pipeline
     const rows = await drainPipeline(pipeline);
 
-    const result: QueryResult = {
+    const scanMs = wasmAgg?.scanMs ?? scan?.scanMs ?? 0;
+    const pipelineMs = Date.now() - startTime - metaMs;
+    const result: QueryResult & { scanMs?: number; pipelineMs?: number; metaMs?: number } = {
       rows,
       rowCount: rows.length,
       columns: outputColumns,
@@ -480,6 +484,9 @@ export class LocalExecutor implements QueryExecutor {
       pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
       durationMs: Date.now() - startTime,
       cacheHit: false,
+      scanMs,
+      pipelineMs,
+      metaMs,
     };
 
     if (query.cacheTTL) {
@@ -841,6 +848,7 @@ export class LocalExecutor implements QueryExecutor {
 
   /** Execute a query against a multi-fragment Lance dataset directory. */
   private async executeDatasetQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
+    const metaStart = Date.now();
     const dataset = await this.getOrLoadDataset(query.table, query.version);
 
     // Validate column references against schema
@@ -862,6 +870,8 @@ export class LocalExecutor implements QueryExecutor {
         throw new QueryModeError("COLUMN_NOT_FOUND", `Sort column "${query.sortColumn}" not found in ${query.table}. Available: ${[...schemaColumnNames].join(", ")}`);
       }
     }
+
+    const metaMs = Date.now() - metaStart;
 
     // Build fragment sources for all fragments
     const fsMod = await import("node:fs/promises");
@@ -902,14 +912,18 @@ export class LocalExecutor implements QueryExecutor {
     const { pipeline, scan, wasmAgg } = buildPipeline(fragments, query, wasm, outputColumns, pipeOpts);
     const rows = await drainPipeline(pipeline);
 
-    return {
+    const result: QueryResult & { scanMs?: number; pipelineMs?: number; metaMs?: number } = {
       rows,
       rowCount: rows.length,
       columns: outputColumns,
       bytesRead: wasmAgg?.bytesRead ?? scan?.bytesRead ?? 0,
       pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
       durationMs: Date.now() - startTime,
+      scanMs: wasmAgg?.scanMs ?? scan?.scanMs ?? 0,
+      pipelineMs: Date.now() - startTime - metaMs,
+      metaMs,
     };
+    return result;
   }
 
   /** Load footer + column metadata from a local file */
@@ -968,7 +982,7 @@ export class LocalExecutor implements QueryExecutor {
           this.readerFragmentCache.set(path, fragments);
           return { columns: meta.columns, fileSize };
         }
-        throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}`);
+        throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}. Supported formats: .lance, .parquet, .csv, .tsv, .json, .ndjson, .jsonl, .arrow, .ipc, .feather`);
       }
 
       // Read column metadata (protobuf region)
@@ -1044,7 +1058,7 @@ export class LocalExecutor implements QueryExecutor {
 
     // Lance format
     const footer = parseFooter(tailAb);
-    if (!footer) throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${url}`);
+    if (!footer) throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${url}. Supported formats: .lance, .parquet, .csv, .tsv, .json, .ndjson, .jsonl, .arrow, .ipc, .feather`);
 
     const metaStart = Number(footer.columnMetaStart);
     const metaEnd = Number(footer.columnMetaOffsetsStart);

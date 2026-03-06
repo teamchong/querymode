@@ -24,7 +24,7 @@ export class QueryModeError extends Error {
     if ("code" in raw && (raw as NodeJS.ErrnoException).code === "ENOENT") {
       return new QueryModeError(
         "TABLE_NOT_FOUND",
-        `Table not found: ${table ?? (raw as NodeJS.ErrnoException).path ?? "unknown"}`,
+        `Table not found: ${table ?? (raw as NodeJS.ErrnoException).path ?? "unknown"}. Check the path exists, use QueryMode.remote() for edge, or fromJSON()/fromCSV() for in-memory data.`,
         raw,
       );
     }
@@ -33,7 +33,7 @@ export class QueryModeError extends Error {
     if (raw.message.includes("footer") || raw.message.includes("Invalid file")) {
       return new QueryModeError(
         "INVALID_FORMAT",
-        `Invalid table format${table ? `: ${table}` : ""}. Expected Lance or Parquet file.`,
+        `Invalid table format${table ? `: ${table}` : ""}. Supported formats: .lance, .parquet, .csv, .tsv, .json, .ndjson, .jsonl, .arrow, .ipc, .feather`,
         raw,
       );
     }

@@ -192,7 +192,7 @@ interface ParsedCsv {
 }
 
 /** Parse an entire CSV buffer into a column-oriented representation. */
-function parseCsvFull(text: string): ParsedCsv {
+export function parseCsvFull(text: string): ParsedCsv {
   const lines = splitCsvLines(text);
   if (lines.length === 0) {
     return { headers: [], types: [], columns: [], rowCount: 0 };
