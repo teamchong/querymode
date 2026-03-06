@@ -1,0 +1,124 @@
+---
+title: Formats
+description: Parquet, Lance v2, Iceberg, CSV, JSON, Arrow — same API regardless of format.
+---
+
+QueryMode reads columnar and row-oriented formats with the same API. Format detection is automatic based on file magic bytes.
+
+## Supported formats
+
+| Format | Type | Page skip | Compression | Status |
+|--------|------|-----------|-------------|--------|
+| **Parquet** | Columnar | Min/max stats | Snappy, ZSTD, GZIP, LZ4 | Full support |
+| **Lance v2** | Columnar | Min/max stats | None (raw pages) | Full support |
+| **Iceberg** | Table format | Via Parquet | Via Parquet | Metadata + Parquet data |
+| **CSV** | Row | No | No | Via `fromCSV()` |
+| **JSON** | Row | No | No | Via `fromJSON()` |
+| **Arrow** | Columnar | No | No | In-memory only |
+
+## Parquet
+
+Full Thrift metadata parser. Reads row groups, column chunks, page-level statistics.
+
+```typescript
+const qm = QueryMode.local()
+const result = await qm
+  .table("./data/events.parquet")
+  .filter("id", "gt", 50000)  // skips row groups where max(id) <= 50000
+  .collect()
+```
+
+### Supported types
+
+| Parquet type | QueryMode type | Notes |
+|-------------|---------------|-------|
+| INT32 | `int32` | |
+| INT64 | `int64` | BigInt in JS |
+| FLOAT | `float32` | |
+| DOUBLE | `float64` | |
+| BOOLEAN | `bool` | |
+| BYTE_ARRAY (UTF8) | `utf8` | |
+| BYTE_ARRAY | `binary` | |
+| INT96 (timestamp) | `int64` | Converted |
+
+### Compression
+
+Snappy decompression is pure TypeScript. ZSTD, GZIP, and LZ4 use the WASM engine.
+
+## Lance v2
+
+Native Lance v2 format reader. Parses the 40-byte footer, column metadata protobuf, and page data.
+
+```typescript
+const result = await qm
+  .table("./data/embeddings.lance")
+  .vector("embedding", queryVec, 10)
+  .collect()
+```
+
+### Lance features
+- Footer parsing (major/minor version, column count, metadata offsets)
+- Column metadata from protobuf (names, types, page offsets, null counts)
+- Manifest parsing (fragments, schema, version history)
+- Null bitmap decode with fast paths (0xFF all-valid, 0x00 all-null)
+
+## Iceberg
+
+Reads Iceberg metadata JSON, extracts Parquet file paths from manifests, then reads as Parquet.
+
+```typescript
+const result = await qm
+  .table("./warehouse/db/events")
+  .filter("event_type", "eq", "purchase")
+  .collect()
+```
+
+Supports Iceberg v1 and v2 metadata, type mapping from Iceberg schema to QueryMode types.
+
+## CSV and JSON
+
+In-memory materialization for small datasets:
+
+```typescript
+// From CSV string
+const qm = QueryMode.fromCSV(csvString, "my_table")
+
+// From JSON array
+const qm = QueryMode.fromJSON(jsonArray, "my_table")
+```
+
+These materialize all data in memory. Use Parquet or Lance for large datasets.
+
+## Format detection
+
+QueryMode detects format from the file's magic bytes:
+
+| Format | Magic | Location |
+|--------|-------|----------|
+| Parquet | `PAR1` | Last 4 bytes |
+| Lance | `LANC` | Last 4 bytes |
+
+For Iceberg, the table path is resolved to find `metadata/v*.metadata.json`.
+
+## Page-level skip
+
+For columnar formats (Parquet, Lance), each page stores min/max statistics. Filters are evaluated against these stats before any data is read:
+
+```
+Page stats: min=100, max=500
+Filter: id > 600
+Result: SKIP — entire page never fetched from R2
+```
+
+This means queries like `filter("id", "gt", 990000)` on a 1M-row table only read the last few pages.
+
+## Coalesced range reads
+
+When multiple column pages are nearby in the file, their byte ranges are merged into fewer R2/disk requests:
+
+```
+Before: 5 separate reads (200B gaps between them)
+After:  1 merged read (includes gap bytes, but saves 4 round-trips)
+```
+
+The merge threshold is computed dynamically from the median inter-page gap (`autoCoalesceGap`).

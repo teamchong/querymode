@@ -1,0 +1,112 @@
+---
+title: Getting Started
+description: Install querymode and run your first query.
+---
+
+## Installation
+
+```bash
+pnpm add querymode
+```
+
+## Zero-config demo
+
+No files needed — `QueryMode.demo()` generates sample data in-memory:
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const demo = QueryMode.demo()
+const result = await demo
+  .filter("category", "eq", "Electronics")
+  .sort("amount", "desc")
+  .limit(5)
+  .collect()
+
+console.log(result.rows)
+```
+
+## Query your own files
+
+Read Parquet, Lance, CSV, JSON, or Arrow files directly:
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const qm = QueryMode.local()
+const result = await qm
+  .table("./data/events.parquet")
+  .filter("status", "eq", "active")
+  .filter("amount", "gte", 100)
+  .select("id", "amount", "region")
+  .sort("amount", "desc")
+  .limit(20)
+  .collect()
+
+console.log(`${result.rowCount} rows, ${result.pagesSkipped} pages skipped`)
+console.table(result.rows)
+```
+
+## From JSON data
+
+Load data directly from arrays — useful for prototyping and tests:
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const data = [
+  { id: 1, name: "Alice", score: 95 },
+  { id: 2, name: "Bob", score: 82 },
+  { id: 3, name: "Carol", score: 91 },
+]
+
+const qm = QueryMode.fromJSON(data, "students")
+const top = await qm
+  .filter("score", "gt", 85)
+  .sort("score", "desc")
+  .collect()
+```
+
+## From CSV
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const csv = `id,name,amount
+1,Alice,150
+2,Bob,80
+3,Carol,200`
+
+const qm = QueryMode.fromCSV(csv, "orders")
+const result = await qm.filter("amount", "gt", 100).collect()
+```
+
+## Edge mode (Cloudflare Workers)
+
+Same API, but queries run inside regional Durable Objects with R2 storage:
+
+```typescript
+import { QueryMode } from "querymode"
+
+const qm = QueryMode.remote(env.QUERY_DO, { region: "SJC" })
+const result = await qm
+  .table("users")
+  .filter("age", "gt", 25)
+  .select("name", "email")
+  .sort("age", "desc")
+  .limit(100)
+  .exec()
+```
+
+## How it works
+
+```
+Traditional engine:  fetch metadata (RTT) → plan → fetch ALL data (RTT) → materialize → execute → serialize → return
+QueryMode:           plan instantly (footer cached) → fetch ONLY matching byte ranges (RTT) → WASM decode zero-copy → done
+```
+
+1. **Footer cache** — every table's metadata (~4KB) is cached in DO memory. Query planning is instant.
+2. **Page-level skip** — min/max stats per page mean non-matching pages are never fetched.
+3. **Coalesced range reads** — nearby byte ranges merged into fewer R2 requests.
+4. **Zero-copy WASM** — raw bytes passed directly to Zig SIMD. No Arrow conversion.
+5. **Bounded prefetch** — fetches page N+1 while decoding page N.

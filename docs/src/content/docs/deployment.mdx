@@ -1,0 +1,139 @@
+---
+title: Deployment
+description: Deploy QueryMode locally, on Cloudflare Workers, or as a library.
+---
+
+## Local (Node / Bun)
+
+Use `querymode/local` to query files directly from disk:
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const qm = QueryMode.local()
+const result = await qm
+  .table("./data/events.parquet")
+  .filter("amount", "gt", 100)
+  .collect()
+```
+
+No server, no network — reads files directly via `LocalExecutor`.
+
+## Cloudflare Workers
+
+### wrangler.toml
+
+```toml
+name = "querymode"
+main = "src/worker.ts"
+compatibility_date = "2025-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "querymode-data"
+
+[durable_objects]
+bindings = [
+  { name = "MASTER_DO", class_name = "MasterDO" },
+  { name = "QUERY_DO", class_name = "QueryDO" },
+  { name = "FRAGMENT_DO", class_name = "FragmentDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MasterDO", "QueryDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["FragmentDO"]
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
+```
+
+### Deploy
+
+```bash
+pnpm build && wrangler deploy
+```
+
+### HTTP API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check (`?deep=true` for full diagnostics) |
+| `/query` | POST | Execute query, return JSON rows |
+| `/query/stream` | POST | Stream columnar results |
+| `/query/count` | POST | Count matching rows |
+| `/query/exists` | POST | Check if any rows match |
+| `/query/first` | POST | First matching row |
+| `/query/explain` | POST | Execution plan |
+| `/tables` | GET | List registered tables |
+| `/meta?table=X` | GET | Table metadata |
+| `/write` | POST | Write rows |
+| `/refresh` | POST | Refresh metadata cache |
+| `/register` | POST | Register table |
+| `/register-iceberg` | POST | Register Iceberg table |
+
+### Query request body
+
+```json
+{
+  "table": "events",
+  "filters": [
+    { "column": "amount", "op": "gt", "value": 100 }
+  ],
+  "projections": ["id", "amount", "region"],
+  "orderBy": { "column": "amount", "desc": true },
+  "limit": 20
+}
+```
+
+## As a library
+
+Import operators directly for custom pipelines:
+
+```typescript
+import {
+  FilterOperator, AggregateOperator, TopKOperator,
+  HashJoinOperator, WindowOperator, drainPipeline,
+} from "querymode"
+```
+
+See the [Operators](/querymode/operators/) page for the full operator reference.
+
+## Next.js / Vinext API route
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const category = url.searchParams.get("category") ?? "Electronics"
+
+  const qm = QueryMode.local()
+  const result = await qm
+    .table("./data/products.parquet")
+    .filter("category", "eq", category)
+    .sort("price", "asc")
+    .limit(50)
+    .collect()
+
+  return Response.json(result.rows)
+}
+```
+
+## Development
+
+```bash
+pnpm install          # install dependencies
+pnpm dev              # local dev with wrangler (localhost:8787)
+pnpm test             # run all tests (workerd + node)
+pnpm test:workers     # workerd tests only
+pnpm test:node        # node tests only (DuckDB conformance)
+pnpm bench:local      # local micro-benchmarks
+pnpm bench:operators  # QueryMode vs DuckDB (requires pnpm dev)
+```

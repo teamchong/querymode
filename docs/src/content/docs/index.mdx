@@ -1,0 +1,53 @@
+---
+title: querymode
+description: Serverless columnar query engine on Cloudflare Workers + Durable Objects + R2.
+template: splash
+hero:
+  tagline: A pluggable columnar query library — not a query engine you push data to, but a query capability your code uses directly.
+  actions:
+    - text: Get Started
+      link: /querymode/getting-started/
+      icon: right-arrow
+    - text: GitHub
+      link: https://github.com/teamchong/querymode
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+## Why "mode" not "engine"
+
+Every query engine has a boundary between your code and the engine. Your code describes a query, the engine materializes data, runs fixed operators, serializes results back. QueryMode has no boundary — your app code IS the query execution.
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const demo = QueryMode.demo()
+const top5 = await demo
+  .filter("category", "eq", "Electronics")
+  .sort("amount", "desc")
+  .limit(5)
+  .collect()
+```
+
+<CardGrid>
+  <Card title="Zero-copy WASM" icon="rocket">
+    Zig SIMD engine decodes columns directly from raw bytes. No Arrow conversion, no DataFrame construction.
+  </Card>
+  <Card title="Multi-format" icon="document">
+    Parquet, Lance v2, Iceberg, CSV, JSON, Arrow. Same API regardless of format.
+  </Card>
+  <Card title="Edge-native" icon="globe">
+    Runs on Cloudflare Workers + Durable Objects + R2. Same code works locally with Node/Bun.
+  </Card>
+  <Card title="Composable operators" icon="puzzle">
+    Filter, Join, Window, Aggregate, Sort, TopK — all implement the same pull-based Operator interface.
+  </Card>
+  <Card title="R2 spill" icon="cloud">
+    Memory-bounded operators spill to R2 when budget exceeded. Grace hash join, external merge sort.
+  </Card>
+  <Card title="Page-level skip" icon="forward-slash">
+    Min/max stats per page mean non-matching pages are never read, never downloaded, never allocated.
+  </Card>
+</CardGrid>

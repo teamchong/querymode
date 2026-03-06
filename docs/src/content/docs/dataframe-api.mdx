@@ -1,0 +1,143 @@
+---
+title: DataFrame API
+description: Fluent query builder — filter, select, sort, aggregate, join, window functions.
+---
+
+The `DataFrame` is a lazy query builder. All methods return a new DataFrame (immutable). Nothing executes until a terminal method is called.
+
+## Filtering
+
+```typescript
+df.filter("age", "gt", 25)
+df.filter("status", "eq", "active")
+df.filter("id", "in", [1, 2, 3])
+df.whereNotNull("email")
+```
+
+| Operator | Description |
+|----------|-------------|
+| `eq` | Equal |
+| `neq` | Not equal |
+| `gt` | Greater than |
+| `gte` | Greater than or equal |
+| `lt` | Less than |
+| `lte` | Less than or equal |
+| `in` | Membership in array |
+
+## Projection
+
+```typescript
+df.select("id", "name", "email")
+```
+
+## Sorting
+
+```typescript
+df.sort("amount", "desc")
+df.sort("name", "asc")
+```
+
+## Limiting
+
+```typescript
+df.limit(100)
+df.offset(50)
+df.limit(100).offset(50)  // pagination
+```
+
+## Aggregation
+
+```typescript
+df.groupBy("region")
+  .aggregate("sum", "amount", "total")
+  .aggregate("count", "id", "cnt")
+  .aggregate("avg", "score", "avg_score")
+```
+
+Supported functions: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `stddev`, `variance`, `median`, `percentile`.
+
+## Joins
+
+```typescript
+const orders = qm.table("orders")
+const users = qm.table("users")
+
+orders.join(users, "user_id", "id", "inner")
+orders.join(users, "user_id", "id", "left")
+```
+
+Join types: `inner`, `left`, `right`, `full`, `cross`.
+
+Hash joins spill to R2 when memory budget is exceeded (Grace hash partitioning).
+
+## Window functions
+
+```typescript
+df.window({
+  fn: "row_number",
+  partitionBy: ["region"],
+  orderBy: [{ column: "amount", direction: "desc" }],
+  alias: "rank",
+})
+```
+
+Supported: `row_number`, `rank`, `dense_rank`, `lag`, `lead`, rolling `sum`/`avg`/`min`/`max`/`count` with frame specification.
+
+## Computed columns
+
+```typescript
+df.compute("total", (row) => (row.price as number) * (row.qty as number))
+```
+
+## Set operations
+
+```typescript
+df1.union(df2)
+df1.unionAll(df2)
+df1.intersect(df2)
+df1.except(df2)
+```
+
+## Distinct
+
+```typescript
+df.distinct("region", "category")
+```
+
+## Terminal methods
+
+These execute the query and return results:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `collect()` | `QueryResult` | Execute and return all matching rows |
+| `exec()` | `QueryResult` | Alias for `collect()` |
+| `first()` | `Row \| null` | Return first matching row |
+| `count()` | `number` | Count matching rows |
+| `exists()` | `boolean` | Check if any rows match |
+| `explain()` | `ExplainResult` | Show execution plan without running |
+| `describe()` | Table schema | Column names, types, row counts |
+| `head(n)` | `QueryResult` | First N rows (shorthand for limit + collect) |
+
+## Progress tracking
+
+For long-running queries, track progress with a callback:
+
+```typescript
+const result = await df.collect({
+  onProgress: (info) => {
+    console.log(`${info.rowsCollected} rows, ${info.bytesRead} bytes`)
+  },
+})
+```
+
+## Vector search
+
+```typescript
+const similar = await qm
+  .table("images")
+  .vector("embedding", queryVec, 10)
+  .exec()
+```
+
+IVF-PQ accelerated when index is present, falls back to flat SIMD search.

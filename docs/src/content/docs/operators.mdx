@@ -1,0 +1,121 @@
+---
+title: Operators
+description: Composable pull-based operators — the building blocks of every query.
+---
+
+Every query operation is a composable operator implementing the same interface:
+
+```typescript
+interface Operator {
+  next(): Promise<RowBatch | null>
+  close(): Promise<void>
+}
+```
+
+Pull-based: call `next()` to get the next batch of rows. Returns `null` when done.
+
+## Operator reference
+
+| Category | Operator | Description |
+|----------|----------|-------------|
+| **Filter** | `FilterOperator` | eq, neq, gt, gte, lt, lte, in |
+| **Filter** | `SubqueryInOperator` | Semi-join filter against a value set |
+| **Project** | `ProjectOperator` | Column selection |
+| **Transform** | `ComputedColumnOperator` | Arbitrary `(row) => value` per row |
+| **Aggregate** | `AggregateOperator` | sum, avg, min, max, count, count_distinct, stddev, variance, median, percentile |
+| **Sort** | `ExternalSortOperator` | Disk-spilling merge sort with R2 spill |
+| **Sort** | `InMemorySortOperator` | In-memory sort for small datasets |
+| **Sort** | `TopKOperator` | Heap-based top-K without full sort |
+| **Join** | `HashJoinOperator` | inner, left, right, full, cross with Grace hash spill |
+| **Window** | `WindowOperator` | row_number, rank, dense_rank, lag, lead, rolling aggregates |
+| **Dedup** | `DistinctOperator` | Hash-based deduplication on column set |
+| **Set** | `SetOperator` | union, union_all, intersect, except |
+| **Limit** | `LimitOperator` | Row limiting with offset |
+
+## Compose operators directly
+
+```typescript
+import {
+  FilterOperator, AggregateOperator, TopKOperator,
+  drainPipeline, type Operator, type RowBatch,
+} from "querymode"
+
+// Your data source — any async batch producer
+const source: Operator = {
+  async next() { /* return RowBatch or null */ },
+  async close() {},
+}
+
+// Chain operators
+const filtered = new FilterOperator(source, [
+  { column: "age", op: "gt", value: 25 },
+])
+const aggregated = new AggregateOperator(filtered, {
+  table: "users", filters: [], projections: [],
+  groupBy: ["region"],
+  aggregates: [{ fn: "sum", column: "amount", alias: "total" }],
+})
+// "HAVING" is just a filter after aggregation
+const having = new FilterOperator(aggregated, [
+  { column: "total", op: "gt", value: 1000 },
+])
+const top10 = new TopKOperator(having, "total", true, 10)
+
+const rows = await drainPipeline(top10)
+```
+
+## Memory-bounded with R2 spill
+
+Operators that accumulate state accept a memory budget. When exceeded, they spill to R2:
+
+```typescript
+import {
+  HashJoinOperator, ExternalSortOperator, R2SpillBackend
+} from "querymode"
+
+const spill = new R2SpillBackend(env.DATA_BUCKET, "__spill/query-123")
+
+// 32MB budget — spills to R2 via Grace hash partitioning
+const join = new HashJoinOperator(
+  left, right, "user_id", "id", "inner",
+  32 * 1024 * 1024, spill,
+)
+
+// 32MB budget — spills to R2 via external merge sort
+const sorted = new ExternalSortOperator(
+  join, "created_at", true, 0,
+  32 * 1024 * 1024, spill,
+)
+
+const rows = await drainPipeline(sorted)
+await spill.cleanup()
+```
+
+Spill backends:
+- `R2SpillBackend` — Cloudflare R2 (edge)
+- `FsSpillBackend` — local filesystem (Node/Bun)
+
+## WASM SIMD aggregates
+
+For numeric columns, the `WasmAggregateOperator` uses Zig SIMD vector instructions:
+
+- `sumInt64()` — Vec2i64 accumulation
+- `minInt64()` / `maxInt64()` — SIMD min/max
+- Float64 aggregates via Vec4f64
+
+The DataFrame API automatically selects WASM aggregates when available.
+
+## Why composable operators matter
+
+Traditional engines give you a fixed query language. You can't put a window function before a join, run custom logic between pipeline stages, or swap the sort implementation.
+
+With QueryMode, operators are building blocks. Your code assembles the pipeline, controls the memory budget, decides when to spill.
+
+```typescript
+// ML scoring INSIDE the pipeline
+const filtered = new FilterOperator(source, filters)
+const scored = new ComputedColumnOperator(filtered, [
+  { alias: "ml_score", fn: (row) => myModel.predict(row) },
+])
+const top10 = new TopKOperator(scored, "ml_score", true, 10)
+```

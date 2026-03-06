@@ -1,0 +1,132 @@
+---
+title: Architecture
+description: How QueryMode runs on Cloudflare Workers, Durable Objects, and R2.
+---
+
+## System overview
+
+```
+Clients                    Entry Points              Durable Objects
+────────                   ────────────              ────────────────
+Browser                                              MasterDO (single-writer)
+CLI          ──►  Worker (CF Worker)     ──►           │
+DataFrame         LocalExecutor                      QueryDO (per-region)
+                  MaterializedExecutor                 │
+                                                     FragmentDO (fan-out pool)
+
+                  Operator Pipeline                  Core Engine
+                  ─────────────────                  ───────────
+                  ScanOperator + prefetch            WASM SIMD (Zig)
+                  FilterOperator                     Decode + bitmap
+                  TopKOperator                       Coalesce ranges
+                  WasmAggregateOperator              autoCoalesceGap
+
+                  Format Decoders                    Storage
+                  ───────────────                    ───────
+                  Parquet (Thrift)                    R2
+                  Lance v2 (protobuf)                Disk
+                  Iceberg (JSON meta)                SpillBackend
+                  CSV / JSON / Arrow
+```
+
+## Durable Objects
+
+### MasterDO (single-writer)
+
+Owns table metadata. Handles writes via CAS-based manifest coordination. Broadcasts footer invalidations to Query DOs.
+
+### QueryDO (per-region)
+
+One per datacenter region. Caches table footers in memory (~4KB each) with VIP eviction policy. Routes queries to Fragment DOs for parallel scan.
+
+### FragmentDO (fan-out pool)
+
+Up to 20 per datacenter. Each scans a subset of fragments in parallel. Handles column reads, page decode, filter pushdown, and partial aggregation.
+
+## Query flow
+
+1. **Request arrives** at Worker → routes to regional QueryDO
+2. **QueryDO** checks footer cache → if miss, fetches from R2
+3. **QueryDO** partitions fragments across FragmentDO pool
+4. **Each FragmentDO** runs the operator pipeline:
+   - Page-level skip (min/max stats)
+   - Coalesced R2 range reads
+   - Prefetch next page while decoding current
+   - WASM SIMD decode + filter
+5. **QueryDO** merges partial results via k-way merge
+6. **Response** returned as JSON or streaming columnar format
+
+## WASM engine (Zig)
+
+The `querymode.wasm` binary is compiled from Zig source (`wasm/src/`):
+
+- **Column decode** — int32, int64, float64, utf8, bool, binary
+- **SIMD aggregates** — Vec2i64 for int64 sum/min/max, Vec4f64 for float64
+- **SQL execution** — register columns, execute queries, return rows
+- **Vector search** — flat SIMD distance computation, IVF-PQ index support
+- **Fragment writing** — append rows to Lance format
+
+The WASM module is loaded as a `CompiledWasm` rule in the Worker.
+
+## Footer caching
+
+Table footers (~4KB) are cached in QueryDO memory. The VIP eviction policy protects frequently-accessed tables from being evicted by cold one-off accesses.
+
+## Prefetch pipeline
+
+The `ScanOperator` overlaps I/O with compute:
+
+```
+Time →
+  Fetch page 0   ████
+  Decode page 0       ████
+  Fetch page 1        ████     (overlapped)
+  Decode page 1            ████
+  Fetch page 2             ████
+  ...
+```
+
+Up to 8 R2 reads in-flight simultaneously.
+
+## Spill to R2
+
+Operators that accumulate state (sort, join) accept a memory budget. When exceeded:
+
+- **HashJoinOperator** — Grace hash partitioning, spills partitions to R2
+- **ExternalSortOperator** — writes sorted runs to R2, k-way merges
+
+Same `SpillBackend` interface for R2 (edge) and filesystem (local).
+
+## Local mode
+
+`LocalExecutor` reads files from disk or HTTP with the same operator pipeline. No Durable Objects, no R2 — just direct file I/O.
+
+```typescript
+import { QueryMode } from "querymode/local"
+const qm = QueryMode.local()
+```
+
+`MaterializedExecutor` holds data in-memory for `fromJSON()` and `fromCSV()`.
+
+## Build
+
+```bash
+pnpm install          # install dependencies
+pnpm build            # build WASM + TypeScript
+pnpm test             # workerd tests + Node tests
+pnpm dev              # local dev with wrangler
+
+# WASM only (requires zig)
+pnpm wasm
+```
+
+## Testing
+
+Tests run in two runtimes:
+
+| Runtime | What | Count |
+|---------|------|-------|
+| **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | 132 tests |
+| **Node** | DuckDB conformance (1M-5M rows), fixture files | 107+ tests |
+
+Conformance tests validate every operator against DuckDB at scale. CI benchmarks compare QueryMode vs DuckDB on every push.
