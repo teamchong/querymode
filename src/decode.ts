@@ -138,10 +138,21 @@ export function decodePage(
     if (buf.byteLength < bitmapBytes) return [];
     const bytes = new Uint8Array(buf, 0, bitmapBytes);
     nulls = new Set<number>();
-    let idx = 0;
-    for (let b = 0; b < bitmapBytes && idx < rowCount; b++) {
-      for (let bit = 0; bit < 8 && idx < rowCount; bit++, idx++) {
-        if (((bytes[b] >> bit) & 1) === 0) nulls.add(idx);
+    // Fast path: skip bytes that are 0xFF (all valid) — avoids per-bit work
+    for (let b = 0; b < bitmapBytes; b++) {
+      const byte = bytes[b];
+      if (byte === 0xFF) continue; // all 8 bits valid, skip
+      const base = b << 3;
+      if (byte === 0x00) {
+        // all 8 bits null — add them all
+        const end = Math.min(base + 8, rowCount);
+        for (let i = base; i < end; i++) nulls.add(i);
+      } else {
+        // mixed — check each bit
+        const end = Math.min(8, rowCount - base);
+        for (let bit = 0; bit < end; bit++) {
+          if (((byte >> bit) & 1) === 0) nulls.add(base + bit);
+        }
       }
     }
     // Lance v2 uses alignment padding between bitmap and data.

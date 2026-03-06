@@ -11,7 +11,7 @@ import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipPage } from "./decode.js";
-import { coalesceRanges } from "./coalesce.js";
+import { coalesceRanges, autoCoalesceGap } from "./coalesce.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
@@ -237,7 +237,7 @@ export class LocalExecutor implements QueryExecutor {
       colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
     }
 
-    const coalesced = coalesceRanges(ranges, 64 * 1024);
+    const coalesced = coalesceRanges(ranges, autoCoalesceGap(ranges));
     const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
     const totalRows = columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
 

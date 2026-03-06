@@ -54,11 +54,80 @@ export class ScanOperator implements Operator {
   pagesSkipped = 0;
   bytesRead = 0;
   scanMs = 0;
+  /** Prefetched page data — fetched while decoding the previous page. */
+  private prefetch: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>> | null = null;
+  private prefetchPageIdx = -1;
+  private prefetchFragIdx = -1;
+  private prefetchSkipped = 0;
 
   constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine) {
     this.fragments = fragments;
     this.query = query;
     this.wasm = wasm;
+  }
+
+  /** Fetch all columns for a page in parallel. Returns the pageInfoMap. */
+  private fetchPage(
+    frag: FragmentSource, pi: number,
+  ): { promise: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>>; skipped: number } {
+    const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
+    const readPromises: Promise<void>[] = [];
+    let skipped = 0;
+    for (const col of frag.columns) {
+      const colPage = col.pages[pi];
+      if (!colPage) continue;
+      if (!this.query.vectorSearch && canSkipPage(colPage, this.query.filters, col.name)) {
+        skipped++;
+        continue;
+      }
+      readPromises.push(
+        frag.readPage(col, colPage).then(buf => {
+          this.bytesRead += buf.byteLength;
+          pageInfoMap.set(col.name, { buf, pageInfo: colPage });
+        }),
+      );
+    }
+    return {
+      promise: readPromises.length > 0
+        ? Promise.all(readPromises).then(() => pageInfoMap)
+        : Promise.resolve(pageInfoMap),
+      skipped,
+    };
+  }
+
+  /** Find the next non-skippable page index starting from `start`. Returns -1 if none. */
+  private findNextPage(frag: FragmentSource, start: number): number {
+    const firstCol = frag.columns[0];
+    if (!firstCol) return -1;
+    for (let i = start; i < firstCol.pages.length; i++) {
+      const page = firstCol.pages[i];
+      if (this.query.vectorSearch || !canSkipPage(page, this.query.filters, firstCol.name)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /** Start prefetching the next non-skippable page if available. */
+  private startPrefetch(): void {
+    // Find the next page to prefetch
+    let fi = this.fragIdx;
+    let pi = this.pageIdx;
+    while (fi < this.fragments.length) {
+      const frag = this.fragments[fi];
+      const nextPi = this.findNextPage(frag, pi);
+      if (nextPi >= 0) {
+        const { promise, skipped } = this.fetchPage(frag, nextPi);
+        this.prefetch = promise;
+        this.prefetchPageIdx = nextPi;
+        this.prefetchFragIdx = fi;
+        this.prefetchSkipped = skipped;
+        return;
+      }
+      fi++;
+      pi = 0;
+    }
+    this.prefetch = null;
   }
 
   async next(): Promise<RowBatch | null> {
@@ -82,24 +151,20 @@ export class ScanOperator implements Operator {
 
         const scanStart = Date.now();
 
-        // Read all columns for this page in parallel (overlaps R2 range requests)
-        const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
-        const readPromises: Promise<void>[] = [];
-        for (const col of frag.columns) {
-          const colPage = col.pages[pi];
-          if (!colPage) continue;
-          if (!this.query.vectorSearch && canSkipPage(colPage, this.query.filters, col.name)) {
-            this.pagesSkipped++;
-            continue;
-          }
-          readPromises.push(
-            frag.readPage(col, colPage).then(buf => {
-              this.bytesRead += buf.byteLength;
-              pageInfoMap.set(col.name, { buf, pageInfo: colPage });
-            }),
-          );
+        // Use prefetched data if available for this page, otherwise fetch now
+        let pageInfoMap: Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>;
+        if (this.prefetch && this.prefetchPageIdx === pi && this.prefetchFragIdx === this.fragIdx) {
+          pageInfoMap = await this.prefetch;
+          this.pagesSkipped += this.prefetchSkipped;
+          this.prefetch = null;
+        } else {
+          const { promise, skipped } = this.fetchPage(frag, pi);
+          this.pagesSkipped += skipped;
+          pageInfoMap = await promise;
         }
-        await Promise.all(readPromises);
+
+        // Start prefetching the next page while we decode this one
+        this.startPrefetch();
 
         // Decode columns for this single page
         const decoded = decodePageBatch(pageInfoMap, frag.columns, this.wasm);

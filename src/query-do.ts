@@ -9,7 +9,7 @@ import { canSkipPage } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
-import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import { coalesceRanges, autoCoalesceGap, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend, encodeColumnarRun } from "./r2-spill.js";
 import {
   type Operator, type RowBatch,
@@ -183,7 +183,7 @@ class EdgeScanOperator implements Operator {
     // L3: R2
     if (uncachedRanges.length > 0) {
       const r2Start = Date.now();
-      const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+      const coalesced = coalesceRanges(uncachedRanges, autoCoalesceGap(uncachedRanges));
       const fetched = await fetchBounded(
         coalesced.map(c => () =>
           withRetry(() =>
@@ -659,7 +659,7 @@ export class QueryDO extends DurableObject<Env> {
       colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
     }
 
-    const coalesced = coalesceRanges(ranges, 64 * 1024);
+    const coalesced = coalesceRanges(ranges, autoCoalesceGap(ranges));
     const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
     const dataset = this.datasetCache.get(query.table);
     const fragments = dataset ? dataset.fragmentMetas.size : 1;
@@ -922,7 +922,7 @@ export class QueryDO extends DurableObject<Env> {
     let bytesRead = 0;
 
     if (uncachedRanges.length > 0) {
-      const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+      const coalesced = coalesceRanges(uncachedRanges, autoCoalesceGap(uncachedRanges));
 
       const fetched = await fetchBounded(
         coalesced.map(c => () =>

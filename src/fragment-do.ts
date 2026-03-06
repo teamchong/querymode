@@ -3,7 +3,7 @@ import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { canSkipPage } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
-import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
+import { coalesceRanges, autoCoalesceGap, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend } from "./r2-spill.js";
 import {
   type Operator, type RowBatch,
@@ -117,7 +117,7 @@ export class FragmentDO extends DurableObject<Env> {
       // Fetch uncached ranges from R2 with retry + timeout
       const r2Start = Date.now();
       if (uncachedRanges.length > 0) {
-        const coalesced = coalesceRanges(uncachedRanges, 64 * 1024);
+        const coalesced = coalesceRanges(uncachedRanges, autoCoalesceGap(uncachedRanges));
         const fetched = await fetchBounded(
           coalesced.map(c => () =>
             withRetry(() =>

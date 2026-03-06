@@ -545,24 +545,41 @@ export function decodeLanceV2Utf8(buf: ArrayBuffer, rowCount: number): string[] 
   const offsetsBytes = rowCount * 8; // rowCount i64 offsets (not rowCount+1)
   if (buf.byteLength < offsetsBytes) return [];
 
-  // Read cumulative end offsets
-  const endOffsets: number[] = [];
+  // Read cumulative end offsets into typed array (avoid per-row BigInt overhead)
+  const endOffsets = new Int32Array(rowCount);
   for (let i = 0; i < rowCount; i++) {
-    endOffsets.push(Number(view.getBigInt64(i * 8, true)));
+    // Read low 32 bits directly — string offsets fit in i32 for practical datasets
+    endOffsets[i] = view.getInt32(i * 8, true);
   }
 
   // Total string data length is the last offset
-  const totalStringLen = endOffsets.length > 0 ? endOffsets[endOffsets.length - 1] : 0;
+  const totalStringLen = rowCount > 0 ? endOffsets[rowCount - 1] : 0;
   // String data starts after offsets + padding. Find it by searching backward from end of buffer.
   const dataStart = buf.byteLength - totalStringLen;
-
-  const decoder = new TextDecoder();
   const bytes = new Uint8Array(buf);
-  const strings: string[] = [];
+
+  // Decode entire string data block at once (1 TextDecoder call, not N)
+  const allStringsDecoded = new TextDecoder().decode(bytes.subarray(dataStart, dataStart + totalStringLen));
+
+  // Fast path: if all strings are ASCII (common), use byte offsets directly as char offsets
+  if (allStringsDecoded.length === totalStringLen) {
+    const strings = new Array<string>(rowCount);
+    let prevEnd = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const end = endOffsets[i];
+      strings[i] = allStringsDecoded.substring(prevEnd, end);
+      prevEnd = end;
+    }
+    return strings;
+  }
+
+  // Slow path: multi-byte UTF-8 — must decode per-string to get correct boundaries
+  const decoder = new TextDecoder();
+  const strings = new Array<string>(rowCount);
   let prevEnd = 0;
   for (let i = 0; i < rowCount; i++) {
     const end = endOffsets[i];
-    strings.push(decoder.decode(bytes.subarray(dataStart + prevEnd, dataStart + end)));
+    strings[i] = decoder.decode(bytes.subarray(dataStart + prevEnd, dataStart + end));
     prevEnd = end;
   }
   return strings;

@@ -12,6 +12,28 @@ export interface CoalescedRange {
   ranges: Range[];
 }
 
+/**
+ * Compute optimal coalesce gap based on page density.
+ * Dense layouts (small gaps between pages) benefit from aggressive merging.
+ * Sparse layouts waste bandwidth with large gaps.
+ * Returns a gap between 16KB (sparse) and 256KB (dense).
+ */
+export function autoCoalesceGap(ranges: Range[]): number {
+  if (ranges.length < 2) return 64 * 1024;
+  const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
+  // Compute median gap between adjacent ranges
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].offset - (sorted[i - 1].offset + sorted[i - 1].length);
+    if (gap > 0) gaps.push(gap);
+  }
+  if (gaps.length === 0) return 256 * 1024; // all contiguous — merge aggressively
+  gaps.sort((a, b) => a - b);
+  const medianGap = gaps[gaps.length >> 1];
+  // Clamp: at least 16KB (avoid too many reads), at most 256KB (avoid wasted bandwidth)
+  return Math.max(16 * 1024, Math.min(256 * 1024, medianGap * 2));
+}
+
 /** Merge nearby byte ranges into fewer R2 reads. Sorts by offset, merges if gap <= maxGap. */
 export function coalesceRanges(ranges: Range[], maxGap: number): CoalescedRange[] {
   if (ranges.length === 0) return [];
