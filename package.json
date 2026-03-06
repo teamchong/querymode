@@ -21,7 +21,9 @@
     "build": "pnpm run build:wasm && pnpm run build:ts",
     "build:wasm": "cd wasm && zig build wasm && mkdir -p ../src/wasm && cp zig-out/bin/querymode.wasm ../src/wasm/",
     "build:ts": "tsc && mkdir -p dist/wasm && cp src/wasm/querymode.wasm dist/wasm/",
-    "test": "vitest run",
+    "test": "vitest run -c vitest.workers.config.ts && vitest run",
+    "test:workers": "vitest run -c vitest.workers.config.ts",
+    "test:node": "vitest run",
     "test:watch": "vitest",
     "deploy": "pnpm run build && wrangler deploy",
     "wasm": "pnpm run build:wasm",
@@ -31,6 +33,7 @@
     "bench:local": "npx tsx scripts/bench-local.ts"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.20",
     "@cloudflare/workers-types": "^4.20250224.0",
     "@types/node": "^25.3.3",
     "duckdb": "^1.4.4",

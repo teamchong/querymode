@@ -1,5 +1,5 @@
 /**
- * Head-to-head benchmarks: QueryMode (Miniflare, full DO stack) vs DuckDB (native Node).
+ * Head-to-head benchmarks: QueryMode (wrangler dev, full DO stack) vs DuckDB (native Node).
  *
  * QueryMode runs on the real CF Worker runtime via wrangler dev:
  *   HTTP → Worker → Query DO → R2 → WASM decode → operators → response
@@ -18,7 +18,7 @@ import { describe, bench, beforeAll, afterAll } from "vitest";
 import duckdb from "duckdb";
 
 // ---------------------------------------------------------------------------
-// QueryMode (Miniflare) helpers
+// QueryMode (wrangler dev) helpers
 // ---------------------------------------------------------------------------
 
 const BASE_URL = process.env.WORKER_URL ?? "http://localhost:8787";
