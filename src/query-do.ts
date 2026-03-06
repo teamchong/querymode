@@ -727,7 +727,10 @@ export class QueryDO extends DurableObject<Env> {
       // - Has aggregates without LIMIT (high-cardinality GROUP BY could be large)
       // Exceptions: vector search (uses IVF-PQ index, always bounded by topK)
       const hasLimit = query.limit !== undefined;
-      const needsPipeline = !query.vectorSearch && !hasLimit;
+      const hasAgg = query.aggregates && query.aggregates.length > 0;
+      // Aggregation must scan all matching rows before applying LIMIT to the output.
+      // Route through the pipeline so LIMIT applies after aggregation, not before.
+      const needsPipeline = !query.vectorSearch && (!hasLimit || hasAgg);
       if (needsPipeline) {
         result = await this.executeWithPipeline(query, meta, t0);
       } else {
@@ -1541,9 +1544,11 @@ export class QueryDO extends DurableObject<Env> {
       return this.executeWithFragmentDOs(query, dataset, t0);
     }
 
-    // For unbounded queries, use per-fragment pipeline with spill
+    // For unbounded queries or aggregation, use per-fragment pipeline with spill.
+    // Aggregation must scan all rows before LIMIT applies to the output.
     const hasLimit = query.limit !== undefined;
-    if (!hasLimit && !query.vectorSearch) {
+    const hasAgg = query.aggregates && query.aggregates.length > 0;
+    if ((!hasLimit || hasAgg) && !query.vectorSearch) {
       // Build a pipeline per fragment using executeWithPipeline, then merge
       const partials: QueryResult[] = [];
       for (const meta of fragments) {

@@ -204,4 +204,100 @@ describe("parseAndValidateQuery", () => {
       aggregates: [{ fn: "percentile", column: "x", percentileTarget: 1.5 }],
     })).toThrow();
   });
+
+  it("rejects zero limit", () => {
+    expect(() => parseAndValidateQuery({ table: "t", limit: 0 })).toThrow();
+  });
+
+  it("rejects float limit", () => {
+    expect(() => parseAndValidateQuery({ table: "t", limit: 1.5 })).toThrow();
+  });
+
+  it("rejects float offset", () => {
+    expect(() => parseAndValidateQuery({ table: "t", offset: 2.5 })).toThrow();
+  });
+
+  it("accepts multiple filters", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      filters: [
+        { column: "category", op: "eq", value: "alpha" },
+        { column: "value", op: "gt", value: 900 },
+        { column: "id", op: "gte", value: 50000 },
+      ],
+    });
+    expect(q.filters).toHaveLength(3);
+    expect(q.filters[0].op).toBe("eq");
+    expect(q.filters[1].op).toBe("gt");
+    expect(q.filters[2].op).toBe("gte");
+  });
+
+  it("accepts multiple aggregates", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      aggregates: [
+        { fn: "count", column: "*" },
+        { fn: "avg", column: "value", alias: "avg_val" },
+        { fn: "sum", column: "value", alias: "total" },
+      ],
+    });
+    expect(q.aggregates).toHaveLength(3);
+    expect(q.aggregates![0].fn).toBe("count");
+    expect(q.aggregates![1].alias).toBe("avg_val");
+    expect(q.aggregates![2].alias).toBe("total");
+  });
+
+  it("accepts groupBy with aggregates", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      groupBy: ["category"],
+      aggregates: [{ fn: "count", column: "*" }],
+    });
+    expect(q.groupBy).toEqual(["category"]);
+    expect(q.aggregates).toHaveLength(1);
+  });
+
+  it("accepts IN filter with string array", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      filters: [{ column: "cat", op: "in", value: ["alpha", "beta"] }],
+    });
+    expect(q.filters[0].value).toEqual(["alpha", "beta"]);
+  });
+
+  it("accepts aggregates + limit (limit applies to output)", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      aggregates: [{ fn: "count", column: "*" }],
+      limit: 1,
+    });
+    expect(q.aggregates).toHaveLength(1);
+    expect(q.limit).toBe(1);
+  });
+
+  it("accepts orderBy + limit + select together", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      orderBy: { column: "value", desc: true },
+      limit: 5,
+      select: ["id", "value"],
+    });
+    expect(q.sortColumn).toBe("value");
+    expect(q.sortDirection).toBe("desc");
+    expect(q.limit).toBe(5);
+    expect(q.projections).toEqual(["id", "value"]);
+  });
+
+  it("accepts large offset for pagination", () => {
+    const q = parseAndValidateQuery({ table: "t", offset: 99995, limit: 10 });
+    expect(q.offset).toBe(99995);
+    expect(q.limit).toBe(10);
+  });
+
+  it("rejects empty aggregate column", () => {
+    expect(() => parseAndValidateQuery({
+      table: "t",
+      aggregates: [{ fn: "sum", column: "" }],
+    })).toThrow();
+  });
 });
