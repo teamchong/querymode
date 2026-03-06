@@ -27,7 +27,8 @@
     "wasm": "pnpm run build:wasm",
     "bench:seed": "npx tsx scripts/seed-local-r2.ts",
     "bench": "npx tsx scripts/bench.ts",
-    "bench:operators": "vitest bench src/bench-vs-duckdb.bench.ts"
+    "bench:operators": "vitest bench src/bench-vs-duckdb.bench.ts",
+    "bench:local": "npx tsx scripts/bench-local.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250224.0",
