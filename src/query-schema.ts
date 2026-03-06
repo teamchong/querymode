@@ -18,9 +18,10 @@ const filterOpSchema = z.object({
 });
 
 const aggregateOpSchema = z.object({
-  fn: z.enum(["sum", "avg", "min", "max", "count"]),
+  fn: z.enum(["sum", "avg", "min", "max", "count", "count_distinct", "stddev", "variance", "median", "percentile"]),
   column: z.string().min(1, "Aggregate column name cannot be empty"),
   alias: z.string().optional(),
+  percentileTarget: z.number().min(0).max(1).optional(),
 });
 
 const vectorSearchSchema = z.object({
@@ -39,6 +40,7 @@ export const queryDescriptorSchema = z.object({
   select: z.array(z.string()).optional(), // alias for projections
   sortColumn: z.string().optional(),
   sortDirection: z.enum(["asc", "desc"]).optional(),
+  orderBy: z.object({ column: z.string(), desc: z.boolean().optional() }).optional(), // alias for sortColumn/sortDirection
   limit: z.number().int().positive().optional(),
   offset: z.number().int().nonnegative().optional(),
   vectorSearch: vectorSearchSchema.optional(),
@@ -62,7 +64,7 @@ export function parseAndValidateQuery(body: unknown): {
   limit?: number;
   offset?: number;
   vectorSearch?: { column: string; queryVector: number[] | Float32Array; topK: number };
-  aggregates?: { fn: "sum" | "avg" | "min" | "max" | "count"; column: string; alias?: string }[];
+  aggregates?: { fn: "sum" | "avg" | "min" | "max" | "count" | "count_distinct" | "stddev" | "variance" | "median" | "percentile"; column: string; alias?: string; percentileTarget?: number }[];
   groupBy?: string[];
   cacheTTL?: number;
 } {
@@ -80,12 +82,16 @@ export function parseAndValidateQuery(body: unknown): {
     ? data.projections
     : (data.select ?? []);
 
+  // Merge `orderBy` alias into `sortColumn` / `sortDirection`
+  const sortColumn = data.sortColumn ?? data.orderBy?.column;
+  const sortDirection = data.sortDirection ?? (data.orderBy?.desc ? "desc" : data.orderBy ? "asc" : undefined);
+
   return {
     table: data.table,
     filters: data.filters,
     projections,
-    sortColumn: data.sortColumn,
-    sortDirection: data.sortDirection,
+    sortColumn,
+    sortDirection,
     limit: data.limit,
     offset: data.offset,
     vectorSearch: data.vectorSearch,

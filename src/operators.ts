@@ -2020,7 +2020,10 @@ export function buildEdgePipeline(
     pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
   }
 
-  if (outputColumns.length > 0) {
+  // Skip projection when aggregation is active — aggregate output columns
+  // (aliases like "count_*", "sum_value") don't match the original table columns,
+  // so projecting to table columns would strip all aggregate results.
+  if (!hasAgg && outputColumns.length > 0) {
     pipeline = new ProjectOperator(pipeline, outputColumns);
   }
 

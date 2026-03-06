@@ -17,6 +17,7 @@ import {
   FilterOperator, HashJoinOperator, ProjectOperator,
   DEFAULT_MEMORY_BUDGET,
 } from "./operators.js";
+import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
 import { parseLanceV2Columns } from "./lance-v2.js";
 import { parseAndValidateQuery } from "./query-schema.js";
@@ -435,7 +436,10 @@ export class QueryDO extends DurableObject<Env> {
         return va < vb ? -dir : va > vb ? dir : 0;
       });
     }
-    if (query.limit && query.limit > 0) result = result.slice(0, query.limit);
+    const offset = query.offset ?? 0;
+    if (offset > 0 || (query.limit && query.limit > 0)) {
+      result = result.slice(offset, query.limit ? offset + query.limit : undefined);
+    }
     return result;
   }
 
@@ -1041,9 +1045,19 @@ export class QueryDO extends DurableObject<Env> {
       let rows = this.applyJsPostProcessing(
         this.assembleRowsFromColumns(decodedColumns, colNames), query,
       );
+
+      // Handle aggregation in the scanPages Parquet path
+      if (query.aggregates && query.aggregates.length > 0) {
+        const partial = computePartialAgg(rows, query);
+        rows = finalizePartialAgg(partial, query);
+      }
+
       const wasmExecMs = Date.now() - wasmStart;
+      const outputCols = (query.aggregates && query.aggregates.length > 0)
+        ? Object.keys(rows[0] ?? {})
+        : colNames;
       return {
-        rows, rowCount: rows.length, columns: colNames,
+        rows, rowCount: rows.length, columns: outputCols,
         bytesRead, pagesSkipped, durationMs: Date.now() - t0,
         r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
         edgeCacheHits, edgeCacheMisses,
