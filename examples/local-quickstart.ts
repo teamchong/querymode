@@ -4,15 +4,13 @@
  * Reads a Lance or Parquet file from disk, applies filter + sort + limit,
  * and prints the result. Replace the path with your own data file.
  */
-import { LocalExecutor } from "../src/local-executor.js";
-import { DataFrame } from "../src/client.js";
+import { QueryMode } from "../src/local.js";
 
-const executor = new LocalExecutor();
 const TABLE = process.argv[2] ?? "./data/events.parquet";
 
-const df = new DataFrame(TABLE, executor);
-
-const result = await df
+const qm = QueryMode.local();
+const result = await qm
+  .table(TABLE)
   .filter("amount", "gt", 100)
   .whereNotNull("region")
   .select("id", "amount", "region")

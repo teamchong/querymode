@@ -24,6 +24,7 @@
     "test": "vitest run -c vitest.workers.config.ts && vitest run",
     "test:workers": "vitest run -c vitest.workers.config.ts",
     "test:node": "vitest run",
+    "test:quick": "vitest run -c vitest.workers.config.ts src/convenience.test.ts src/format.test.ts src/footer.test.ts src/decode.test.ts src/merge.test.ts src/partial-agg.test.ts src/vip-cache.test.ts src/page-processor.test.ts",
     "test:watch": "vitest",
     "deploy": "pnpm run build && wrangler deploy",
     "wasm": "pnpm run build:wasm",

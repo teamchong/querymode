@@ -5,7 +5,9 @@
 ## Quickstart
 
 ```bash
-pnpm add querymode
+# Clone and use from source (not yet published to npm)
+git clone https://github.com/teamchong/querymode.git
+cd querymode && pnpm install
 ```
 
 ```typescript
@@ -238,7 +240,8 @@ npx tsx examples/nextjs-api-route.ts
 
 - No deployed instance
 - No browser mode
-- No npm package published
+- No npm package published (install from source via git clone)
+- No SQL mode (planned — SQL frontend compiling to operator pipeline)
 
 ## Architecture
 ![querymode-architecture](docs/architecture/querymode-architecture.svg)
@@ -247,11 +250,14 @@ npx tsx examples/nextjs-api-route.ts
 
 ```bash
 pnpm install          # install dependencies
-pnpm build            # typecheck (tsc)
-pnpm test             # run vitest
+pnpm build:ts         # typecheck only (no WASM rebuild needed — pre-built WASM included)
+pnpm test:node        # run node tests (~2 min)
+pnpm test:workers     # run workerd tests
+pnpm test             # run all tests (~8 min)
 pnpm dev              # local dev with wrangler
 
-# build WASM from Zig source (requires zig)
+# Rebuild WASM from Zig source (requires zig toolchain)
+# Install: https://ziglang.org/download/
 pnpm wasm             # cd wasm && zig build wasm && cp to src/wasm/
 ```
 

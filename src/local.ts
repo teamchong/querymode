@@ -61,6 +61,7 @@ export class QueryMode {
 export { LocalExecutor } from "./local-executor.js";
 export { DataFrame, TableQuery, MaterializedExecutor } from "./client.js";
 export { QueryModeError } from "./errors.js";
+export type { ErrorCode } from "./errors.js";
 export { bigIntReplacer } from "./decode.js";
 export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 export { formatResultSummary, formatExplain, formatBytes } from "./format.js";

@@ -9,7 +9,7 @@ import { z } from "zod/v4";
 
 const filterOpSchema = z.object({
   column: z.string().min(1, "Filter column name cannot be empty"),
-  op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in"]),
+  op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in", "is_null", "is_not_null"]),
   value: z.union([
     z.number(),
     z.string(),
@@ -57,7 +57,7 @@ export type ValidatedQuery = z.infer<typeof queryDescriptorSchema>;
  */
 export function parseAndValidateQuery(body: unknown): {
   table: string;
-  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in"; value: number | string | (number | string)[] }[];
+  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is_null" | "is_not_null"; value: number | string | (number | string)[] }[];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";

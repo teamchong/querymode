@@ -12,6 +12,7 @@ df.filter("age", "gt", 25)
 df.filter("status", "eq", "active")
 df.filter("id", "in", [1, 2, 3])
 df.whereNotNull("email")
+df.whereNull("deleted_at")
 ```
 
 | Operator | Description |
@@ -23,18 +24,22 @@ df.whereNotNull("email")
 | `lt` | Less than |
 | `lte` | Less than or equal |
 | `in` | Membership in array |
+| `is_null` | Value is null |
+| `is_not_null` | Value is not null |
 
 ## Projection
 
 ```typescript
 df.select("id", "name", "email")
+df.drop("internal_id", "debug_flag")     // exclude columns
+df.rename({ user_id: "userId", created_at: "createdAt" })
 ```
 
 ## Sorting
 
 ```typescript
 df.sort("amount", "desc")
-df.sort("name", "asc")
+df.orderBy("name", "asc")   // alias for sort()
 ```
 
 ## Limiting
@@ -62,8 +67,8 @@ Supported functions: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `std
 const orders = qm.table("orders")
 const users = qm.table("users")
 
-orders.join(users, "user_id", "id", "inner")
-orders.join(users, "user_id", "id", "left")
+orders.join(users, { left: "user_id", right: "id" }, "inner")
+orders.join(users, { left: "user_id", right: "id" }, "left")
 ```
 
 Join types: `inner`, `left`, `right`, `full`, `cross`.
@@ -86,14 +91,14 @@ Supported: `row_number`, `rank`, `dense_rank`, `lag`, `lead`, rolling `sum`/`avg
 ## Computed columns
 
 ```typescript
-df.compute("total", (row) => (row.price as number) * (row.qty as number))
+df.computed("total", (row) => (row.price as number) * (row.qty as number))
 ```
 
 ## Set operations
 
 ```typescript
-df1.union(df2)
-df1.unionAll(df2)
+df1.union(df2)           // UNION (deduplicates)
+df1.union(df2, true)     // UNION ALL (keeps duplicates)
 df1.intersect(df2)
 df1.except(df2)
 ```
@@ -117,7 +122,7 @@ These execute the query and return results:
 | `exists()` | `boolean` | Check if any rows match |
 | `explain()` | `ExplainResult` | Show execution plan without running |
 | `describe()` | Table schema | Column names, types, row counts |
-| `head(n)` | `QueryResult` | First N rows (shorthand for limit + collect) |
+| `head(n)` | `Row[]` | First N rows (shorthand for limit + collect) |
 
 ## Progress tracking
 

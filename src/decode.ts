@@ -8,6 +8,7 @@ import { decodeLanceV2Utf8 } from "./lance-v2.js";
 export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"], columnName: string): boolean {
   for (const filter of filters) {
     if (filter.column !== columnName) continue;
+    if (filter.op === "is_null" || filter.op === "is_not_null") continue;
     if (page.minValue === undefined || page.maxValue === undefined) continue;
 
     let { minValue: min, maxValue: max } = page;
@@ -370,6 +371,8 @@ export function matchesFilter(
   val: number | bigint | string | boolean | Float32Array | null,
   filter: QueryDescriptor["filters"][0],
 ): boolean {
+  if (filter.op === "is_null") return val === null;
+  if (filter.op === "is_not_null") return val !== null;
   if (val === null) return false;
   const t = filter.value;
   switch (filter.op) {

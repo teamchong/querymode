@@ -163,14 +163,59 @@ export class DataFrame<T extends Row = Row> {
     return this.where(column, op, value);
   }
 
+  /** Filter rows where a column is not null. */
+  whereNotNull(column: string): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "is_not_null", value: 0 }] });
+  }
+
+  /** Filter rows where a column is null. */
+  whereNull(column: string): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "is_null", value: 0 }] });
+  }
+
   /** Select specific columns. Only these byte ranges are fetched from R2. */
   select(...columns: string[]): DataFrame {
     return this.derive({ projections: columns }) as DataFrame;
   }
 
+  /** Exclude specific columns (inverse of select). */
+  drop(...columns: string[]): DataFrame<T> {
+    const dropSet = new Set(columns);
+    const remaining = this._projections.length > 0
+      ? this._projections.filter(c => !dropSet.has(c))
+      : []; // If no projections set, drop will be applied at collect time via computed exclusion
+    // Store dropped columns as a negative projection marker
+    return this.derive({
+      projections: remaining,
+      computedColumns: [
+        ...this._computedColumns,
+        ...columns.map(c => ({ alias: `__drop__${c}`, fn: () => undefined })),
+      ],
+    });
+  }
+
+  /** Rename columns. Returns a new DataFrame with renamed output columns. */
+  rename(mapping: Record<string, string>): DataFrame {
+    const renames = Object.entries(mapping);
+    return this.derive({
+      computedColumns: [
+        ...this._computedColumns,
+        ...renames.map(([from, to]) => ({
+          alias: to,
+          fn: (row: Row) => row[from],
+        })),
+      ],
+    }) as DataFrame;
+  }
+
   /** Sort results by a column. With .limit(), uses a top-K heap (O(K) memory). */
   sort(column: string, direction: "asc" | "desc" = "asc"): DataFrame<T> {
     return this.derive({ sortColumn: column, sortDirection: direction });
+  }
+
+  /** Alias for .sort() — common in SQL-style APIs. */
+  orderBy(column: string, direction: "asc" | "desc" = "asc"): DataFrame<T> {
+    return this.sort(column, direction);
   }
 
   /** Limit the number of returned rows. Enables early termination. */
@@ -181,6 +226,7 @@ export class DataFrame<T extends Row = Row> {
 
   /** Skip the first N rows. Enables offset-based pagination. */
   offset(n: number): DataFrame<T> {
+    if (n < 0) throw new Error("offset() must be non-negative");
     return this.derive({ offset: n });
   }
 
@@ -617,6 +663,8 @@ export class MaterializedExecutor implements QueryExecutor {
     for (const f of query.filters) {
       rows = rows.filter(row => {
         const v = row[f.column];
+        if (f.op === "is_null") return v === null || v === undefined;
+        if (f.op === "is_not_null") return v !== null && v !== undefined;
         if (v === null) return false;
         const fv = f.value;
         switch (f.op) {
