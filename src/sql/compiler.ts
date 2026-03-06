@@ -1,0 +1,393 @@
+/** SQL AST → QueryDescriptor compiler */
+
+import type { QueryDescriptor } from "../client.js";
+import type { AggregateOp, FilterOp, WindowSpec } from "../types.js";
+import type { SelectStmt, SqlExpr, TableRef, SqlOrderBy } from "./ast.js";
+import { rewriteAggregatesAsColumns } from "./evaluator.js";
+
+const AGGREGATE_FNS = new Set(["COUNT", "SUM", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "STDDEV", "VARIANCE", "MEDIAN", "PERCENTILE"]);
+
+/** Full compile result with extras that need runtime evaluation */
+export interface SqlCompileResult {
+  descriptor: QueryDescriptor;
+  /** Full WHERE expression — set when filters can't fully represent the WHERE clause */
+  whereExpr?: SqlExpr;
+  /** HAVING expression (aggregate calls rewritten to column refs for row-level evaluation) */
+  havingExpr?: SqlExpr;
+  /** All ORDER BY columns — set when there are multiple (descriptor only holds the first) */
+  allOrderBy?: SqlOrderBy[];
+  /** Non-column SELECT expressions (CASE, CAST, arithmetic) that need per-row computation */
+  computedExprs?: { alias: string; expr: SqlExpr }[];
+}
+
+/** Compile to just a QueryDescriptor (backward-compatible) */
+export function compile(stmt: SelectStmt): QueryDescriptor {
+  return compileFull(stmt).descriptor;
+}
+
+/** Full compilation returning extras for runtime evaluation */
+export function compileFull(stmt: SelectStmt): SqlCompileResult {
+  const table = extractTableName(stmt.from);
+  const filters: FilterOp[] = [];
+  const aggregates: AggregateOp[] = [];
+  const windows: WindowSpec[] = [];
+  let projections: string[] = [];
+  const computedExprs: { alias: string; expr: SqlExpr }[] = [];
+
+  // Process SELECT columns
+  let hasAggregates = false;
+  let selectItemIndex = 0;
+  for (const col of stmt.columns) {
+    if (col.expr.kind === "star") {
+      continue;
+    }
+    if (col.expr.kind === "call" && col.expr.window) {
+      windows.push(compileWindowFunction(col.expr, col.alias));
+      continue;
+    }
+    if (col.expr.kind === "call" && isAggregateCall(col.expr.name)) {
+      hasAggregates = true;
+      aggregates.push(compileAggregate(col.expr, col.alias));
+      continue;
+    }
+    // Simple column reference → projection
+    const colName = extractColumnName(col.expr);
+    if (colName) {
+      projections.push(colName);
+    } else {
+      // Non-column expression (CASE, CAST, arithmetic, etc.) → computed expression
+      const alias = col.alias ?? `_expr${selectItemIndex}`;
+      computedExprs.push({ alias, expr: col.expr });
+    }
+    selectItemIndex++;
+  }
+
+  // If there are aggregates, projections should only contain group-by columns
+  if (hasAggregates && stmt.groupBy) {
+    projections = [...stmt.groupBy.columns];
+  }
+
+  // Process WHERE clause — try to flatten to FilterOp[]
+  let whereExpr: SqlExpr | undefined;
+  if (stmt.where) {
+    const fullyFlattened = tryFlattenFilters(stmt.where, filters);
+    if (!fullyFlattened) {
+      // Some predicates couldn't be pushed down — set whereExpr for runtime evaluation
+      whereExpr = stmt.where;
+    }
+  }
+
+  // Process vector search (NEAR in WHERE)
+  let vectorSearch: QueryDescriptor["vectorSearch"];
+  if (stmt.where) {
+    vectorSearch = extractVectorSearch(stmt.where);
+  }
+
+  // ORDER BY
+  let sortColumn: string | undefined;
+  let sortDirection: "asc" | "desc" | undefined;
+  let allOrderBy: SqlOrderBy[] | undefined;
+
+  if (stmt.orderBy && stmt.orderBy.length > 0) {
+    if (stmt.orderBy.length === 1) {
+      // Single column — use descriptor's native sort
+      sortColumn = stmt.orderBy[0].column;
+      sortDirection = stmt.orderBy[0].direction;
+    } else {
+      // Multi-column — wrapper handles sort (don't set sortColumn to avoid incorrect limit)
+      allOrderBy = stmt.orderBy;
+    }
+  }
+
+  // JOIN
+  let join: QueryDescriptor["join"];
+  if (stmt.from.kind === "join") {
+    join = compileJoin(stmt.from);
+  }
+
+  // Set operation
+  let setOperation: QueryDescriptor["setOperation"];
+  if (stmt.setOperation) {
+    const rightDesc = compile(stmt.setOperation.right);
+    const modeMap = {
+      union_all: "union_all" as const,
+      union_distinct: "union" as const,
+      intersect: "intersect" as const,
+      except: "except" as const,
+    };
+    setOperation = { mode: modeMap[stmt.setOperation.opType], right: rightDesc };
+  }
+
+  // DISTINCT
+  let distinct: string[] | undefined;
+  if (stmt.distinct) {
+    distinct = projections.length > 0 ? projections : [];
+  }
+
+  // HAVING — rewrite aggregate calls to column refs for post-aggregation evaluation
+  let havingExpr: SqlExpr | undefined;
+  if (stmt.groupBy?.having) {
+    havingExpr = rewriteAggregatesAsColumns(stmt.groupBy.having);
+  }
+
+  const desc: QueryDescriptor = {
+    table,
+    filters,
+    projections: projections.length > 0 ? projections : [],
+    sortColumn,
+    sortDirection,
+    limit: stmt.limit,
+    offset: stmt.offset,
+    aggregates: aggregates.length > 0 ? aggregates : undefined,
+    groupBy: stmt.groupBy ? stmt.groupBy.columns : undefined,
+    vectorSearch,
+    join,
+    setOperation,
+    distinct,
+    windows: windows.length > 0 ? windows : undefined,
+  };
+
+  return {
+    descriptor: desc,
+    whereExpr,
+    havingExpr,
+    allOrderBy,
+    computedExprs: computedExprs.length > 0 ? computedExprs : undefined,
+  };
+}
+
+function extractTableName(from: TableRef): string {
+  if (from.kind === "simple") return from.name;
+  if (from.kind === "join") return extractTableName(from.left);
+  return "unknown";
+}
+
+function extractColumnName(expr: SqlExpr): string | undefined {
+  if (expr.kind === "column") return expr.name;
+  return undefined;
+}
+
+function isAggregateCall(name: string): boolean {
+  return AGGREGATE_FNS.has(name.toUpperCase());
+}
+
+function compileAggregate(expr: SqlExpr & { kind: "call" }, alias?: string): AggregateOp {
+  let fn = expr.name.toLowerCase() as AggregateOp["fn"];
+  let column = "*";
+
+  if (fn === "count" && expr.distinct && expr.args.length > 0) {
+    fn = "count_distinct";
+  }
+
+  if (expr.args.length > 0 && expr.args[0].kind !== "star") {
+    const colName = extractColumnName(expr.args[0]);
+    if (colName) column = colName;
+  }
+
+  const result: AggregateOp = { fn, column };
+  if (alias) result.alias = alias;
+
+  if (fn === "percentile" && expr.args.length >= 2) {
+    const pArg = expr.args[1];
+    if (pArg.kind === "value" && (pArg.value.type === "float" || pArg.value.type === "integer")) {
+      result.percentileTarget = pArg.value.value;
+    }
+  }
+
+  return result;
+}
+
+function compileWindowFunction(expr: SqlExpr & { kind: "call" }, alias?: string): WindowSpec {
+  const fn = expr.name.toLowerCase() as WindowSpec["fn"];
+  const win = expr.window!;
+
+  const spec: WindowSpec = {
+    fn,
+    partitionBy: win.partitionBy ?? [],
+    orderBy: (win.orderBy ?? []).map(o => ({ column: o.column, direction: o.direction })),
+    alias: alias ?? `${fn}_result`,
+  };
+
+  if ((fn === "lag" || fn === "lead") && expr.args.length > 1) {
+    const args: WindowSpec["args"] = {};
+    if (expr.args[1]?.kind === "value" && expr.args[1].value.type === "integer") {
+      args.offset = expr.args[1].value.value;
+    }
+    if (expr.args[2]?.kind === "value") {
+      args.default_ = extractLiteralValue(expr.args[2]);
+    }
+    spec.args = args;
+  }
+
+  if (win.frame) {
+    const frameBoundToValue = (b: NonNullable<typeof win.frame>["start"]): number | "unbounded" | "current" => {
+      if (b.type === "unbounded_preceding" || b.type === "unbounded_following") return "unbounded";
+      if (b.type === "current_row") return "current";
+      if (b.type === "preceding") return -b.offset;
+      return b.offset;
+    };
+
+    spec.frame = {
+      type: win.frame.type,
+      start: frameBoundToValue(win.frame.start) as number | "unbounded",
+      end: win.frame.end ? frameBoundToValue(win.frame.end) as number | "current" | "unbounded" : "current",
+    };
+  }
+
+  return spec;
+}
+
+/**
+ * Try to flatten a WHERE expression into AND-connected FilterOps.
+ * Returns true if fully flattened, false if some predicates were skipped.
+ */
+function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
+  if (expr.kind === "binary" && expr.op === "and") {
+    const leftOk = tryFlattenFilters(expr.left, filters);
+    const rightOk = tryFlattenFilters(expr.right, filters);
+    return leftOk && rightOk;
+  }
+
+  // Simple comparison: column op value
+  if (expr.kind === "binary" && isComparisonOp(expr.op)) {
+    const filter = compileSimpleFilter(expr);
+    if (filter) {
+      filters.push(filter);
+      return true;
+    }
+    return false;
+  }
+
+  // IS NULL / IS NOT NULL
+  if (expr.kind === "unary" && (expr.op === "is_null" || expr.op === "is_not_null")) {
+    const colName = extractColumnName(expr.operand);
+    if (colName) {
+      filters.push({ column: colName, op: expr.op, value: 0 });
+      return true;
+    }
+    return false;
+  }
+
+  // IN list (non-negated): column IN (v1, v2, ...)
+  if (expr.kind === "in_list" && !expr.negated) {
+    const colName = extractColumnName(expr.expr);
+    if (colName) {
+      const values = expr.values.map(extractLiteralValue).filter((v): v is NonNullable<typeof v> => v !== undefined);
+      if (values.length === expr.values.length) {
+        filters.push({ column: colName, op: "in", value: values as (number | string)[] });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // BETWEEN: column BETWEEN low AND high → gte + lte
+  if (expr.kind === "between") {
+    const colName = extractColumnName(expr.expr);
+    const low = extractLiteralValue(expr.low);
+    const high = extractLiteralValue(expr.high);
+    if (colName && low !== undefined && high !== undefined) {
+      filters.push({ column: colName, op: "gte", value: low as number | string });
+      filters.push({ column: colName, op: "lte", value: high as number | string });
+      return true;
+    }
+    return false;
+  }
+
+  // NEAR expressions are handled separately by extractVectorSearch
+  if (expr.kind === "near") {
+    return true;
+  }
+
+  // Everything else (OR, NOT IN, NOT BETWEEN, LIKE, etc.) can't be flattened
+  return false;
+}
+
+function isComparisonOp(op: string): boolean {
+  return op === "eq" || op === "ne" || op === "lt" || op === "le" || op === "gt" || op === "ge";
+}
+
+function compileSimpleFilter(expr: SqlExpr & { kind: "binary" }): FilterOp | undefined {
+  const colName = extractColumnName(expr.left);
+  const value = extractLiteralValue(expr.right);
+
+  if (!colName || value === undefined) {
+    const rCol = extractColumnName(expr.right);
+    const lVal = extractLiteralValue(expr.left);
+    if (rCol && lVal !== undefined) {
+      const flippedOp = flipOp(expr.op);
+      if (flippedOp) {
+        return { column: rCol, op: flippedOp as FilterOp["op"], value: lVal as FilterOp["value"] };
+      }
+    }
+    return undefined;
+  }
+
+  const opMap: Record<string, FilterOp["op"]> = {
+    eq: "eq", ne: "neq", lt: "lt", le: "lte", gt: "gt", ge: "gte",
+  };
+  const filterOp = opMap[expr.op];
+  if (!filterOp) return undefined;
+
+  return { column: colName, op: filterOp, value: value as FilterOp["value"] };
+}
+
+function flipOp(op: string): string | undefined {
+  const map: Record<string, string> = { lt: "gt", le: "ge", gt: "lt", ge: "le", eq: "eq", ne: "ne" };
+  return map[op];
+}
+
+function extractLiteralValue(expr: SqlExpr): number | string | boolean | undefined {
+  if (expr.kind === "value") {
+    if (expr.value.type === "integer" || expr.value.type === "float") return expr.value.value;
+    if (expr.value.type === "string") return expr.value.value;
+    if (expr.value.type === "boolean") return expr.value.value;
+  }
+  if (expr.kind === "unary" && expr.op === "minus" && expr.operand.kind === "value") {
+    const v = expr.operand.value;
+    if (v.type === "integer" || v.type === "float") return -v.value;
+  }
+  return undefined;
+}
+
+function extractVectorSearch(expr: SqlExpr): QueryDescriptor["vectorSearch"] {
+  if (expr.kind === "near") {
+    const colName = extractColumnName(expr.column);
+    if (colName) {
+      return {
+        column: colName,
+        queryVector: new Float32Array(expr.vector),
+        topK: expr.topK ?? 10,
+      };
+    }
+  }
+  if (expr.kind === "binary" && expr.op === "and") {
+    return extractVectorSearch(expr.left) ?? extractVectorSearch(expr.right);
+  }
+  return undefined;
+}
+
+function compileJoin(ref: TableRef & { kind: "join" }): QueryDescriptor["join"] {
+  const joinClause = ref.join;
+  const rightTable = joinClause.table.kind === "simple" ? joinClause.table.name : "unknown";
+
+  let leftKey = "";
+  let rightKey = "";
+  if (joinClause.onCondition && joinClause.onCondition.kind === "binary" && joinClause.onCondition.op === "eq") {
+    const lCol = joinClause.onCondition.left;
+    const rCol = joinClause.onCondition.right;
+    if (lCol.kind === "column") leftKey = lCol.name;
+    if (rCol.kind === "column") rightKey = rCol.name;
+  }
+
+  return {
+    right: {
+      table: rightTable,
+      filters: [],
+      projections: [],
+    },
+    leftKey,
+    rightKey,
+    type: joinClause.joinType,
+  };
+}

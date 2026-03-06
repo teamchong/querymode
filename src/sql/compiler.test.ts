@@ -1,0 +1,249 @@
+import { describe, it, expect } from "vitest";
+import { compile, compileFull } from "./compiler.js";
+import { parse } from "./parser.js";
+
+function sql(query: string) {
+  return compile(parse(query));
+}
+
+function sqlFull(query: string) {
+  return compileFull(parse(query));
+}
+
+describe("SQL Compiler", () => {
+  it("compiles SELECT * FROM table", () => {
+    const desc = sql("SELECT * FROM users");
+    expect(desc.table).toBe("users");
+    expect(desc.projections).toEqual([]);
+    expect(desc.filters).toEqual([]);
+  });
+
+  it("compiles SELECT with columns", () => {
+    const desc = sql("SELECT name, age FROM users");
+    expect(desc.projections).toEqual(["name", "age"]);
+  });
+
+  it("compiles WHERE with equality", () => {
+    const desc = sql("SELECT * FROM t WHERE status = 'active'");
+    expect(desc.filters).toEqual([{ column: "status", op: "eq", value: "active" }]);
+  });
+
+  it("compiles WHERE with comparison operators", () => {
+    const desc = sql("SELECT * FROM t WHERE age > 25 AND score <= 100");
+    expect(desc.filters).toHaveLength(2);
+    expect(desc.filters[0]).toEqual({ column: "age", op: "gt", value: 25 });
+    expect(desc.filters[1]).toEqual({ column: "score", op: "lte", value: 100 });
+  });
+
+  it("compiles WHERE != as neq", () => {
+    const desc = sql("SELECT * FROM t WHERE x != 0");
+    expect(desc.filters[0].op).toBe("neq");
+  });
+
+  it("compiles IS NULL", () => {
+    const desc = sql("SELECT * FROM t WHERE col IS NULL");
+    expect(desc.filters).toEqual([{ column: "col", op: "is_null", value: 0 }]);
+  });
+
+  it("compiles IS NOT NULL", () => {
+    const desc = sql("SELECT * FROM t WHERE col IS NOT NULL");
+    expect(desc.filters).toEqual([{ column: "col", op: "is_not_null", value: 0 }]);
+  });
+
+  it("compiles IN list", () => {
+    const desc = sql("SELECT * FROM t WHERE id IN (1, 2, 3)");
+    expect(desc.filters).toEqual([{ column: "id", op: "in", value: [1, 2, 3] }]);
+  });
+
+  it("compiles BETWEEN as gte + lte", () => {
+    const desc = sql("SELECT * FROM t WHERE age BETWEEN 18 AND 65");
+    expect(desc.filters).toEqual([
+      { column: "age", op: "gte", value: 18 },
+      { column: "age", op: "lte", value: 65 },
+    ]);
+  });
+
+  it("compiles ORDER BY", () => {
+    const desc = sql("SELECT * FROM t ORDER BY amount DESC");
+    expect(desc.sortColumn).toBe("amount");
+    expect(desc.sortDirection).toBe("desc");
+  });
+
+  it("compiles LIMIT and OFFSET", () => {
+    const desc = sql("SELECT * FROM t LIMIT 10 OFFSET 5");
+    expect(desc.limit).toBe(10);
+    expect(desc.offset).toBe(5);
+  });
+
+  it("compiles DISTINCT", () => {
+    const desc = sql("SELECT DISTINCT name FROM users");
+    expect(desc.distinct).toEqual(["name"]);
+  });
+
+  it("compiles aggregate COUNT(*)", () => {
+    const desc = sql("SELECT COUNT(*) FROM orders");
+    expect(desc.aggregates).toEqual([{ fn: "count", column: "*" }]);
+  });
+
+  it("compiles aggregate SUM with alias", () => {
+    const desc = sql("SELECT SUM(amount) AS total FROM orders");
+    expect(desc.aggregates).toEqual([{ fn: "sum", column: "amount", alias: "total" }]);
+  });
+
+  it("compiles COUNT(DISTINCT col) as count_distinct", () => {
+    const desc = sql("SELECT COUNT(DISTINCT user_id) FROM orders");
+    expect(desc.aggregates).toEqual([{ fn: "count_distinct", column: "user_id" }]);
+  });
+
+  it("compiles GROUP BY", () => {
+    const desc = sql("SELECT region, SUM(sales) FROM data GROUP BY region");
+    expect(desc.groupBy).toEqual(["region"]);
+    expect(desc.aggregates).toEqual([{ fn: "sum", column: "sales" }]);
+  });
+
+  it("compiles NEAR vector search", () => {
+    const desc = sql("SELECT * FROM items WHERE embedding NEAR [0.1, 0.2, 0.3] TOPK 5");
+    expect(desc.vectorSearch).toBeDefined();
+    expect(desc.vectorSearch!.column).toBe("embedding");
+    expect(desc.vectorSearch!.topK).toBe(5);
+    expect(Array.from(desc.vectorSearch!.queryVector)).toEqual([
+      expect.closeTo(0.1), expect.closeTo(0.2), expect.closeTo(0.3),
+    ]);
+  });
+
+  it("compiles JOIN", () => {
+    const desc = sql("SELECT * FROM orders JOIN users ON user_id = id");
+    expect(desc.join).toBeDefined();
+    expect(desc.join!.right.table).toBe("users");
+    expect(desc.join!.leftKey).toBe("user_id");
+    expect(desc.join!.rightKey).toBe("id");
+    expect(desc.join!.type).toBe("inner");
+  });
+
+  it("compiles LEFT JOIN", () => {
+    const desc = sql("SELECT * FROM orders LEFT JOIN users ON uid = id");
+    expect(desc.join!.type).toBe("left");
+  });
+
+  it("compiles UNION ALL", () => {
+    const desc = sql("SELECT a FROM t1 UNION ALL SELECT b FROM t2");
+    expect(desc.setOperation).toBeDefined();
+    expect(desc.setOperation!.mode).toBe("union_all");
+    expect(desc.setOperation!.right.table).toBe("t2");
+  });
+
+  it("compiles UNION (distinct) as union", () => {
+    const desc = sql("SELECT a FROM t1 UNION SELECT b FROM t2");
+    expect(desc.setOperation!.mode).toBe("union");
+  });
+
+  it("compiles INTERSECT", () => {
+    const desc = sql("SELECT id FROM t1 INTERSECT SELECT id FROM t2");
+    expect(desc.setOperation!.mode).toBe("intersect");
+  });
+
+  it("compiles reversed comparison (value op column)", () => {
+    const desc = sql("SELECT * FROM t WHERE 10 < age");
+    expect(desc.filters).toEqual([{ column: "age", op: "gt", value: 10 }]);
+  });
+
+  it("compiles window function", () => {
+    const desc = sql("SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp");
+    expect(desc.windows).toHaveLength(1);
+    expect(desc.windows![0].fn).toBe("row_number");
+    expect(desc.windows![0].partitionBy).toEqual(["dept"]);
+    expect(desc.windows![0].orderBy).toEqual([{ column: "salary", direction: "desc" }]);
+    expect(desc.windows![0].alias).toBe("rn");
+  });
+
+  it("skips OR conditions gracefully", () => {
+    const desc = sql("SELECT * FROM t WHERE a = 1 OR b = 2");
+    // OR cannot be flattened into FilterOp[] — filters will be empty
+    expect(desc.filters).toEqual([]);
+  });
+
+  it("handles AND with NEAR (mixed filters)", () => {
+    const desc = sql("SELECT * FROM t WHERE status = 'active' AND embedding NEAR [0.1, 0.2] TOPK 3");
+    expect(desc.filters).toEqual([{ column: "status", op: "eq", value: "active" }]);
+    expect(desc.vectorSearch).toBeDefined();
+    expect(desc.vectorSearch!.topK).toBe(3);
+  });
+});
+
+describe("SQL Compiler - compileFull", () => {
+  it("returns whereExpr for OR conditions", () => {
+    const result = sqlFull("SELECT * FROM t WHERE a = 1 OR b = 2");
+    expect(result.whereExpr).toBeDefined();
+    expect(result.whereExpr!.kind).toBe("binary");
+    if (result.whereExpr!.kind === "binary") {
+      expect(result.whereExpr!.op).toBe("or");
+    }
+  });
+
+  it("returns no whereExpr for simple AND filters", () => {
+    const result = sqlFull("SELECT * FROM t WHERE a = 1 AND b = 2");
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filters).toHaveLength(2);
+  });
+
+  it("returns whereExpr for LIKE", () => {
+    const result = sqlFull("SELECT * FROM t WHERE name LIKE '%alice%'");
+    expect(result.whereExpr).toBeDefined();
+  });
+
+  it("returns whereExpr for NOT IN", () => {
+    const result = sqlFull("SELECT * FROM t WHERE id NOT IN (1, 2, 3)");
+    expect(result.whereExpr).toBeDefined();
+  });
+
+  it("returns havingExpr for HAVING clause", () => {
+    const result = sqlFull("SELECT dept, COUNT(*) FROM t GROUP BY dept HAVING COUNT(*) > 5");
+    expect(result.havingExpr).toBeDefined();
+    // Aggregate calls should be rewritten to column refs
+    expect(result.havingExpr!.kind).toBe("binary");
+    if (result.havingExpr!.kind === "binary") {
+      expect(result.havingExpr!.left.kind).toBe("column");
+      if (result.havingExpr!.left.kind === "column") {
+        expect(result.havingExpr!.left.name).toBe("count_*");
+      }
+    }
+  });
+
+  it("returns allOrderBy for multi-column ORDER BY", () => {
+    const result = sqlFull("SELECT * FROM t ORDER BY name ASC, age DESC");
+    expect(result.allOrderBy).toBeDefined();
+    expect(result.allOrderBy).toHaveLength(2);
+    expect(result.allOrderBy![0]).toEqual({ column: "name", direction: "asc" });
+    expect(result.allOrderBy![1]).toEqual({ column: "age", direction: "desc" });
+    // Single-column sort fields should not be set when multi-column
+    expect(result.descriptor.sortColumn).toBeUndefined();
+  });
+
+  it("does not set allOrderBy for single-column ORDER BY", () => {
+    const result = sqlFull("SELECT * FROM t ORDER BY name ASC");
+    expect(result.allOrderBy).toBeUndefined();
+    expect(result.descriptor.sortColumn).toBe("name");
+  });
+
+  it("returns computedExprs for CASE in SELECT", () => {
+    const result = sqlFull("SELECT CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END AS category FROM t");
+    expect(result.computedExprs).toBeDefined();
+    expect(result.computedExprs).toHaveLength(1);
+    expect(result.computedExprs![0].alias).toBe("category");
+    expect(result.computedExprs![0].expr.kind).toBe("case_expr");
+  });
+
+  it("returns computedExprs for CAST in SELECT", () => {
+    const result = sqlFull("SELECT CAST(age AS float) AS age_f FROM t");
+    expect(result.computedExprs).toBeDefined();
+    expect(result.computedExprs![0].alias).toBe("age_f");
+    expect(result.computedExprs![0].expr.kind).toBe("cast");
+  });
+
+  it("returns computedExprs for arithmetic in SELECT", () => {
+    const result = sqlFull("SELECT price * quantity AS total FROM t");
+    expect(result.computedExprs).toBeDefined();
+    expect(result.computedExprs![0].alias).toBe("total");
+    expect(result.computedExprs![0].expr.kind).toBe("binary");
+  });
+});

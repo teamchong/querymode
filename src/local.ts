@@ -15,6 +15,7 @@ import { DataFrame, TableQuery } from "./client.js";
 import type { QueryExecutor } from "./client.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
+import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";
 
 /**
  * QueryMode — local-only entry point (no Cloudflare DO dependencies).
@@ -35,6 +36,11 @@ export class QueryMode {
   /** Start building a query against a table. */
   table(name: string): TableQuery {
     return new TableQuery(name, this.executor);
+  }
+
+  /** Parse a SQL query and return a DataFrame backed by the existing pipeline. */
+  sql(query: string): DataFrame {
+    return buildSqlDataFrame(query, this.executor);
   }
 
   /** Execute a multi-table query with explicit orchestration. */
@@ -66,6 +72,9 @@ export { bigIntReplacer } from "./decode.js";
 export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 export { formatResultSummary, formatExplain, formatBytes } from "./format.js";
 export type { LocalTimingInfo } from "./format.js";
+export { sqlToDescriptor } from "./sql/index.js";
+export { parse as parseSql } from "./sql/index.js";
+export { SqlParseError, SqlLexerError } from "./sql/index.js";
 export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions } from "./client.js";
 export type {
   Footer,

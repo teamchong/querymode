@@ -3,6 +3,7 @@ import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
+import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";
 
 export { MasterDO } from "./master-do.js";
 export { QueryDO } from "./query-do.js";
@@ -21,6 +22,9 @@ export { bigIntReplacer } from "./decode.js";
 export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 export { formatResultSummary, formatExplain, formatBytes } from "./format.js";
 export type { LocalTimingInfo } from "./format.js";
+export { sqlToDescriptor } from "./sql/index.js";
+export { parse as parseSql } from "./sql/index.js";
+export { SqlParseError, SqlLexerError } from "./sql/index.js";
 export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js";
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
@@ -105,6 +109,11 @@ export class QueryMode {
   /** Start building a query against a table. Returns a lazy DataFrame. */
   table(name: string): DataFrame {
     return new DataFrame(name, this.executor);
+  }
+
+  /** Parse a SQL query and return a DataFrame backed by the existing pipeline. */
+  sql(query: string): DataFrame {
+    return buildSqlDataFrame(query, this.executor);
   }
 
   /**
