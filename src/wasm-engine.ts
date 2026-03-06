@@ -549,6 +549,36 @@ export class WasmEngine {
     return this.exports.avgFloat64Buffer(ptr >> 3, numElements);
   }
 
+  /** SIMD sum of Int64 buffer. Returns 0n for empty input. */
+  sumInt64(buf: ArrayBuffer): bigint {
+    if (buf.byteLength === 0) return 0n;
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.alloc(buf.byteLength);
+    if (!ptr) return 0n;
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.sumInt64Buffer(ptr >> 3, numElements);
+  }
+
+  /** SIMD min of Int64 buffer. Returns MAX_SAFE_INTEGER for empty input. */
+  minInt64(buf: ArrayBuffer): bigint {
+    if (buf.byteLength === 0) return BigInt(Number.MAX_SAFE_INTEGER);
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.alloc(buf.byteLength);
+    if (!ptr) return BigInt(Number.MAX_SAFE_INTEGER);
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.minInt64Buffer(ptr >> 3, numElements);
+  }
+
+  /** SIMD max of Int64 buffer. Returns MIN_SAFE_INTEGER for empty input. */
+  maxInt64(buf: ArrayBuffer): bigint {
+    if (buf.byteLength === 0) return BigInt(Number.MIN_SAFE_INTEGER);
+    const numElements = buf.byteLength >> 3;
+    const ptr = this.exports.alloc(buf.byteLength);
+    if (!ptr) return BigInt(Number.MIN_SAFE_INTEGER);
+    new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
+    return this.exports.maxInt64Buffer(ptr >> 3, numElements);
+  }
+
   /** Load a fragment file into the WASM fragment reader. */
   loadFragment(data: ArrayBuffer): boolean {
     const ptr = this.exports.alloc(data.byteLength);

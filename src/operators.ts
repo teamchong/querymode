@@ -82,8 +82,9 @@ export class ScanOperator implements Operator {
 
         const scanStart = Date.now();
 
-        // Read + decode this page for all columns
+        // Read all columns for this page in parallel (overlaps R2 range requests)
         const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
+        const readPromises: Promise<void>[] = [];
         for (const col of frag.columns) {
           const colPage = col.pages[pi];
           if (!colPage) continue;
@@ -91,10 +92,14 @@ export class ScanOperator implements Operator {
             this.pagesSkipped++;
             continue;
           }
-          const buf = await frag.readPage(col, colPage);
-          this.bytesRead += buf.byteLength;
-          pageInfoMap.set(col.name, { buf, pageInfo: colPage });
+          readPromises.push(
+            frag.readPage(col, colPage).then(buf => {
+              this.bytesRead += buf.byteLength;
+              pageInfoMap.set(col.name, { buf, pageInfo: colPage });
+            }),
+          );
         }
+        await Promise.all(readPromises);
 
         // Decode columns for this single page
         const decoded = decodePageBatch(pageInfoMap, frag.columns, this.wasm);
@@ -1005,13 +1010,16 @@ export class WasmAggregateOperator implements Operator {
           } else if (col.dtype === "int64") {
             const count = buf.byteLength >> 3;
             acc[ai].count += count;
-            // For int64 we need to read values as BigInt64Array
-            const view = new BigInt64Array(buf);
-            for (const v of view) {
-              const n = Number(v);
-              acc[ai].sum += n;
-              if (n < acc[ai].min) acc[ai].min = n;
-              if (n > acc[ai].max) acc[ai].max = n;
+            if (agg.fn === "sum" || agg.fn === "avg") {
+              acc[ai].sum += Number(this.wasm.sumInt64(buf));
+            }
+            if (agg.fn === "min") {
+              const v = Number(this.wasm.minInt64(buf));
+              if (v < acc[ai].min) acc[ai].min = v;
+            }
+            if (agg.fn === "max") {
+              const v = Number(this.wasm.maxInt64(buf));
+              if (v > acc[ai].max) acc[ai].max = v;
             }
           }
         }
