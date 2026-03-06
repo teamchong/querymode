@@ -6,6 +6,7 @@
 
 export type ErrorCode =
   | "TABLE_NOT_FOUND"
+  | "COLUMN_NOT_FOUND"
   | "INVALID_FORMAT"
   | "SCHEMA_MISMATCH"
   | "INVALID_FILTER"
