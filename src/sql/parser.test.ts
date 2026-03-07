@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parse } from "./parser.js";
+import { parse, parseStatement } from "./parser.js";
 import { SqlParseError } from "./parser.js";
 
 describe("SQL Parser", () => {
@@ -249,6 +249,140 @@ describe("SQL Parser", () => {
       if (stmt.where!.left.kind === "binary") {
         expect(stmt.where!.left.op).toBe("or");
       }
+    }
+  });
+
+  it("parses EXISTS subquery", () => {
+    const stmt = parse("SELECT * FROM t WHERE EXISTS (SELECT id FROM u WHERE u.tid = t.id)");
+    expect(stmt.where!.kind).toBe("exists");
+    if (stmt.where!.kind === "exists") {
+      expect(stmt.where!.negated).toBe(false);
+      expect(stmt.where!.subquery.from).toEqual({ kind: "simple", name: "u", alias: undefined });
+    }
+  });
+
+  it("parses NOT EXISTS subquery", () => {
+    const stmt = parse("SELECT * FROM t WHERE NOT EXISTS (SELECT id FROM u WHERE u.tid = t.id)");
+    expect(stmt.where!.kind).toBe("exists");
+    if (stmt.where!.kind === "exists") {
+      expect(stmt.where!.negated).toBe(true);
+      expect(stmt.where!.subquery.from).toEqual({ kind: "simple", name: "u", alias: undefined });
+    }
+  });
+
+  it("parses NATURAL JOIN", () => {
+    const stmt = parse("SELECT * FROM a NATURAL JOIN b");
+    expect(stmt.from.kind).toBe("join");
+    if (stmt.from.kind === "join") {
+      expect(stmt.from.join.natural).toBe(true);
+      expect(stmt.from.join.joinType).toBe("inner");
+      expect(stmt.from.join.table).toEqual({ kind: "simple", name: "b", alias: undefined });
+    }
+  });
+
+  it("parses NATURAL LEFT JOIN", () => {
+    const stmt = parse("SELECT * FROM a NATURAL LEFT JOIN b");
+    expect(stmt.from.kind).toBe("join");
+    if (stmt.from.kind === "join") {
+      expect(stmt.from.join.natural).toBe(true);
+      expect(stmt.from.join.joinType).toBe("left");
+    }
+  });
+
+  it("parses JOIN with USING clause", () => {
+    const stmt = parse("SELECT * FROM a JOIN b USING (id)");
+    expect(stmt.from.kind).toBe("join");
+    if (stmt.from.kind === "join") {
+      expect(stmt.from.join.using).toEqual(["id"]);
+      expect(stmt.from.join.onCondition).toBeUndefined();
+    }
+  });
+
+  it("parses JOIN with USING clause with multiple columns", () => {
+    const stmt = parse("SELECT * FROM a JOIN b USING (id, name)");
+    expect(stmt.from.kind).toBe("join");
+    if (stmt.from.kind === "join") {
+      expect(stmt.from.join.using).toEqual(["id", "name"]);
+    }
+  });
+
+  it("parses ? parameter binding", () => {
+    const stmt = parse("SELECT * FROM t WHERE id = ?");
+    expect(stmt.where!.kind).toBe("binary");
+    if (stmt.where!.kind === "binary") {
+      expect(stmt.where!.right.kind).toBe("parameter");
+      if (stmt.where!.right.kind === "parameter") {
+        expect(stmt.where!.right.index).toBe(0);
+      }
+    }
+  });
+
+  it("parses multiple ? parameters with incrementing indices", () => {
+    const stmt = parse("SELECT * FROM t WHERE a = ? AND b = ?");
+    if (stmt.where!.kind === "binary" && stmt.where!.op === "and") {
+      const left = stmt.where!.left;
+      const right = stmt.where!.right;
+      if (left.kind === "binary" && left.right.kind === "parameter") {
+        expect(left.right.index).toBe(0);
+      }
+      if (right.kind === "binary" && right.right.kind === "parameter") {
+        expect(right.right.index).toBe(1);
+      }
+    }
+  });
+});
+
+describe("SQL Statement Parser", () => {
+  it("parses SHOW VERSIONS FOR table", () => {
+    const result = parseStatement("SHOW VERSIONS FOR users");
+    expect(result.kind).toBe("show_versions");
+    if (result.kind === "show_versions") {
+      expect(result.stmt.table).toBe("users");
+      expect(result.stmt.limit).toBeUndefined();
+    }
+  });
+
+  it("parses SHOW VERSIONS FOR table LIMIT", () => {
+    const result = parseStatement("SHOW VERSIONS FOR users LIMIT 10");
+    if (result.kind === "show_versions") {
+      expect(result.stmt.table).toBe("users");
+      expect(result.stmt.limit).toBe(10);
+    }
+  });
+
+  it("parses DIFF table VERSION n", () => {
+    const result = parseStatement("DIFF users VERSION 3");
+    expect(result.kind).toBe("diff");
+    if (result.kind === "diff") {
+      expect(result.stmt.table).toBe("users");
+      expect(result.stmt.fromVersion).toBe(3);
+      expect(result.stmt.toVersion).toBeUndefined();
+    }
+  });
+
+  it("parses DIFF table VERSION n AND VERSION m", () => {
+    const result = parseStatement("DIFF users VERSION 2 AND VERSION 5");
+    if (result.kind === "diff") {
+      expect(result.stmt.table).toBe("users");
+      expect(result.stmt.fromVersion).toBe(2);
+      expect(result.stmt.toVersion).toBe(5);
+    }
+  });
+
+  it("parses DIFF with LIMIT", () => {
+    const result = parseStatement("DIFF users VERSION 1 AND VERSION 3 LIMIT 50");
+    if (result.kind === "diff") {
+      expect(result.stmt.fromVersion).toBe(1);
+      expect(result.stmt.toVersion).toBe(3);
+      expect(result.stmt.limit).toBe(50);
+    }
+  });
+
+  it("parses SELECT via parseStatement", () => {
+    const result = parseStatement("SELECT * FROM t");
+    expect(result.kind).toBe("select");
+    if (result.kind === "select") {
+      expect(result.stmt.from).toEqual({ kind: "simple", name: "t", alias: undefined });
     }
   });
 });

@@ -58,7 +58,7 @@ Three analyses on one result set. No SQL string construction, no JSON parsing, n
 
 ### Where the data lives
 
-Data sits in **R2** as columnar files (Parquet, Lance, Iceberg, CSV, JSON, Arrow). Nothing gets replicated to 300 edge nodes. Regional Query DOs cache table footers (~4KB each) and read data pages from R2 via coalesced HTTP range requests (~10ms).
+Data sits in **R2** as columnar files (Parquet, Lance, Iceberg). Nothing gets replicated to 300 edge nodes. Regional Query DOs cache table footers (~4KB each) and read data pages from R2 via coalesced HTTP range requests (~10ms).
 
 "Data at the edge" means metadata cached locally, pages fetched on demand with free egress. Not replicated databases.
 

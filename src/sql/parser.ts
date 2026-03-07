@@ -5,6 +5,7 @@ import type { Token } from "./lexer.js";
 import type {
   SelectStmt, SelectItem, SqlExpr, TableRef, JoinClause, JoinType,
   SqlOrderBy, SqlGroupBy, BinaryOp, UnaryOp, SetOperationType, SqlWindowSpec,
+  SqlStatement, ShowVersionsStmt, DiffStmt,
 } from "./ast.js";
 
 export function parse(sql: string): SelectStmt {
@@ -19,10 +20,22 @@ export function parse(sql: string): SelectStmt {
   return stmt;
 }
 
+export function parseStatement(sql: string): SqlStatement {
+  const tokens = tokenize(sql);
+  const parser = new Parser(tokens, sql);
+  const stmt = parser.parseStatementInternal();
+  if (parser.check(TokenType.SEMICOLON)) parser.advance();
+  if (!parser.check(TokenType.EOF)) {
+    throw parser.error("Unexpected token after statement");
+  }
+  return stmt;
+}
+
 class Parser {
   private tokens: Token[];
   private pos = 0;
   private sql: string;
+  private paramCount = 0;
 
   constructor(tokens: Token[], sql: string) {
     this.tokens = tokens;
@@ -68,6 +81,50 @@ class Parser {
   }
 
   // --- Parsing ---
+
+  parseStatementInternal(): SqlStatement {
+    if (this.check(TokenType.SHOW)) {
+      return { kind: "show_versions", stmt: this.parseShowVersions() };
+    }
+    if (this.check(TokenType.DIFF)) {
+      return { kind: "diff", stmt: this.parseDiff() };
+    }
+    return { kind: "select", stmt: this.parseSelect() };
+  }
+
+  private parseShowVersions(): ShowVersionsStmt {
+    this.expect(TokenType.SHOW);
+    this.expect(TokenType.VERSIONS);
+    this.expect(TokenType.FOR);
+    const table = this.parseIdentifier();
+    let limit: number | undefined;
+    if (this.match(TokenType.LIMIT)) {
+      const tok = this.expect(TokenType.NUMBER);
+      limit = parseInt(tok.lexeme, 10);
+    }
+    return { table, limit };
+  }
+
+  private parseDiff(): DiffStmt {
+    this.expect(TokenType.DIFF);
+    const table = this.parseIdentifier();
+    this.expect(TokenType.VERSION);
+    const fromTok = this.expect(TokenType.NUMBER);
+    const fromVersion = parseInt(fromTok.lexeme, 10);
+    let toVersion: number | undefined;
+    if (this.match(TokenType.AND)) {
+      // Allow optional VERSION keyword after AND
+      this.match(TokenType.VERSION);
+      const toTok = this.expect(TokenType.NUMBER);
+      toVersion = parseInt(toTok.lexeme, 10);
+    }
+    let limit: number | undefined;
+    if (this.match(TokenType.LIMIT)) {
+      const tok = this.expect(TokenType.NUMBER);
+      limit = parseInt(tok.lexeme, 10);
+    }
+    return { table, fromVersion, toVersion, limit };
+  }
 
   parseSelect(): SelectStmt {
     this.expect(TokenType.SELECT);
@@ -212,7 +269,8 @@ class Parser {
   private isJoinKeyword(): boolean {
     const t = this.current().type;
     return t === TokenType.JOIN || t === TokenType.LEFT || t === TokenType.RIGHT ||
-      t === TokenType.INNER || t === TokenType.FULL || t === TokenType.CROSS;
+      t === TokenType.INNER || t === TokenType.FULL || t === TokenType.CROSS ||
+      t === TokenType.NATURAL;
   }
 
   private isClauseKeyword(): boolean {
@@ -220,36 +278,70 @@ class Parser {
     return t === TokenType.WHERE || t === TokenType.GROUP || t === TokenType.ORDER ||
       t === TokenType.LIMIT || t === TokenType.OFFSET || t === TokenType.UNION ||
       t === TokenType.INTERSECT || t === TokenType.EXCEPT || t === TokenType.ON ||
-      t === TokenType.HAVING;
+      t === TokenType.HAVING || t === TokenType.USING;
   }
 
   private parseJoinClause(left: TableRef): JoinClause {
     let joinType: JoinType = "inner";
+    let natural = false;
 
-    if (this.match(TokenType.LEFT)) {
+    if (this.match(TokenType.NATURAL)) {
+      natural = true;
+      // NATURAL can precede any join type or just JOIN
+      if (this.match(TokenType.LEFT)) {
+        this.match(TokenType.OUTER);
+        joinType = "left";
+      } else if (this.match(TokenType.RIGHT)) {
+        this.match(TokenType.OUTER);
+        joinType = "right";
+      } else if (this.match(TokenType.FULL)) {
+        this.match(TokenType.OUTER);
+        joinType = "full";
+      } else if (this.match(TokenType.INNER)) {
+        joinType = "inner";
+      }
+      this.expect(TokenType.JOIN);
+    } else if (this.match(TokenType.LEFT)) {
       this.match(TokenType.OUTER); // optional OUTER
       joinType = "left";
+      this.expect(TokenType.JOIN);
     } else if (this.match(TokenType.RIGHT)) {
       this.match(TokenType.OUTER);
       joinType = "right";
+      this.expect(TokenType.JOIN);
     } else if (this.match(TokenType.FULL)) {
       this.match(TokenType.OUTER);
       joinType = "full";
+      this.expect(TokenType.JOIN);
     } else if (this.match(TokenType.CROSS)) {
       joinType = "cross";
+      this.expect(TokenType.JOIN);
     } else if (this.match(TokenType.INNER)) {
       joinType = "inner";
+      this.expect(TokenType.JOIN);
+    } else {
+      this.expect(TokenType.JOIN);
     }
 
-    this.expect(TokenType.JOIN);
     const table = this.parseSimpleTableRef();
 
     let onCondition: SqlExpr | undefined;
-    if (joinType !== "cross" && this.match(TokenType.ON)) {
-      onCondition = this.parseExpr();
+    let using: string[] | undefined;
+
+    if (!natural && joinType !== "cross") {
+      if (this.match(TokenType.ON)) {
+        onCondition = this.parseExpr();
+      } else if (this.match(TokenType.USING)) {
+        this.expect(TokenType.LPAREN);
+        using = [];
+        do {
+          using.push(this.parseIdentifier());
+        } while (this.match(TokenType.COMMA));
+        this.expect(TokenType.RPAREN);
+      }
     }
 
-    return { joinType, table, onCondition };
+    return { joinType, table, onCondition, natural: natural || undefined, using };
   }
 
   // --- GROUP BY ---
@@ -334,6 +426,13 @@ class Parser {
 
   private parseNot(): SqlExpr {
     if (this.match(TokenType.NOT)) {
+      // NOT EXISTS (SELECT ...)
+      if (this.match(TokenType.EXISTS)) {
+        this.expect(TokenType.LPAREN);
+        const subquery = this.parseSelect();
+        this.expect(TokenType.RPAREN);
+        return { kind: "exists", subquery, negated: true };
+      }
       const operand = this.parseNot();
       return { kind: "unary", op: "not", operand };
     }
@@ -514,6 +613,20 @@ class Parser {
       // Strip surrounding quotes
       const raw = tok.lexeme.slice(1, -1).replace(/\\'/g, "'");
       return { kind: "value", value: { type: "string", value: raw } };
+    }
+
+    // Parameter binding (?)
+    if (this.match(TokenType.PARAMETER)) {
+      const index = this.paramCount++;
+      return { kind: "parameter", index };
+    }
+
+    // EXISTS (SELECT ...)
+    if (this.match(TokenType.EXISTS)) {
+      this.expect(TokenType.LPAREN);
+      const subquery = this.parseSelect();
+      this.expect(TokenType.RPAREN);
+      return { kind: "exists", subquery, negated: false };
     }
 
     // Parenthesized expression

@@ -6,14 +6,23 @@ export enum TokenType {
   IS, NULL, AS, DISTINCT, ORDER, BY, ASC, DESC, LIMIT, OFFSET,
   GROUP, HAVING,
 
+  // DDL keywords
+  CREATE, DROP, ALTER, TABLE, INDEX, VECTOR, IF, SHOW, INDEXES,
+
+  // Time travel / diff keywords
+  DIFF, VERSION, VERSIONS, CHANGES, SINCE, FOR, HEAD,
+
   // JOIN keywords
-  JOIN, LEFT, RIGHT, INNER, OUTER, FULL, CROSS, ON,
+  JOIN, LEFT, RIGHT, INNER, OUTER, FULL, CROSS, ON, NATURAL, USING,
 
   // Set operations
   UNION, INTERSECT, EXCEPT, ALL,
 
   // CASE
   CASE, WHEN, THEN, ELSE, END,
+
+  // Subquery keywords
+  EXISTS,
 
   // Type casting
   CAST,
@@ -24,11 +33,20 @@ export enum TokenType {
   // Vector search
   NEAR, TOPK,
 
+  // Logic table extension
+  WITH, DATA, LOGIC_TABLE, LOGIC,
+
   // Aggregate functions (recognized as keywords for cleaner parsing)
   COUNT, SUM, AVG, MIN, MAX,
 
-  // Window function names
-  ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD,
+  // Ranking functions
+  ROW_NUMBER, RANK, DENSE_RANK, NTILE, PERCENT_RANK, CUME_DIST,
+
+  // Offset/Analytic functions
+  LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE,
+
+  // Time window functions
+  INTERVAL, SESSION, TUMBLE, HOP,
 
   // Boolean
   TRUE, FALSE,
@@ -40,6 +58,7 @@ export enum TokenType {
   STAR, EQ, NE, LT, LE, GT, GE,
   PLUS, MINUS, SLASH, CONCAT,
   COMMA, DOT, LPAREN, RPAREN, SEMICOLON, LBRACKET, RBRACKET,
+  PARAMETER,
 
   EOF,
 }
@@ -58,23 +77,39 @@ const KEYWORDS = new Map<string, TokenType>([
   ["DISTINCT", TokenType.DISTINCT], ["ORDER", TokenType.ORDER], ["BY", TokenType.BY],
   ["ASC", TokenType.ASC], ["DESC", TokenType.DESC], ["LIMIT", TokenType.LIMIT],
   ["OFFSET", TokenType.OFFSET], ["GROUP", TokenType.GROUP], ["HAVING", TokenType.HAVING],
+  ["CREATE", TokenType.CREATE], ["DROP", TokenType.DROP], ["ALTER", TokenType.ALTER],
+  ["TABLE", TokenType.TABLE], ["INDEX", TokenType.INDEX], ["VECTOR", TokenType.VECTOR],
+  ["IF", TokenType.IF], ["SHOW", TokenType.SHOW], ["INDEXES", TokenType.INDEXES],
+  ["DIFF", TokenType.DIFF], ["VERSION", TokenType.VERSION], ["VERSIONS", TokenType.VERSIONS],
+  ["CHANGES", TokenType.CHANGES], ["SINCE", TokenType.SINCE], ["FOR", TokenType.FOR],
+  ["HEAD", TokenType.HEAD],
   ["JOIN", TokenType.JOIN], ["LEFT", TokenType.LEFT], ["RIGHT", TokenType.RIGHT],
   ["INNER", TokenType.INNER], ["OUTER", TokenType.OUTER], ["FULL", TokenType.FULL],
-  ["CROSS", TokenType.CROSS], ["ON", TokenType.ON],
+  ["CROSS", TokenType.CROSS], ["ON", TokenType.ON], ["NATURAL", TokenType.NATURAL],
+  ["USING", TokenType.USING],
   ["UNION", TokenType.UNION], ["INTERSECT", TokenType.INTERSECT],
   ["EXCEPT", TokenType.EXCEPT], ["ALL", TokenType.ALL],
   ["CASE", TokenType.CASE], ["WHEN", TokenType.WHEN], ["THEN", TokenType.THEN],
   ["ELSE", TokenType.ELSE], ["END", TokenType.END],
+  ["EXISTS", TokenType.EXISTS],
   ["CAST", TokenType.CAST],
   ["OVER", TokenType.OVER], ["PARTITION", TokenType.PARTITION],
   ["ROWS", TokenType.ROWS], ["RANGE", TokenType.RANGE],
   ["UNBOUNDED", TokenType.UNBOUNDED], ["PRECEDING", TokenType.PRECEDING],
   ["FOLLOWING", TokenType.FOLLOWING], ["CURRENT", TokenType.CURRENT],
   ["NEAR", TokenType.NEAR], ["TOPK", TokenType.TOPK],
+  ["WITH", TokenType.WITH], ["DATA", TokenType.DATA],
+  ["LOGIC_TABLE", TokenType.LOGIC_TABLE], ["LOGIC", TokenType.LOGIC],
   ["COUNT", TokenType.COUNT], ["SUM", TokenType.SUM], ["AVG", TokenType.AVG],
   ["MIN", TokenType.MIN], ["MAX", TokenType.MAX],
   ["ROW_NUMBER", TokenType.ROW_NUMBER], ["RANK", TokenType.RANK],
-  ["DENSE_RANK", TokenType.DENSE_RANK], ["LAG", TokenType.LAG], ["LEAD", TokenType.LEAD],
+  ["DENSE_RANK", TokenType.DENSE_RANK], ["NTILE", TokenType.NTILE],
+  ["PERCENT_RANK", TokenType.PERCENT_RANK], ["CUME_DIST", TokenType.CUME_DIST],
+  ["LAG", TokenType.LAG], ["LEAD", TokenType.LEAD],
+  ["FIRST_VALUE", TokenType.FIRST_VALUE], ["LAST_VALUE", TokenType.LAST_VALUE],
+  ["NTH_VALUE", TokenType.NTH_VALUE],
+  ["INTERVAL", TokenType.INTERVAL], ["SESSION", TokenType.SESSION],
+  ["TUMBLE", TokenType.TUMBLE], ["HOP", TokenType.HOP],
   ["TRUE", TokenType.TRUE], ["FALSE", TokenType.FALSE],
 ]);
 
@@ -158,6 +193,7 @@ export function tokenize(sql: string): Token[] {
       case "/": tokens.push({ type: TokenType.SLASH, lexeme: "/", position: start }); break;
       case "[": tokens.push({ type: TokenType.LBRACKET, lexeme: "[", position: start }); break;
       case "]": tokens.push({ type: TokenType.RBRACKET, lexeme: "]", position: start }); break;
+      case "?": tokens.push({ type: TokenType.PARAMETER, lexeme: "?", position: start }); break;
       case "=": tokens.push({ type: TokenType.EQ, lexeme: "=", position: start }); break;
       case "!":
         if (pos < len && sql[pos] === "=") {

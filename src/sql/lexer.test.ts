@@ -118,4 +118,28 @@ describe("SQL Lexer", () => {
     expect(() => tokenize("SELECT `unclosed")).toThrow(SqlLexerError);
     expect(() => tokenize("SELECT `unclosed")).toThrow(/Unterminated backtick identifier/);
   });
+
+  it("tokenizes DDL keywords", () => {
+    const tokens = tokenize("CREATE TABLE IF NOT EXISTS DROP ALTER INDEX VECTOR SHOW INDEXES");
+    expect(tokens[0].type).toBe(TokenType.CREATE);
+    expect(tokens[1].type).toBe(TokenType.TABLE);
+    expect(tokens[2].type).toBe(TokenType.IF);
+    expect(tokens[3].type).toBe(TokenType.NOT);
+    expect(tokens[4].type).toBe(TokenType.EXISTS);
+    expect(tokens[5].type).toBe(TokenType.DROP);
+    expect(tokens[6].type).toBe(TokenType.ALTER);
+    expect(tokens[7].type).toBe(TokenType.INDEX);
+    expect(tokens[8].type).toBe(TokenType.VECTOR);
+    expect(tokens[9].type).toBe(TokenType.SHOW);
+    expect(tokens[10].type).toBe(TokenType.INDEXES);
+    expect(tokens[11].type).toBe(TokenType.EOF);
+  });
+
+  it("tokenizes ? as PARAMETER token", () => {
+    const tokens = tokenize("SELECT * FROM t WHERE id = ? AND name = ?");
+    // Tokens: SELECT * FROM t WHERE id = ? AND name = ? EOF
+    //         0      1 2    3 4     5  6 7 8   9    10 11 12
+    expect(tokens[7]).toMatchObject({ type: TokenType.PARAMETER, lexeme: "?" });
+    expect(tokens[11]).toMatchObject({ type: TokenType.PARAMETER, lexeme: "?" });
+  });
 });

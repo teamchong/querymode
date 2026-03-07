@@ -26,7 +26,9 @@ export type SqlExpr =
   | { kind: "case_expr"; operand?: SqlExpr; whenClauses: CaseWhen[]; elseResult?: SqlExpr }
   | { kind: "cast"; expr: SqlExpr; targetType: string }
   | { kind: "star" }
-  | { kind: "near"; column: SqlExpr; vector: number[]; topK?: number };
+  | { kind: "near"; column: SqlExpr; vector: number[]; topK?: number }
+  | { kind: "exists"; subquery: SelectStmt; negated: boolean }
+  | { kind: "parameter"; index: number };
 
 export interface CaseWhen {
   condition: SqlExpr;
@@ -57,6 +59,8 @@ export interface JoinClause {
   joinType: JoinType;
   table: TableRef;
   onCondition?: SqlExpr;
+  natural?: boolean;
+  using?: string[];
 }
 
 export type TableRef =
@@ -91,3 +95,20 @@ export interface SelectStmt {
   offset?: number;
   setOperation?: SetOperation;
 }
+
+export interface ShowVersionsStmt {
+  table: string;
+  limit?: number;
+}
+
+export interface DiffStmt {
+  table: string;
+  fromVersion: number;
+  toVersion?: number;
+  limit?: number;
+}
+
+export type SqlStatement =
+  | { kind: "select"; stmt: SelectStmt }
+  | { kind: "show_versions"; stmt: ShowVersionsStmt }
+  | { kind: "diff"; stmt: DiffStmt };

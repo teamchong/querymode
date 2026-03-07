@@ -18,6 +18,8 @@ export default defineConfig({
       "src/manifest.test.ts",
       "src/wasm-engine.integration.test.ts",
       "src/query-do.integration.test.ts",
+      "src/sql/lexer.test.ts",
+      "src/sql/parser.test.ts",
     ],
     hookTimeout: 300_000,
     testTimeout: 300_000,
