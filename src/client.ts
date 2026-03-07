@@ -1,6 +1,8 @@
 import type {
   AggregateOp,
+  AppendOptions,
   AppendResult,
+  DropResult,
   ExplainResult,
   FilterOp,
   JoinDescriptor,
@@ -555,12 +557,23 @@ export class DataFrame<T extends Row = Row> {
     return this._executor.cursor(this.toDescriptor(), opts?.batchSize ?? 1000);
   }
 
-  /** Append rows to this table. Uses CAS coordination for safe concurrent writes. */
-  async append(rows: Record<string, unknown>[]): Promise<AppendResult> {
+  /** Append rows to this table. Uses CAS coordination for safe concurrent writes.
+   *  Pass options.path to write to a specific R2 location (for catalog/pipeline use).
+   *  Pass options.metadata to attach lineage info (source tables, pipeline ID, TTL). */
+  async append(rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!this._executor.append) {
       throw new Error("append() requires an executor with write support");
     }
-    return this._executor.append(this._table, rows);
+    return this._executor.append(this._table, rows, options);
+  }
+
+  /** Drop this table — deletes all fragments from R2 and removes metadata.
+   *  Use for cleanup after pipeline completion or TTL expiry. */
+  async dropTable(): Promise<DropResult> {
+    if (!this._executor.drop) {
+      throw new Error("dropTable() requires an executor with write support");
+    }
+    return this._executor.drop(this._table);
   }
 
   /** Execute and return a columnar binary stream of rows. Only works with RemoteExecutor. */
@@ -777,7 +790,9 @@ export interface QueryDescriptor {
 export interface QueryExecutor {
   execute(query: QueryDescriptor): Promise<QueryResult>;
   /** Optional: append rows (available on local and remote executors with write support) */
-  append?(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
+  append?(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult>;
+  /** Optional: drop a table — delete all fragments and metadata */
+  drop?(table: string): Promise<DropResult>;
   /** Optional: streaming execution (available on remote executors) */
   executeStream?(query: QueryDescriptor): Promise<ReadableStream<Row>>;
   /** Optional: count without full materialization */

@@ -256,12 +256,30 @@ export interface IcebergDatasetMeta {
   updatedAt: number;
 }
 
+/** Options for append (write) operations — catalog-friendly */
+export interface AppendOptions {
+  /** R2 path prefix for the output Lance dataset (e.g., "pipelines/job-123/output.lance/").
+   *  Defaults to "{table}.lance/" if not specified. */
+  path?: string;
+  /** Metadata attached to this write — visible to catalog layers for lineage/lifecycle. */
+  metadata?: Record<string, string>;
+}
+
 /** Result of an append (write) operation */
 export interface AppendResult {
   version: number;
   dataFilePath: string;
   retries: number;
   rowsWritten: number;
+  /** Metadata attached to this write, if any. */
+  metadata?: Record<string, string>;
+}
+
+/** Result of a drop (delete) operation */
+export interface DropResult {
+  table: string;
+  fragmentsDeleted: number;
+  bytesFreed: number;
 }
 
 /** Vector index metadata for IVF-PQ acceleration */
@@ -315,7 +333,8 @@ export interface QueryDORpc {
 
 /** RPC interface exposed by MasterDO for zero-serialization calls */
 export interface MasterDORpc {
-  appendRpc(table: string, rows: Record<string, unknown>[]): Promise<AppendResult>;
+  appendRpc(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult>;
+  dropRpc(table: string): Promise<DropResult>;
   registerRpc(queryDoId: string, region: string): Promise<{ registered: boolean; tableVersions?: Record<string, unknown> }>;
   writeRpc(body: unknown): Promise<unknown>;
   refreshRpc(body: unknown): Promise<unknown>;

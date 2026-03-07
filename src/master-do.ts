@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult } from "./types.js";
+import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult, AppendOptions, DropResult } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -105,7 +105,7 @@ export class MasterDO extends DurableObject<Env> {
   }
 
   /** Core append logic. */
-  private async executeAppend(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+  private async executeAppend(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!rows?.length) throw new Error("No rows provided");
 
     const wasm = await this.getWasm();
@@ -163,9 +163,11 @@ export class MasterDO extends DurableObject<Env> {
     // Build Lance fragment via WASM
     const fragmentBytes = wasm.buildFragment(columnArrays);
 
-    // Generate unique data file path
+    // Generate unique data file path — options.path overrides default location
     const uuid = crypto.randomUUID();
-    const r2Prefix = table.endsWith(".lance/") || table.endsWith("/") ? table : `${table}.lance/`;
+    const r2Prefix = options?.path
+      ? (options.path.endsWith("/") ? options.path : `${options.path}/`)
+      : (table.endsWith(".lance/") || table.endsWith("/") ? table : `${table}.lance/`);
     const dataFilePath = `data/${uuid}.lance`;
     const dataR2Key = `${r2Prefix}${dataFilePath}`;
 
@@ -232,16 +234,19 @@ export class MasterDO extends DurableObject<Env> {
           await this.broadcast(tableName, dataR2Key, footerResult, { totalRows });
         }
 
-        // Update stored table meta
-        await this.ctx.storage.put(`table:${tableName}`, {
+        // Update stored table meta (include metadata if provided)
+        const tableMeta: Record<string, unknown> = {
           name: tableName, r2Prefix, totalRows, updatedAt: Date.now(),
-        });
+        };
+        if (options?.metadata) tableMeta.writeMetadata = options.metadata;
+        await this.ctx.storage.put(`table:${tableName}`, tableMeta);
 
         return {
           version: newVersion,
           dataFilePath,
           retries: attempt,
           rowsWritten: rows.length,
+          ...(options?.metadata ? { metadata: options.metadata } : {}),
         } satisfies AppendResult;
       } catch {
         // R2 conditional put failure — retry
@@ -433,7 +438,54 @@ export class MasterDO extends DurableObject<Env> {
   }
 
   /** RPC: Append rows — zero-serialization call from RemoteExecutor. */
-  async appendRpc(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
-    return this.executeAppend(table, rows);
+  async appendRpc(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
+    return this.executeAppend(table, rows, options);
+  }
+
+  /** RPC: Drop a table — delete all R2 objects and DO metadata. */
+  async dropRpc(table: string): Promise<DropResult> {
+    const tableName = table.replace(/\.lance\/?$/, "").split("/").pop() ?? table;
+    const meta = await this.ctx.storage.get<Record<string, unknown>>(`table:${tableName}`);
+
+    let fragmentsDeleted = 0;
+    let bytesFreed = 0;
+
+    if (meta) {
+      const r2Prefix = (meta.r2Prefix as string) ?? `${tableName}.lance/`;
+
+      // List and delete all R2 objects under this prefix
+      let cursor: string | undefined;
+      do {
+        const listed = await this.env.DATA_BUCKET.list({
+          prefix: r2Prefix,
+          cursor,
+          limit: 1000,
+        });
+
+        if (listed.objects.length > 0) {
+          const keys = listed.objects.map(o => o.key);
+          bytesFreed += listed.objects.reduce((s, o) => s + o.size, 0);
+          fragmentsDeleted += keys.length;
+          // R2 delete supports up to 1000 keys per call
+          await this.env.DATA_BUCKET.delete(keys);
+        }
+
+        cursor = listed.truncated ? listed.cursor : undefined;
+      } while (cursor);
+
+      // Remove DO metadata
+      await this.ctx.storage.delete(`table:${tableName}`);
+
+      // Broadcast invalidation (empty footer signals deletion)
+      const regions = (await this.ctx.storage.get<Record<string, string>>("regions")) ?? {};
+      await Promise.allSettled(Object.entries(regions).map(async ([, doId]) => {
+        try {
+          const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId)) as unknown as QueryDORpc;
+          await queryDo.invalidateRpc({ table: tableName, deleted: true, timestamp: Date.now() });
+        } catch { /* best-effort broadcast */ }
+      }));
+    }
+
+    return { table: tableName, fragmentsDeleted, bytesFreed };
   }
 }

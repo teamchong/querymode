@@ -24,6 +24,7 @@ export default defineConfig({
         { label: "Operators", slug: "operators" },
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },
+        { label: "Write Path", slug: "write-path" },
         { label: "Deployment", slug: "deployment" },
       ],
     }),

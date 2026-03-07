@@ -1,6 +1,6 @@
 import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
-import type { AppendResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
+import type { AppendOptions, AppendResult, DropResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";
@@ -53,7 +53,9 @@ export type {
   VectorSearchParams,
   IcebergSchema,
   IcebergDatasetMeta,
+  AppendOptions,
   AppendResult,
+  DropResult,
   ExplainResult,
   VectorIndexInfo,
   VersionInfo,
@@ -184,13 +186,23 @@ class RemoteExecutor implements QueryExecutor {
   }
 
   /** Append rows via RPC to Master DO. */
-  async append(table: string, rows: Record<string, unknown>[]): Promise<AppendResult> {
+  async append(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!this.masterNamespace) {
       throw new Error("append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
     const id = this.masterNamespace.idFromName("master");
     const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;
-    return masterRpc.appendRpc(table, rows);
+    return masterRpc.appendRpc(table, rows, options);
+  }
+
+  /** Drop a table via RPC to Master DO — deletes all R2 objects and metadata. */
+  async drop(table: string): Promise<DropResult> {
+    if (!this.masterNamespace) {
+      throw new Error("drop() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
+    }
+    const id = this.masterNamespace.idFromName("master");
+    const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;
+    return masterRpc.dropRpc(table);
   }
 
   /** Stream query results via RPC — columnar binary framed stream. */

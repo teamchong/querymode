@@ -1,0 +1,92 @@
+---
+title: Write Path
+description: Append rows, write to specific paths, attach metadata, and drop tables.
+---
+
+QueryMode is a query/transform engine — not a data catalog. But pipeline intermediates need to live somewhere, and the catalog layer above needs to manage them. These features make QueryMode a good citizen for that layer.
+
+## Append rows
+
+```typescript
+const qm = QueryMode.remote(env.QUERY_DO, { masterDoNamespace: env.MASTER_DO })
+
+await qm.table("events").append([
+  { id: 1, type: "click", created_at: "2026-03-06" },
+  { id: 2, type: "view", created_at: "2026-03-06" },
+])
+```
+
+Writes use CAS (compare-and-swap) coordination on Lance manifests. Each `append()` creates a new Lance fragment in R2, then atomically updates the manifest version via ETag-conditioned PUT. Concurrent writers retry automatically (up to 10 attempts).
+
+## Write to a specific path
+
+By default, `append()` writes to `{table}.lance/` in R2. For pipeline intermediates, you want control over where data lands:
+
+```typescript
+await qm.table("enriched_orders").append(rows, {
+  path: "pipelines/job-abc/enriched_orders.lance/"
+})
+```
+
+This lets the catalog layer above organize intermediates by pipeline run, job ID, or any other scheme. QueryMode doesn't care about the path structure — it just writes Lance fragments under whatever prefix you give it.
+
+## Metadata on write
+
+Attach metadata to writes so the catalog layer can track lineage and lifecycle:
+
+```typescript
+await qm.table("enriched_orders").append(rows, {
+  path: "pipelines/job-abc/enriched_orders.lance/",
+  metadata: {
+    pipelineId: "job-abc",
+    sourceTables: "orders,users",
+    ttl: "7d",
+    createdBy: "agent-pricing-v2",
+  }
+})
+```
+
+Metadata is stored in DO storage alongside the table entry. The catalog layer can read it via `listTablesRpc()` or direct DO storage queries to decide what to keep, what to garbage-collect, and what depends on what.
+
+## Drop tables
+
+Delete a table — removes all Lance fragments from R2 and clears DO metadata:
+
+```typescript
+const result = await qm.table("enriched_orders").dropTable()
+// { table: "enriched_orders", fragmentsDeleted: 47, bytesFreed: 1283904 }
+```
+
+Drop is the cleanup primitive. The catalog layer calls it when a pipeline's intermediates expire (TTL), when a job is cancelled, or during periodic garbage collection.
+
+Drop broadcasts a deletion invalidation to all Query DOs so they evict the table from their footer caches immediately.
+
+## Read-after-write consistency
+
+QueryMode guarantees read-after-write consistency through two mechanisms:
+
+1. **CAS manifests** — Each append atomically updates the Lance manifest version via R2 ETag-conditioned PUT. A reader that gets version N sees all rows written up to version N. No partial writes.
+
+2. **Broadcast invalidation** — After a successful append, MasterDO broadcasts the new footer to all registered Query DOs. Query DOs update their footer cache immediately. Any query that arrives after the broadcast sees the new data.
+
+The gap between "append returns" and "all Query DOs updated" is the broadcast latency — typically single-digit milliseconds within a region. For cross-region, it's the inter-region RTT. If your pipeline writes and reads from the same region, consistency is effectively immediate.
+
+```typescript
+// Write
+await qm.table("results").append(rows)
+
+// Read immediately after — guaranteed to see the new rows
+const count = await qm.table("results").count()
+```
+
+## What QueryMode doesn't do
+
+QueryMode is the query/transform layer. These are catalog-layer responsibilities:
+
+- **Lineage tracking** — which pipeline produced which table, dependency graphs
+- **Lifecycle management** — TTL enforcement, garbage collection schedules
+- **Access control** — who can read/write which tables
+- **Schema evolution** — column additions, type changes across versions
+- **Cross-table transactions** — atomically updating multiple tables
+
+The metadata you attach via `append()` gives the catalog layer the raw information it needs. QueryMode stores it but doesn't interpret it.
