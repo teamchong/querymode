@@ -14,6 +14,7 @@ import type {
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
+import type { Operator, RowBatch } from "./operators.js";
 
 // ---------------------------------------------------------------------------
 // Progress callback for collect()
@@ -99,6 +100,7 @@ export class DataFrame<T extends Row = Row> {
   private _version?: number;
   private _vectorEncoder?: (text: string) => Promise<Float32Array>;
   private _vectorQueryText?: string;
+  private _pipeStages: PipeStage[];
   private _executor: QueryExecutor;
 
   constructor(table: string, executor: QueryExecutor, init?: Partial<DataFrameInit>) {
@@ -124,6 +126,7 @@ export class DataFrame<T extends Row = Row> {
     this._version = init?.version;
     this._vectorEncoder = init?.vectorEncoder;
     this._vectorQueryText = init?.vectorQueryText;
+    this._pipeStages = init?.pipeStages ?? [];
   }
 
   /** Create a shallow clone with overrides — returns a new immutable DataFrame. */
@@ -149,6 +152,7 @@ export class DataFrame<T extends Row = Row> {
       version: this._version,
       vectorEncoder: this._vectorEncoder,
       vectorQueryText: this._vectorQueryText,
+      pipeStages: this._pipeStages,
       ...overrides,
     });
   }
@@ -330,6 +334,25 @@ export class DataFrame<T extends Row = Row> {
   /** Add a window function. Serializable spec — no callbacks. */
   window(spec: WindowSpec): DataFrame {
     return this.derive({ windows: [...this._windows, spec] }) as DataFrame;
+  }
+
+  /**
+   * Inject a custom operator into the pipeline. The function receives the
+   * upstream Operator and must return a new Operator. Runs at collect() time.
+   *
+   *   const result = await qm.table("events")
+   *     .filter("created_at", "gte", startDate)
+   *     .pipe(upstream => new ComputedColumnOperator(upstream, [
+   *       { alias: "score", fn: row => model.predict(row) },
+   *     ]))
+   *     .sort("score", "desc")
+   *     .limit(10)
+   *     .collect()
+   */
+  pipe(fn: (upstream: Operator) => Operator): DataFrame {
+    return this.derive({
+      pipeStages: [...(this._pipeStages ?? []), fn],
+    }) as DataFrame;
   }
 
   /** Deduplicate rows. If no columns specified, dedup on all columns. */
@@ -584,6 +607,47 @@ export class DataFrame<T extends Row = Row> {
     return this._executor.executeStream(this.toDescriptor());
   }
 
+  /**
+   * Escape hatch: get the raw Operator for this query. Resolves deferred
+   * subqueries and vector encoders, then returns an Operator you can wrap
+   * with your own operators before re-entering via DataFrame.fromOperator().
+   *
+   * Requires an executor that supports toOperator (local-executor, query-do).
+   */
+  async toOperator(): Promise<Operator> {
+    if (!this._executor.toOperator) {
+      throw new Error("toOperator() requires an executor with operator pipeline support");
+    }
+    const desc = await this.resolveDeferred();
+    return this._executor.toOperator(desc);
+  }
+
+  /**
+   * Re-entry: wrap a raw Operator back into a DataFrame for further chaining.
+   * The operator is drained at collect() time.
+   */
+  static fromOperator<R extends Row = Row>(op: Operator, executor: QueryExecutor): DataFrame<R> {
+    const drainExecutor: QueryExecutor = {
+      async execute(_query: QueryDescriptor): Promise<QueryResult> {
+        const rows: Row[] = [];
+        let batch: RowBatch | null;
+        while ((batch = await op.next()) !== null) {
+          rows.push(...batch);
+        }
+        await op.close();
+        return {
+          rows,
+          rowCount: rows.length,
+          columns: rows.length > 0 ? Object.keys(rows[0]) : [],
+          bytesRead: 0,
+          pagesSkipped: 0,
+          durationMs: 0,
+        };
+      },
+    };
+    return new DataFrame<R>("__from_operator__", drainExecutor);
+  }
+
   toDescriptor(): QueryDescriptor {
     return {
       table: this._table,
@@ -606,6 +670,7 @@ export class DataFrame<T extends Row = Row> {
         ? this._subqueryIn.map(sq => ({ column: sq.column, valueSet: sq.valueSet }))
         : undefined,
       version: this._version,
+      pipeStages: this._pipeStages.length > 0 ? this._pipeStages : undefined,
     };
   }
 }
@@ -736,6 +801,9 @@ export class MaterializedExecutor implements QueryExecutor {
 // DataFrameInit — internal state for derive()
 // ---------------------------------------------------------------------------
 
+/** A function that wraps an upstream Operator, returning a new Operator. */
+export type PipeStage = (upstream: Operator) => Operator;
+
 interface DataFrameInit {
   filters: FilterOp[];
   projections: string[];
@@ -757,6 +825,7 @@ interface DataFrameInit {
   version?: number;
   vectorEncoder?: (text: string) => Promise<Float32Array>;
   vectorQueryText?: string;
+  pipeStages: PipeStage[];
 }
 
 // ---------------------------------------------------------------------------
@@ -784,6 +853,7 @@ export interface QueryDescriptor {
   setOperation?: { mode: "union" | "union_all" | "intersect" | "except"; right: QueryDescriptor };
   subqueryIn?: { column: string; valueSet: Set<string> }[];
   version?: number;
+  pipeStages?: PipeStage[];
 }
 
 /** Interface for query execution backends (local, DO, browser) */
@@ -805,4 +875,6 @@ export interface QueryExecutor {
   explain?(query: QueryDescriptor): Promise<ExplainResult>;
   /** Optional: lazy batch iteration */
   cursor?(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]>;
+  /** Optional: return the raw Operator pipeline for escape-hatch composition */
+  toOperator?(query: QueryDescriptor): Promise<Operator>;
 }

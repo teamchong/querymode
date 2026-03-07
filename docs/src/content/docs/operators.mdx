@@ -119,3 +119,65 @@ const scored = new ComputedColumnOperator(filtered, [
 ])
 const top10 = new TopKOperator(scored, "ml_score", true, 10)
 ```
+
+## Pipe: inject custom stages into the DataFrame
+
+The DataFrame API's `.pipe()` method lets you inject any custom operator into the pipeline without leaving the fluent chain:
+
+```typescript
+import { QueryMode, ComputedColumnOperator } from "querymode"
+
+const qm = QueryMode.local()
+const result = await qm.table("events")
+  .filter("created_at", "gte", "2024-01-01")
+  .pipe(upstream => new ComputedColumnOperator(upstream, [
+    { alias: "score", fn: row => scoreModel.predict(row) },
+  ]))
+  .sort("score", "desc")
+  .limit(10)
+  .collect()
+```
+
+Chain multiple `.pipe()` calls — each one wraps the previous stage:
+
+```typescript
+const result = await qm.table("events")
+  .filter("status", "eq", "active")
+  .pipe(upstream => new ComputedColumnOperator(upstream, [
+    { alias: "risk", fn: row => computeRisk(row) },
+  ]))
+  .pipe(upstream => new FilterOperator(upstream, [
+    { column: "risk", op: "gt", value: 0.8 },
+  ]))
+  .collect()
+```
+
+## Escape hatch: toOperator / fromOperator
+
+For full control, break out of the DataFrame into raw operators, then re-enter:
+
+```typescript
+// Escape: get the raw Operator pipeline
+const op = await qm.table("events")
+  .filter("status", "eq", "active")
+  .toOperator()
+
+// Your code: wrap with custom operators
+const scored = new ComputedColumnOperator(op, [
+  { alias: "score", fn: row => scoreModel.predict(row) },
+])
+const filtered = new FilterOperator(scored, [
+  { column: "score", op: "gt", value: 0.9 },
+])
+
+// Re-enter: wrap back into a DataFrame
+const result = await DataFrame.fromOperator(filtered, executor)
+  .sort("score", "desc")
+  .limit(10)
+  .collect()
+```
+
+Three levels of control:
+1. **DataFrame chain** — convenience methods for common operations
+2. **`.pipe()`** — inject custom operators without leaving the chain
+3. **`toOperator()` / `fromOperator()`** — full escape hatch for arbitrary composition

@@ -15,6 +15,14 @@ export { ReaderRegistry, FileDataSource, UrlDataSource } from "./reader.js";
 export type { FormatReader, DataSource } from "./reader.js";
 export { DataFrame, TableQuery, MaterializedExecutor } from "./client.js";
 export { LazyResultHandle } from "./client.js";
+export {
+  FilterOperator, AggregateOperator, TopKOperator, ProjectOperator,
+  ComputedColumnOperator, HashJoinOperator, ExternalSortOperator,
+  InMemorySortOperator, WindowOperator, DistinctOperator, SetOperator,
+  LimitOperator, SubqueryInOperator,
+  drainPipeline, buildEdgePipeline,
+} from "./operators.js";
+export type { Operator, RowBatch } from "./operators.js";
 export { QueryModeError } from "./errors.js";
 export type { ErrorCode } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
@@ -29,7 +37,7 @@ export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js"
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
 export type { MaterializationCacheOptions } from "./lazy.js";
-export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions } from "./client.js";
+export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions, PipeStage } from "./client.js";
 export type {
   Env,
   Footer,
