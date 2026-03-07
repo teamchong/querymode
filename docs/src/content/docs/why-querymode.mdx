@@ -3,11 +3,13 @@ title: Why QueryMode
 description: Agents are the new users. They need dynamic pipelines, not pre-built ETL.
 ---
 
-1. **Agents are becoming the majority of internet traffic.** They serve different owners across different parts of the world, but share the same training data and independently reach the same conclusions. When thousands of agents hit the same endpoints at the same millisecond, the result is thundering herds that look like a DDoS — except every request is legitimate. That's not a DDoS attack. That's just Tuesday. Data must live at the edge to survive this.
+## Two problems, two solutions
 
-2. **Agents need live data.** Decisions based on outdated training data lead to bad outcomes. Training data can't keep up with the speed the world produces information. Agents make API calls for live data — lots of them. That data needs to live at the edge, close to where agents run.
+**Problem 1: Scale.** Agents share training data and independently reach the same conclusions. When thousands of agents hit the same endpoints at the same millisecond, the result is thundering herds — except every request is legitimate. QueryMode handles this with **result caching** in regional Query DOs. Same question, same answer, served from memory.
 
-3. **Pre-built ETL can't serve agents.** Traditional data pipelines assume a human pre-defines what questions matter, builds a pipeline on a schedule, and stores the results. Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it.
+**Problem 2: Flexibility.** Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it. QueryMode handles this with **composable operators** that assemble into a pipeline at query time.
+
+**Agents need live data.** Decisions based on outdated training data lead to bad outcomes. Training data can't keep up with the speed the world produces information. Agents make API calls for live data — lots of them.
 
 ## Fixed ETL vs dynamic pipelines
 
@@ -52,6 +54,42 @@ const attribution = computeAttribution(result.rows, retention.retainedUsers)
 
 Three analyses on one result set. No SQL string construction, no JSON parsing, no round-trips. The intermediate results are live objects in memory — you inspect them, branch on them, and feed them into the next stage.
 
+> **What about memory?** `collect()` doesn't load a raw 50GB file into a V8 isolate. By the time data reaches `collect()`, it has already passed through the operator pipeline — filter pushdown skipped irrelevant pages using min/max stats, aggregation reduced millions of rows to group summaries, and projection dropped unused columns. What lands in memory is the *result*, not the dataset. For the rare case where the result itself is large, operators are memory-bounded (default 32MB) and [spill to R2](/operators#memory-bounded-with-r2-spill) when exceeded.
+
+## How it actually works under the hood
+
+### Where the data lives
+
+Data sits in **R2 object storage** as columnar files (Parquet, Lance, Iceberg, CSV, JSON, Arrow). It does not get replicated to 300 edge nodes. Instead, QueryMode caches **metadata at the edge** — table footers (~4KB each) in regional Query DOs — and reads data pages from R2 via coalesced HTTP range requests (~10ms per read).
+
+"Data at the edge" means: metadata cached locally, data fetched on demand from R2 with free egress. Not replicated databases.
+
+### The operators ARE the optimizer
+
+QueryMode doesn't throw away query optimization — it makes it composable. Every query runs through a pull-based [operator pipeline](/operators):
+
+```
+ScanOperator → FilterOperator → AggregateOperator → TopKOperator → ProjectOperator
+```
+
+This pipeline does the same work a traditional optimizer does:
+
+- **Page-level skip** — min/max stats prune pages before reading them
+- **Predicate pushdown** — filters evaluate inside the WASM engine, not in JavaScript
+- **SIMD vectorized decode** — Zig WASM engine processes columns with SIMD instructions
+- **Coalesced I/O** — adjacent page reads merge into single range requests
+- **Prefetch** — fetches page N+1 while decoding page N (up to 8 in-flight)
+- **Partial aggregation** — Fragment DOs aggregate locally, Query DO merges results
+- **Memory-bounded spill** — sort and join operators spill to R2 via Grace hash partitioning when they exceed their budget
+
+The difference from a traditional optimizer: you can see every stage, swap implementations, inject custom logic between operators, and control the memory budget. The query plan isn't a black box — it's your code.
+
+### Governance
+
+Dynamic pipelines don't mean ungoverned access. Access control is at the **table and column level**, not the pipeline level. The agent composes freely — but only over data it's authorized to touch. `MasterDO` owns table metadata and controls which tables exist. The agent can't query what isn't registered.
+
+The transformation is dynamic. The authorization is not.
+
 ## What we've tested so far
 
 We ported query patterns from two open-source analytics platforms:
@@ -65,3 +103,5 @@ Both test suites also include multi-step analyses that would be awkward with the
 ## The agent IS the pipeline
 
 QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, same process. If the data is well-structured, the agent queries it directly. If it's not, the agent builds the transformation on the spot. Either way, no one had to anticipate the question in advance.
+
+It also doesn't eliminate the query optimizer. It replaces a fixed one with a composable one. The operators do the same work — filter pushdown, vectorized decode, memory-bounded spill — but you assemble them, you control the budget, and you can put a [ML scoring function between pipeline stages](/operators#compose-operators-directly) if you want to.
