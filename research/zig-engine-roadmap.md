@@ -55,7 +55,19 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 
 **Remaining:**
 - OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig, needs API/type changes for compound filter groups)
-- Complex expressions (BETWEEN, LIKE) in the WASM filter fast path
+- LIKE in the WASM filter fast path (BETWEEN is done — see below)
+
+### BETWEEN Support — DONE
+- `filterFloat64Range`, `filterInt32Range`, `filterInt64Range` Zig exports
+- `canSkipPage` handles BETWEEN: page skipped if `max < low || min > high`
+- `wasmFilterRange()` helper for scanFilterIndices WASM path
+- `WasmAggregateOperator` dispatches BETWEEN to range filter exports
+- SQL compiler emits single `{ op: "between", value: [low, high] }` instead of gte+lte pair
+- Client API: `.whereBetween(column, low, high)`
+
+### Multi-Column Page Skip — DONE
+- `canSkipPageMultiCol()` checks ALL filter columns' min/max stats, not just first column
+- Used in ScanOperator, findNextPage (prefetch), and WasmAggregateOperator
 
 **Files modified:** `src/operators.ts` (scanFilterIndices)
 
