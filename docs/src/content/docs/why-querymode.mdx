@@ -56,15 +56,15 @@ const attribution = computeAttribution(result.rows, retention.retainedUsers)
 
 Three analyses on one result set. No SQL string construction, no JSON parsing, no round-trips. The intermediate results are live objects in memory — you inspect them, branch on them, and feed them into the next stage.
 
-## Proven against real-world analytics
+## What we've tested so far
 
-We validated this against two popular open-source analytics platforms:
+We ported query patterns from two open-source analytics platforms to see where dynamic pipelines help and where they don't:
 
-**[Counterscale](https://github.com/benvinegar/counterscale)** (Cloudflare Analytics Engine) — All 7 query patterns ported. Analytics Engine sends SQL over HTTP with JSON serialization on every query. QueryMode handles the same workload with zero serialization.
+**[Counterscale](https://github.com/benvinegar/counterscale)** (Cloudflare Analytics Engine) — 7 query patterns. Each one normally goes through Analytics Engine's HTTP SQL API with JSON serialization per request. The same patterns run on QueryMode's DataFrame API without that overhead.
 
-**[Umami](https://github.com/umami-software/umami)** (23k+ stars, PostgreSQL/ClickHouse) — All 10 query patterns ported, including funnel analysis, cohort retention, user journeys, and attribution. Umami's attribution runs 8 separate database queries that each rebuild the same CTE. QueryMode: 1 `collect()`, branch 8 ways in code. 16ms at 10K events.
+**[Umami](https://github.com/umami-software/umami)** (23k+ stars, PostgreSQL/ClickHouse) — 10 query patterns, including funnel analysis, cohort retention, user journeys, and attribution. Umami's attribution sends 8 separate database queries that each rebuild the same base CTE. On QueryMode, the same analysis runs as 1 `collect()` with 8 code branches over the same result set.
 
-Both conformance tests include patterns that are impossible with the original architecture — cross-report correlation, conditional aggregation with branching, anomaly detection with thresholds, A/B test statistical analysis — all running on a single result set with no serialization between stages.
+Both test suites also include multi-step analyses that would be awkward with the original architecture — things like running funnel analysis and then feeding the resulting session IDs directly into a retention computation, without a second round-trip. These aren't impossible in SQL, but they'd require rewriting queries and additional database calls. With QueryMode, intermediate results are just objects in memory.
 
 ## The agent IS the pipeline
 
