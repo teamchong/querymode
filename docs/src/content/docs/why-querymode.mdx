@@ -3,11 +3,9 @@ title: Why QueryMode
 description: Agents are the new users. They need dynamic pipelines, not pre-built ETL.
 ---
 
-## Agents can't coordinate
+## Agents need live data at the edge
 
-Agents share the same training data and independently reach the same conclusions. They serve different owners, run in different parts of the world, and have no way to talk to each other. When thousands of agents independently decide to query the same data at the same millisecond, the result looks like a DDoS — except every request is legitimate. Thundering herds become the normal traffic pattern, not an anomaly. Data must live at the edge to survive this.
-
-Training data can't keep up with the speed the world produces information, so agents make API calls for live data. Because they can't coordinate, the same data gets requested independently by thousands of agents. That data needs to live at the edge, close to where agents run.
+Training data can't keep up with the speed the world produces information. Agents make API calls for live data — lots of them. And because agents serve different owners across different parts of the world, they independently reach the same conclusions and hit the same endpoints at the same time. The resulting traffic pattern looks like a DDoS, except every request is legitimate. Data must live at the edge to survive this.
 
 ## Pre-built ETL can't serve agents
 
