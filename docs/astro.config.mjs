@@ -20,6 +20,7 @@ export default defineConfig({
         { label: "Getting Started", slug: "getting-started" },
         { label: "DataFrame API", slug: "dataframe-api" },
         { label: "SQL", slug: "sql" },
+        { label: "Schema Discovery", slug: "schema" },
         { label: "Operators", slug: "operators" },
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },

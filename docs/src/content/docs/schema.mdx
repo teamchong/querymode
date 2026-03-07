@@ -1,0 +1,67 @@
+---
+title: Schema Discovery
+description: List tables, inspect columns, and understand your data before querying.
+---
+
+Agents need to understand what data is available before they can build dynamic pipelines.
+
+## tables()
+
+In edge mode, `.tables()` returns all known tables with their column names and row counts. This reads from the Query DO's footer cache — no R2 listing, no data scan.
+
+```typescript
+import { QueryMode } from "querymode"
+
+const qm = QueryMode.remote(env.QUERY_DO)
+const tables = await qm.tables()
+
+// [{ name: "events", columns: ["id", "type", "created_at", ...], totalRows: 150000 }, ...]
+for (const t of tables) {
+  console.log(`${t.name}: ${t.totalRows} rows, ${t.columns.length} columns`)
+}
+```
+
+The HTTP API exposes the same data:
+
+```
+GET /tables → [{ name, columns, totalRows, updatedAt, accessCount }]
+```
+
+## describe()
+
+For column types, use `describe()` on a specific table. Also reads from cached metadata — no data scan.
+
+```typescript
+const schema = await qm.table("events").describe()
+// { columns: [{ name: "id", dtype: "int64" }, { name: "type", dtype: "utf8" }, ...], totalRows: 150000 }
+```
+
+This works in both edge and local mode, with all formats (Parquet, Lance, CSV, JSON, Arrow):
+
+```typescript
+import { QueryMode } from "querymode/local"
+const local = QueryMode.local()
+const schema = await local.table("./data/events.parquet").describe()
+```
+
+## Inspect data
+
+For a quick look at actual data:
+
+```typescript
+// First 5 rows
+const rows = await qm.table("events").head(5)
+
+// First row
+const row = await qm.table("events").first()
+
+// Row count
+const count = await qm.table("events").count()
+
+// Check if any rows match
+const hasActive = await qm.table("events").filter("status", "eq", "active").exists()
+```
+
+## Local mode limitations
+
+Local mode reads files on demand — there's no table registry. Use `describe()` on individual tables. For listing available files, use your filesystem directly.

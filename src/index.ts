@@ -138,6 +138,15 @@ export class QueryMode {
   static demo(tableName?: string): DataFrame {
     return createDemo(tableName);
   }
+
+  /** List all known tables with column names and row counts (edge mode only). */
+  async tables(): Promise<{ name: string; columns: string[]; totalRows: number }[]> {
+    if (!(this.executor instanceof RemoteExecutor)) {
+      throw new Error("tables() is only available in edge mode. Use .table(path).describe() for local files.");
+    }
+    const result = await (this.executor as RemoteExecutor).listTables();
+    return result.tables as { name: string; columns: string[]; totalRows: number }[];
+  }
 }
 
 /**
@@ -255,5 +264,11 @@ class RemoteExecutor implements QueryExecutor {
   async explain(query: QueryDescriptor): Promise<ExplainResult> {
     const rpc = this.getQueryHandle();
     return rpc.explainRpc(query);
+  }
+
+  /** List all tables known to the regional Query DO. */
+  async listTables(): Promise<{ tables: unknown[] }> {
+    const rpc = this.getQueryHandle();
+    return rpc.listTablesRpc();
   }
 }
