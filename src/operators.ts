@@ -54,26 +54,29 @@ export class ScanOperator implements Operator {
   pagesSkipped = 0;
   bytesRead = 0;
   scanMs = 0;
+  /** Whether this ScanOperator applies filters internally (WASM SIMD + JS fallback). */
+  filtersApplied = false;
   /** Prefetched page data — fetched while decoding the previous page. */
   private prefetch: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>> | null = null;
   private prefetchPageIdx = -1;
   private prefetchFragIdx = -1;
   private prefetchSkipped = 0;
 
-  constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine) {
+  constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine, applyFilters = false) {
     this.fragments = fragments;
     this.query = query;
     this.wasm = wasm;
+    this.filtersApplied = applyFilters && query.filters.length > 0;
   }
 
-  /** Fetch all columns for a page in parallel. Returns the pageInfoMap. */
-  private fetchPage(
-    frag: FragmentSource, pi: number,
+  /** Fetch specified columns for a page in parallel. Returns the pageInfoMap. */
+  private fetchColumns(
+    frag: FragmentSource, pi: number, cols: ColumnMeta[],
   ): { promise: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>>; skipped: number } {
     const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
     const readPromises: Promise<void>[] = [];
     let skipped = 0;
-    for (const col of frag.columns) {
+    for (const col of cols) {
       const colPage = col.pages[pi];
       if (!colPage) continue;
       if (!this.query.vectorSearch && canSkipPage(colPage, this.query.filters, col.name)) {
@@ -93,6 +96,13 @@ export class ScanOperator implements Operator {
         : Promise.resolve(pageInfoMap),
       skipped,
     };
+  }
+
+  /** Fetch all columns for a page. */
+  private fetchPage(
+    frag: FragmentSource, pi: number,
+  ): { promise: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>>; skipped: number } {
+    return this.fetchColumns(frag, pi, frag.columns);
   }
 
   /** Find the next non-skippable page index starting from `start`. Returns -1 if none. */
@@ -166,13 +176,58 @@ export class ScanOperator implements Operator {
         // Start prefetching the next page while we decode this one
         this.startPrefetch();
 
-        // Decode columns for this single page
+        // Late materialization: decode filter columns first, skip rest if no matches
+        if (this.filtersApplied && this.query.filters.length > 0) {
+          const filterColNames = new Set(this.query.filters.map(f => f.column));
+          const filterCols = frag.columns.filter(c => filterColNames.has(c.name));
+          const projCols = frag.columns.filter(c => !filterColNames.has(c.name));
+
+          // Decode only filter columns from already-fetched page data
+          const filterDecoded = decodePageBatch(pageInfoMap, filterCols, this.wasm);
+          const firstDecoded = filterDecoded.values().next().value;
+          if (!firstDecoded || firstDecoded.length === 0) continue;
+          const rowCount = firstDecoded.length;
+
+          // Apply filters to get matching indices
+          const matchingIndices = scanFilterIndices(
+            filterDecoded, filterCols, this.query.filters, rowCount, this.wasm,
+          );
+
+          // Skip decoding projection columns if nothing matched
+          if (matchingIndices.length === 0) {
+            this.scanMs += Date.now() - scanStart;
+            continue;
+          }
+
+          // Decode projection columns (only needed now that we know rows match)
+          const projDecoded = projCols.length > 0
+            ? decodePageBatch(pageInfoMap, projCols, this.wasm)
+            : new Map<string, DecodedValue[]>();
+
+          // Merge filter + projection decoded data
+          const allDecoded = new Map([...filterDecoded, ...projDecoded]);
+
+          // Assemble rows only for matching indices
+          const rows: Row[] = [];
+          for (const idx of matchingIndices) {
+            const row: Row = {};
+            for (const col of frag.columns) {
+              const vals = allDecoded.get(col.name);
+              row[col.name] = vals ? (vals[idx] as Row[string]) : null;
+            }
+            rows.push(row);
+          }
+          this.scanMs += Date.now() - scanStart;
+          if (rows.length > 0) return rows;
+          continue;
+        }
+
+        // No filters — decode all columns, assemble all rows
         const decoded = decodePageBatch(pageInfoMap, frag.columns, this.wasm);
         const firstDecoded = decoded.values().next().value;
         if (!firstDecoded || firstDecoded.length === 0) continue;
         const rowCount = firstDecoded.length;
 
-        // Assemble rows
         const rows: Row[] = [];
         for (let i = 0; i < rowCount; i++) {
           const row: Row = {};
@@ -183,7 +238,8 @@ export class ScanOperator implements Operator {
           rows.push(row);
         }
         this.scanMs += Date.now() - scanStart;
-        return rows;
+        if (rows.length > 0) return rows;
+        continue;
       }
 
       // Move to next fragment
@@ -195,6 +251,151 @@ export class ScanOperator implements Operator {
   }
 
   async close(): Promise<void> { /* no-op */ }
+}
+
+// ---------------------------------------------------------------------------
+// Scan-time filter — applies WASM SIMD for numeric columns, JS for rest
+// ---------------------------------------------------------------------------
+
+/** Map filter op string to WASM op code: 0=eq, 1=ne, 2=lt, 3=le, 4=gt, 5=ge */
+function filterOpToWasm(op: string): number {
+  switch (op) {
+    case "eq": return 0;
+    case "neq": return 1;
+    case "lt": return 2;
+    case "lte": return 3;
+    case "gt": return 4;
+    case "gte": return 5;
+    default: return -1;
+  }
+}
+
+/**
+ * Compute matching row indices by applying filters before row materialization.
+ * Uses WASM SIMD for numeric scalar filters, JS for string/bool/IN filters.
+ * Returns the set of row indices that pass ALL filters.
+ */
+function scanFilterIndices(
+  decoded: Map<string, DecodedValue[]>,
+  columns: ColumnMeta[],
+  filters: QueryDescriptor["filters"],
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array {
+  const colTypes = new Map(columns.map(c => [c.name, c.dtype]));
+
+  // Start with all indices
+  let indices: Uint32Array | null = null;
+
+  for (const filter of filters) {
+    const dtype = colTypes.get(filter.column);
+    const values = decoded.get(filter.column);
+    if (!values || values.length === 0) {
+      // Column not decoded (skipped) — no rows match
+      return new Uint32Array(0);
+    }
+
+    const wasmOp = filter.op !== "in" ? filterOpToWasm(filter.op) : -1;
+
+    // Try WASM SIMD path for numeric scalar filters
+    if (wasmOp >= 0 && typeof filter.value === "number" &&
+        (dtype === "float64" || dtype === "float32" || dtype === "int32")) {
+      const filterResult = wasmFilterNumeric(
+        values, dtype, wasmOp, filter.value, rowCount, wasm,
+      );
+      if (filterResult) {
+        indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
+        continue;
+      }
+    }
+
+    // JS fallback: evaluate filter on current index set
+    const src = indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+    const kept: number[] = [];
+    for (const idx of src) {
+      const v = values[idx];
+      if (v !== null && v !== undefined && matchesFilter(v as Row[string], filter)) {
+        kept.push(idx);
+      }
+    }
+    indices = new Uint32Array(kept);
+  }
+
+  return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+}
+
+/** Run WASM filterFloat64Buffer or filterInt32Buffer on decoded numeric values. */
+function wasmFilterNumeric(
+  values: DecodedValue[],
+  dtype: string,
+  op: number,
+  filterValue: number,
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array | null {
+  try {
+    wasm.exports.resetHeap();
+
+    if (dtype === "float64" || dtype === "float32") {
+      // Pack values into Float64Array
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new Float64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) {
+        dst[i] = (values[i] as number) ?? 0;
+      }
+      // Allocate output indices
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterFloat64Buffer(
+        dataPtr, rowCount, op, filterValue, outPtr, rowCount,
+      );
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int32") {
+      const dataPtr = wasm.exports.alloc(rowCount * 4);
+      if (!dataPtr) return null;
+      const dst = new Int32Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) {
+        dst[i] = (values[i] as number) ?? 0;
+      }
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt32Buffer(
+        dataPtr, rowCount, op, filterValue, outPtr, rowCount,
+      );
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    return null;
+  } catch {
+    return null; // WASM failure — fall through to JS
+  }
+}
+
+/** Intersect two sorted index arrays using WASM. */
+function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Array {
+  try {
+    wasm.exports.resetHeap();
+    const aPtr = wasm.exports.alloc(a.byteLength);
+    const bPtr = wasm.exports.alloc(b.byteLength);
+    const outPtr = wasm.exports.alloc(Math.min(a.length, b.length) * 4);
+    if (!aPtr || !bPtr || !outPtr) {
+      // Fallback: JS intersect
+      const setB = new Set(b);
+      return a.filter(v => setB.has(v));
+    }
+    new Uint32Array(wasm.exports.memory.buffer, aPtr, a.length).set(a);
+    new Uint32Array(wasm.exports.memory.buffer, bPtr, b.length).set(b);
+    const count = wasm.exports.intersectIndices(
+      aPtr, a.length, bPtr, b.length, outPtr, Math.min(a.length, b.length),
+    );
+    return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+  } catch {
+    const setB = new Set(b);
+    return a.filter(v => setB.has(v));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1870,12 +2071,12 @@ export function buildPipeline(
     return { pipeline: wasmAgg, scan: null, wasmAgg };
   }
 
-  const scan = new ScanOperator(fragments, query, wasm);
+  const scan = new ScanOperator(fragments, query, wasm, /* applyFilters */ true);
   let pipeline: Operator = scan;
   const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
 
-  // Filter
-  if (query.filters.length > 0) {
+  // Filter — skip if ScanOperator already applies filters via WASM SIMD
+  if (query.filters.length > 0 && !scan.filtersApplied) {
     pipeline = new FilterOperator(pipeline, query.filters);
   }
 

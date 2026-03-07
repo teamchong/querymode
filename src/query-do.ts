@@ -1044,15 +1044,33 @@ export class QueryDO extends DurableObject<Env> {
         decodedColumns.set(col.name, allValues);
       }
 
+      // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort/agg)
       const colNames = cols.map(c => c.name);
-      let rows = this.applyJsPostProcessing(
-        this.assembleRowsFromColumns(decodedColumns, colNames), query,
-      );
+      this.wasmEngine.exports.resetHeap();
+      let wasmRegistered = true;
+      for (const col of cols) {
+        const values = decodedColumns.get(col.name);
+        if (!values?.length) continue;
+        if (!this.wasmEngine.registerDecodedColumn(query.table, col.name, col.dtype, values)) {
+          wasmRegistered = false;
+          break;
+        }
+      }
 
-      // Handle aggregation in the scanPages Parquet path
-      if (query.aggregates && query.aggregates.length > 0) {
-        const partial = computePartialAgg(rows, query);
-        rows = finalizePartialAgg(partial, query);
+      let rows: Row[];
+      if (wasmRegistered) {
+        const wasmRows = this.wasmEngine.executeQuery(query);
+        this.wasmEngine.clearTable(query.table);
+        rows = wasmRows ?? [];
+      } else {
+        // Fallback to JS path if WASM registration fails (OOM, unsupported dtype)
+        rows = this.applyJsPostProcessing(
+          this.assembleRowsFromColumns(decodedColumns, colNames), query,
+        );
+        if (query.aggregates && query.aggregates.length > 0) {
+          const partial = computePartialAgg(rows, query);
+          rows = finalizePartialAgg(partial, query);
+        }
       }
 
       const wasmExecMs = Date.now() - wasmStart;

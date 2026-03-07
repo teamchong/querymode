@@ -9,7 +9,7 @@
  * stay in cache even under pressure from cold one-off accesses.
  */
 export class VipCache<K, V> {
-  private map = new Map<K, { value: V; accessCount: number; lastAccess: number; expiresAt?: number }>();
+  private map = new Map<K, { value: V; accessCount: number; lastAccess: number; expiresAt?: number; refCount: number; pendingEviction: boolean }>();
   private maxEntries: number;
   private vipThreshold: number;
 
@@ -30,6 +30,32 @@ export class VipCache<K, V> {
     return entry.value;
   }
 
+  /** Like get(), but increments refCount to prevent eviction. Caller must call release() when done. */
+  acquire(key: K): V | undefined {
+    const entry = this.map.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt && Date.now() > entry.expiresAt) {
+      // Don't delete expired entries that are still referenced
+      if (entry.refCount > 0) return undefined;
+      this.map.delete(key);
+      return undefined;
+    }
+    entry.accessCount++;
+    entry.lastAccess = Date.now();
+    entry.refCount++;
+    return entry.value;
+  }
+
+  /** Release a reference acquired via acquire(). If refCount drops to 0 and entry was marked for eviction, delete it. */
+  release(key: K): void {
+    const entry = this.map.get(key);
+    if (!entry) return;
+    if (entry.refCount > 0) entry.refCount--;
+    if (entry.refCount === 0 && entry.pendingEviction) {
+      this.map.delete(key);
+    }
+  }
+
   set(key: K, value: V): void {
     const existing = this.map.get(key);
     if (existing) {
@@ -43,7 +69,7 @@ export class VipCache<K, V> {
       this.evict();
     }
 
-    this.map.set(key, { value, accessCount: 1, lastAccess: Date.now() });
+    this.map.set(key, { value, accessCount: 1, lastAccess: Date.now(), refCount: 0, pendingEviction: false });
   }
 
   setWithTTL(key: K, value: V, ttlMs: number): void {
@@ -60,7 +86,7 @@ export class VipCache<K, V> {
       this.evict();
     }
 
-    this.map.set(key, { value, accessCount: 1, lastAccess: Date.now(), expiresAt: Date.now() + ttlMs });
+    this.map.set(key, { value, accessCount: 1, lastAccess: Date.now(), expiresAt: Date.now() + ttlMs, refCount: 0, pendingEviction: false });
   }
 
   invalidateByPrefix(prefix: string): number {
@@ -95,31 +121,33 @@ export class VipCache<K, V> {
     return this.map.entries();
   }
 
-  /** Diagnostics: return VIP vs cold entry counts */
-  stats(): { total: number; vip: number; cold: number; vipThreshold: number } {
+  /** Diagnostics: return VIP vs cold entry counts and locked (refCount > 0) count */
+  stats(): { total: number; vip: number; cold: number; vipThreshold: number; lockedCount: number } {
     let vip = 0;
+    let lockedCount = 0;
     for (const entry of this.map.values()) {
       if (entry.accessCount >= this.vipThreshold) vip++;
+      if (entry.refCount > 0) lockedCount++;
     }
-    return { total: this.map.size, vip, cold: this.map.size - vip, vipThreshold: this.vipThreshold };
+    return { total: this.map.size, vip, cold: this.map.size - vip, vipThreshold: this.vipThreshold, lockedCount };
   }
 
   private evict(): void {
-    // First try to evict any expired entry
+    // First try to evict any expired entry (with refCount === 0)
     const now = Date.now();
     for (const [key, entry] of this.map) {
-      if (entry.expiresAt && now > entry.expiresAt) {
+      if (entry.expiresAt && now > entry.expiresAt && entry.refCount === 0) {
         this.map.delete(key);
         return;
       }
     }
 
-    // Try to evict coldest (below VIP threshold) entry first
+    // Try to evict coldest (below VIP threshold) entry with refCount === 0
     let coldestKey: K | undefined;
     let coldestTime = Infinity;
 
     for (const [key, entry] of this.map) {
-      if (entry.accessCount < this.vipThreshold && entry.lastAccess < coldestTime) {
+      if (entry.refCount === 0 && entry.accessCount < this.vipThreshold && entry.lastAccess < coldestTime) {
         coldestTime = entry.lastAccess;
         coldestKey = key;
       }
@@ -130,17 +158,20 @@ export class VipCache<K, V> {
       return;
     }
 
-    // All entries are VIP — evict the least-recently-used VIP
+    // All cold entries are locked — evict the least-recently-used VIP with refCount === 0
     let lruKey: K | undefined;
     let lruTime = Infinity;
     for (const [key, entry] of this.map) {
-      if (entry.lastAccess < lruTime) {
+      if (entry.refCount === 0 && entry.lastAccess < lruTime) {
         lruTime = entry.lastAccess;
         lruKey = key;
       }
     }
     if (lruKey !== undefined) {
       this.map.delete(lruKey);
+      return;
     }
+
+    // ALL entries have refCount > 0 — do not evict, let the map grow beyond maxEntries temporarily
   }
 }

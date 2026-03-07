@@ -601,6 +601,7 @@ export fn maxInt64Buffer(ptr: [*]const i64, len: usize) i64 {
 // ============================================================================
 
 /// Filter float64 buffer, returns count of matching indices
+/// Uses WASM SIMD128 intrinsics: processes 2 x f64 per cycle via @Vector(2, f64)
 export fn filterFloat64Buffer(
     data_ptr: [*]const f64,
     len: usize,
@@ -610,8 +611,37 @@ export fn filterFloat64Buffer(
     max_indices: usize,
 ) usize {
     var out_count: usize = 0;
+    const simd_width = 2; // 128-bit / 64-bit = 2 lanes
+    const simd_chunks = len / simd_width;
+    const threshold: @Vector(simd_width, f64) = @splat(value);
 
-    for (0..len) |i| {
+    // SIMD path: process 2 f64 values at a time
+    for (0..simd_chunks) |chunk| {
+        if (out_count >= max_indices) break;
+        const base = chunk * simd_width;
+        const vec: @Vector(simd_width, f64) = data_ptr[base..][0..simd_width].*;
+        const mask = switch (op) {
+            0 => vec == threshold,
+            1 => vec != threshold,
+            2 => vec < threshold,
+            3 => vec <= threshold,
+            4 => vec > threshold,
+            5 => vec >= threshold,
+            else => @as(@Vector(simd_width, bool), @splat(false)),
+        };
+        // Extract matching indices from each lane
+        inline for (0..simd_width) |lane| {
+            if (mask[lane]) {
+                if (out_count >= max_indices) break;
+                out_indices[out_count] = @intCast(base + lane);
+                out_count += 1;
+            }
+        }
+    }
+
+    // Scalar tail: handle remaining elements
+    const tail_start = simd_chunks * simd_width;
+    for (tail_start..len) |i| {
         if (out_count >= max_indices) break;
         const v = data_ptr[i];
         const matches = switch (op) {
@@ -632,6 +662,7 @@ export fn filterFloat64Buffer(
 }
 
 /// Filter int32 buffer
+/// Uses WASM SIMD128 intrinsics: processes 4 x i32 per cycle via @Vector(4, i32)
 export fn filterInt32Buffer(
     data_ptr: [*]const i32,
     len: usize,
@@ -641,8 +672,37 @@ export fn filterInt32Buffer(
     max_indices: usize,
 ) usize {
     var out_count: usize = 0;
+    const simd_width = 4; // 128-bit / 32-bit = 4 lanes
+    const simd_chunks = len / simd_width;
+    const threshold: @Vector(simd_width, i32) = @splat(value);
 
-    for (0..len) |i| {
+    // SIMD path: process 4 i32 values at a time
+    for (0..simd_chunks) |chunk| {
+        if (out_count >= max_indices) break;
+        const base = chunk * simd_width;
+        const vec: @Vector(simd_width, i32) = data_ptr[base..][0..simd_width].*;
+        const mask = switch (op) {
+            0 => vec == threshold,
+            1 => vec != threshold,
+            2 => vec < threshold,
+            3 => vec <= threshold,
+            4 => vec > threshold,
+            5 => vec >= threshold,
+            else => @as(@Vector(simd_width, bool), @splat(false)),
+        };
+        // Extract matching indices from each lane
+        inline for (0..simd_width) |lane| {
+            if (mask[lane]) {
+                if (out_count >= max_indices) break;
+                out_indices[out_count] = @intCast(base + lane);
+                out_count += 1;
+            }
+        }
+    }
+
+    // Scalar tail: handle remaining elements
+    const tail_start = simd_chunks * simd_width;
+    for (tail_start..len) |i| {
         if (out_count >= max_indices) break;
         const v = data_ptr[i];
         const matches = switch (op) {
@@ -685,6 +745,7 @@ export fn filterFloat64Range(
 }
 
 /// AND two index arrays (intersection)
+/// Uses O(n+m) sorted merge since filter outputs are always in ascending order
 export fn intersectIndices(
     a: [*]const u32,
     a_len: usize,
@@ -693,17 +754,21 @@ export fn intersectIndices(
     out: [*]u32,
     max_out: usize,
 ) usize {
-    // Simple O(n*m) for small arrays; could use hash set for large
     var out_count: usize = 0;
-    for (0..a_len) |i| {
+    var i: usize = 0;
+    var j: usize = 0;
+
+    while (i < a_len and j < b_len) {
         if (out_count >= max_out) break;
-        const a_val = a[i];
-        for (0..b_len) |j| {
-            if (b[j] == a_val) {
-                out[out_count] = a_val;
-                out_count += 1;
-                break;
-            }
+        if (a[i] == b[j]) {
+            out[out_count] = a[i];
+            out_count += 1;
+            i += 1;
+            j += 1;
+        } else if (a[i] < b[j]) {
+            i += 1;
+        } else {
+            j += 1;
         }
     }
     return out_count;

@@ -437,6 +437,97 @@ export class WasmEngine {
     }
   }
 
+  /**
+   * Register a decoded JS column (from Parquet decode) into WASM for SQL execution.
+   * Converts JS arrays to typed arrays and calls the appropriate register* export.
+   * Returns false on WASM OOM or unsupported type.
+   */
+  registerDecodedColumn(
+    table: string, colName: string, dtype: DataType,
+    values: (number | bigint | string | boolean | null)[],
+  ): boolean {
+    if (values.length === 0) return true;
+    const [tPtr, tLen, cPtr, cLen] = this.writeStringPair(table, colName);
+    if (!tPtr || !cPtr) return false;
+    const rowCount = values.length;
+
+    switch (dtype) {
+      case "float64": case "float32": {
+        const dataPtr = this.exports.alloc(rowCount * 8);
+        if (!dataPtr) return false;
+        const dst = new Float64Array(this.exports.memory.buffer, dataPtr, rowCount);
+        for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
+        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
+        return true;
+      }
+      case "int64": {
+        const dataPtr = this.exports.alloc(rowCount * 8);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
+        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(values[i] as bigint ?? 0n);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
+        return true;
+      }
+      case "int32": case "int16": case "int8":
+      case "uint32": case "uint16": case "uint8": {
+        // Promote to i64
+        const dataPtr = this.exports.alloc(rowCount * 8);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
+        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(values[i] as number ?? 0);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
+        return true;
+      }
+      case "bool": {
+        const dataPtr = this.exports.alloc(rowCount * 8);
+        if (!dataPtr) return false;
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
+        for (let i = 0; i < rowCount; i++) dst[i] = values[i] ? 1n : 0n;
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
+        return true;
+      }
+      case "utf8": {
+        const encoder = new TextEncoder();
+        // Two passes: measure total string bytes, then pack
+        let totalBytes = 0;
+        const encoded: Uint8Array[] = [];
+        for (let i = 0; i < rowCount; i++) {
+          const s = values[i] != null ? String(values[i]) : "";
+          const bytes = encoder.encode(s);
+          encoded.push(bytes);
+          totalBytes += bytes.byteLength;
+        }
+        const offsets = new Uint32Array(rowCount);
+        const lengths = new Uint32Array(rowCount);
+        const strData = new Uint8Array(totalBytes);
+        let off = 0;
+        for (let i = 0; i < rowCount; i++) {
+          offsets[i] = off;
+          lengths[i] = encoded[i].byteLength;
+          strData.set(encoded[i], off);
+          off += encoded[i].byteLength;
+        }
+        const offsetsPtr = this.exports.alloc(offsets.byteLength);
+        if (!offsetsPtr) return false;
+        new Uint32Array(this.exports.memory.buffer, offsetsPtr, rowCount).set(offsets);
+        const lengthsPtr = this.exports.alloc(lengths.byteLength);
+        if (!lengthsPtr) return false;
+        new Uint32Array(this.exports.memory.buffer, lengthsPtr, rowCount).set(lengths);
+        const dataPtr = this.exports.alloc(totalBytes || 1);
+        if (!dataPtr) return false;
+        if (totalBytes > 0) {
+          new Uint8Array(this.exports.memory.buffer, dataPtr, totalBytes).set(strData);
+        }
+        this.exports.registerTableString(
+          tPtr, tLen, cPtr, cLen, offsetsPtr, lengthsPtr, dataPtr, totalBytes, rowCount,
+        );
+        return true;
+      }
+      default:
+        return false; // Unsupported type — caller falls back to JS
+    }
+  }
+
   /** Check if a key exists in the WASM buffer pool cache. */
   cacheHas(key: string): boolean {
     const { ptr, len } = this.writeString(key);
