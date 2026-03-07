@@ -2,20 +2,22 @@
 
 Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engine.
 
-## P0: Selection Vectors + Late Materialization (from lanceql) — PARTIALLY DONE
+## P0: Selection Vectors + Late Materialization (from lanceql) — DONE
 
 **Source:** `../lanceql/src/sql/late_materialization.zig`, `../lanceql/src/query/vector_engine.zig`
 
 **Already exists in Zig:** `wasm/src/query/vector_engine.zig` has SelectionVector, DataChunk, Vector types (DuckDB-style, VECTOR_SIZE=2048). `wasm/src/columnar_ops.zig` has SIMD filter ops returning row indices.
 
 **Done (TS layer):**
-- ScanOperator now applies filters during scan using WASM SIMD (`filterFloat64Buffer`/`filterInt32Buffer`) before row materialization
+- ScanOperator now applies filters during scan using WASM SIMD (`filterFloat64Buffer`/`filterInt32Buffer`/`filterInt64Buffer`) before row materialization
 - `buildPipeline` skips FilterOperator when ScanOperator handles filters
 - Parquet bounded path registers decoded columns in WASM and uses `executeQuery()` (SIMD filter/sort/agg) instead of JS row-by-row
+- True two-phase execution: fetch+decode only filter columns first, run WASM SIMD filter, skip projection column R2 I/O entirely if 0 matches. Only fetch+decode projection columns for pages with matches.
+- Prefetch is two-phase aware: only prefetches filter columns (not all columns)
+- Short-circuit evaluation: if any AND filter returns 0 matches, skip remaining filters immediately
 
 **Remaining:**
-- True two-phase execution: decode only filter columns first, get matching indices, then decode projection columns only for matches (saves string decode cost)
-- Connect TS pipeline to Zig SelectionVector/DataChunk types for full columnar execution
+- Connect TS pipeline to Zig SelectionVector/DataChunk types for full columnar execution (removes Row[] batch format)
 
 **Impact:** Peak memory drops from ~128MB to ~12MB on 1M row queries.
 
@@ -28,6 +30,7 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 **Done:**
 - `filterFloat64Buffer`: SIMD128 with @Vector(2, f64) — 2 f64 per cycle + scalar tail
 - `filterInt32Buffer`: SIMD128 with @Vector(4, i32) — 4 i32 per cycle + scalar tail
+- `filterInt64Buffer`: SIMD128 with @Vector(2, i64) — 2 i64 per cycle + scalar tail
 - `intersectIndices`: O(n+m) sorted merge (was O(n*m) nested loop)
 
 **Remaining:**
@@ -48,13 +51,11 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 
 **Source:** `../lanceql/src/sql/where_eval.zig`
 
-**Done:** TS `scanFilterIndices()` handles compound AND (intersect index arrays via WASM `intersectIndices`). WASM SQL path (`executeSql`) already evaluates WHERE vectorized in Zig. `unionIndices` upgraded to O(n+m) sorted merge. `WasmAggregateOperator` supports filtered aggregates via indexed aggregate exports (`sumFloat64Indexed`, etc.) — zero Row[] materialization for filter+aggregate queries.
+**Done:** TS `scanFilterIndices()` handles compound AND (intersect index arrays via WASM `intersectIndices`). WASM SQL path (`executeSql`) already evaluates WHERE vectorized in Zig. `unionIndices` upgraded to O(n+m) sorted merge. `WasmAggregateOperator` supports filtered aggregates via indexed aggregate exports (`sumFloat64Indexed`, etc.) — zero Row[] materialization for filter+aggregate queries. Short-circuit evaluation: both `scanFilterIndices` and `WasmAggregateOperator` bail immediately when any AND filter returns 0 matches. `filterInt64Buffer` SIMD128 added for int64 column filtering.
 
 **Remaining:**
-- OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig)
-- Short-circuit evaluation: if first AND filter returns 0 matches, skip remaining filters
+- OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig, needs API/type changes for compound filter groups)
 - Complex expressions (BETWEEN, LIKE) in the WASM filter fast path
-- `filterInt64Buffer` SIMD export (currently only f64/i32 have WASM filter paths)
 
 **Files modified:** `src/operators.ts` (scanFilterIndices)
 

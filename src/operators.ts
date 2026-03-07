@@ -118,16 +118,20 @@ export class ScanOperator implements Operator {
     return -1;
   }
 
-  /** Start prefetching the next non-skippable page if available. */
+  /** Start prefetching the next non-skippable page if available.
+   *  When filters are applied, only prefetch filter columns (phase 1 of two-phase). */
   private startPrefetch(): void {
-    // Find the next page to prefetch
     let fi = this.fragIdx;
     let pi = this.pageIdx;
     while (fi < this.fragments.length) {
       const frag = this.fragments[fi];
       const nextPi = this.findNextPage(frag, pi);
       if (nextPi >= 0) {
-        const { promise, skipped } = this.fetchPage(frag, nextPi);
+        // Two-phase: only prefetch filter columns to minimize R2 I/O
+        const cols = this.filtersApplied
+          ? frag.columns.filter(c => this.query.filters.some(f => f.column === c.name))
+          : frag.columns;
+        const { promise, skipped } = this.fetchColumns(frag, nextPi, cols);
         this.prefetch = promise;
         this.prefetchPageIdx = nextPi;
         this.prefetchFragIdx = fi;
@@ -161,53 +165,67 @@ export class ScanOperator implements Operator {
 
         const scanStart = Date.now();
 
-        // Use prefetched data if available for this page, otherwise fetch now
+        // Resolve prefetch or fetch fresh
         let pageInfoMap: Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>;
-        if (this.prefetch && this.prefetchPageIdx === pi && this.prefetchFragIdx === this.fragIdx) {
-          pageInfoMap = await this.prefetch;
+        const hasPrefetch = this.prefetch && this.prefetchPageIdx === pi && this.prefetchFragIdx === this.fragIdx;
+        if (hasPrefetch) {
+          pageInfoMap = await this.prefetch!;
           this.pagesSkipped += this.prefetchSkipped;
           this.prefetch = null;
         } else {
-          const { promise, skipped } = this.fetchPage(frag, pi);
-          this.pagesSkipped += skipped;
-          pageInfoMap = await promise;
+          pageInfoMap = new Map(); // will be populated in phase-specific fetch below
         }
 
-        // Start prefetching the next page while we decode this one
+        // Start prefetching the next page while we process this one
         this.startPrefetch();
 
-        // Late materialization: decode filter columns first, skip rest if no matches
+        // Two-phase late materialization: fetch+decode filter cols first, skip projection I/O if no matches
         if (this.filtersApplied && this.query.filters.length > 0) {
           const filterColNames = new Set(this.query.filters.map(f => f.column));
           const filterCols = frag.columns.filter(c => filterColNames.has(c.name));
           const projCols = frag.columns.filter(c => !filterColNames.has(c.name));
 
-          // Decode only filter columns from already-fetched page data
-          const filterDecoded = decodePageBatch(pageInfoMap, filterCols, this.wasm);
+          // Phase 1: Fetch + decode only filter columns
+          let filterPageMap: Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>;
+          if (hasPrefetch) {
+            // Prefetch already fetched filter columns (two-phase prefetch)
+            filterPageMap = pageInfoMap;
+          } else {
+            const { promise, skipped } = this.fetchColumns(frag, pi, filterCols);
+            this.pagesSkipped += skipped;
+            filterPageMap = await promise;
+          }
+
+          const filterDecoded = decodePageBatch(filterPageMap, filterCols, this.wasm);
           const firstDecoded = filterDecoded.values().next().value;
-          if (!firstDecoded || firstDecoded.length === 0) continue;
+          if (!firstDecoded || firstDecoded.length === 0) {
+            this.scanMs += Date.now() - scanStart;
+            continue;
+          }
           const rowCount = firstDecoded.length;
 
-          // Apply filters to get matching indices
           const matchingIndices = scanFilterIndices(
             filterDecoded, filterCols, this.query.filters, rowCount, this.wasm,
           );
 
-          // Skip decoding projection columns if nothing matched
           if (matchingIndices.length === 0) {
             this.scanMs += Date.now() - scanStart;
-            continue;
+            continue; // Skip projection column I/O entirely
           }
 
-          // Decode projection columns (only needed now that we know rows match)
-          const projDecoded = projCols.length > 0
-            ? decodePageBatch(pageInfoMap, projCols, this.wasm)
-            : new Map<string, DecodedValue[]>();
+          // Phase 2: Fetch + decode projection columns (only needed because rows matched)
+          let projDecoded: Map<string, DecodedValue[]>;
+          if (projCols.length > 0) {
+            const { promise: projPromise, skipped } = this.fetchColumns(frag, pi, projCols);
+            this.pagesSkipped += skipped;
+            const projPageMap = await projPromise;
+            projDecoded = decodePageBatch(projPageMap, projCols, this.wasm);
+          } else {
+            projDecoded = new Map<string, DecodedValue[]>();
+          }
 
-          // Merge filter + projection decoded data
           const allDecoded = new Map([...filterDecoded, ...projDecoded]);
 
-          // Assemble rows only for matching indices
           const rows: Row[] = [];
           for (const idx of matchingIndices) {
             const row: Row = {};
@@ -222,7 +240,12 @@ export class ScanOperator implements Operator {
           continue;
         }
 
-        // No filters — decode all columns, assemble all rows
+        // No filters — fetch + decode all columns, assemble all rows
+        if (!hasPrefetch) {
+          const { promise, skipped } = this.fetchPage(frag, pi);
+          this.pagesSkipped += skipped;
+          pageInfoMap = await promise;
+        }
         const decoded = decodePageBatch(pageInfoMap, frag.columns, this.wasm);
         const firstDecoded = decoded.values().next().value;
         if (!firstDecoded || firstDecoded.length === 0) continue;
@@ -299,12 +322,13 @@ function scanFilterIndices(
 
     // Try WASM SIMD path for numeric scalar filters
     if (wasmOp >= 0 && typeof filter.value === "number" &&
-        (dtype === "float64" || dtype === "float32" || dtype === "int32")) {
+        (dtype === "float64" || dtype === "float32" || dtype === "int32" || dtype === "int64")) {
       const filterResult = wasmFilterNumeric(
         values, dtype, wasmOp, filter.value, rowCount, wasm,
       );
       if (filterResult) {
         indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
+        if (indices.length === 0) return indices; // short-circuit: no matches left
         continue;
       }
     }
@@ -319,6 +343,7 @@ function scanFilterIndices(
       }
     }
     indices = new Uint32Array(kept);
+    if (indices.length === 0) return indices; // short-circuit: no matches left
   }
 
   return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
@@ -1325,8 +1350,10 @@ export class WasmAggregateOperator implements Operator {
 
             if (currentIndices) {
               currentIndices = wasmIntersect(currentIndices, filterResult, this.wasm);
+              if (currentIndices.length === 0) break; // short-circuit: no matches left
             } else {
               currentIndices = filterResult;
+              if (currentIndices.length === 0) break;
             }
           }
 
