@@ -1373,26 +1373,26 @@ export class WasmAggregateOperator implements Operator {
     for (const frag of this.fragments) {
       const colMap = new Map(frag.columns.map(c => [c.name, c]));
 
-      // Collect all columns needed (aggregate + filter)
-      const neededCols = new Set<string>();
-      for (const agg of aggregates) if (agg.column !== "*") neededCols.add(agg.column);
-      for (const f of filters) neededCols.add(f.column);
+      // Separate filter columns from aggregate-only columns
+      const filterColNames = new Set(filters.map(f => f.column));
+      const aggOnlyColNames = new Set<string>();
+      for (const agg of aggregates) {
+        if (agg.column !== "*" && !filterColNames.has(agg.column)) aggOnlyColNames.add(agg.column);
+      }
 
-      // Process page by page
       const firstCol = frag.columns[0];
       if (!firstCol) continue;
       const pageCount = firstCol.pages.length;
 
       for (let pi = 0; pi < pageCount; pi++) {
-        // Page-level skip via min/max stats — check all filter columns
         if (canSkipPageMultiCol(frag.columns, pi, filters)) {
           this.pagesSkipped++;
           continue;
         }
 
-        // Read needed columns for this page
+        // Phase 1: Read filter columns (+ any aggregate columns that are also filter columns)
         const pageBuffers = new Map<string, ArrayBuffer>();
-        for (const colName of neededCols) {
+        for (const colName of filterColNames) {
           const col = colMap.get(colName);
           if (!col || !col.pages[pi]) continue;
           const buf = await frag.readPage(col, col.pages[pi]);
@@ -1466,6 +1466,18 @@ export class WasmAggregateOperator implements Operator {
             new Uint32Array(this.wasm.exports.memory.buffer, indicesPtr, currentIndices.length).set(currentIndices);
           }
           matchCount = currentIndices.length;
+        }
+
+        // Phase 2: Read aggregate-only columns (skipped if filter eliminated all rows)
+        if (!hasFilters || matchCount > 0) {
+          for (const colName of aggOnlyColNames) {
+            if (pageBuffers.has(colName)) continue; // already read (also a filter column)
+            const col = colMap.get(colName);
+            if (!col || !col.pages[pi]) continue;
+            const buf = await frag.readPage(col, col.pages[pi]);
+            this.bytesRead += buf.byteLength;
+            pageBuffers.set(colName, buf);
+          }
         }
 
         // Aggregate per column
