@@ -15,6 +15,7 @@ import type {
   WindowSpec,
 } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
+import { matchesFilter } from "./decode.js";
 
 // ---------------------------------------------------------------------------
 // Progress callback for collect()
@@ -778,25 +779,32 @@ export class MaterializedExecutor implements QueryExecutor {
   async execute(query: QueryDescriptor): Promise<QueryResult> {
     let rows = [...this.result.rows];
 
-    // Apply filters
-    for (const f of query.filters) {
-      rows = rows.filter(row => {
-        const v = row[f.column];
-        if (f.op === "is_null") return v === null || v === undefined;
-        if (f.op === "is_not_null") return v !== null && v !== undefined;
-        if (v === null) return false;
-        const fv = f.value;
-        switch (f.op) {
-          case "eq": return v === fv;
-          case "neq": return v !== fv;
-          case "gt": return typeof v === "number" && typeof fv === "number" ? v > fv : String(v) > String(fv);
-          case "gte": return typeof v === "number" && typeof fv === "number" ? v >= fv : String(v) >= String(fv);
-          case "lt": return typeof v === "number" && typeof fv === "number" ? v < fv : String(v) < String(fv);
-          case "lte": return typeof v === "number" && typeof fv === "number" ? v <= fv : String(v) <= String(fv);
-          case "in": return Array.isArray(fv) && (fv as unknown[]).includes(v);
-          default: return true;
-        }
-      });
+    // Apply AND filters
+    if (query.filters.length > 0) {
+      rows = rows.filter(row =>
+        query.filters.every(f => {
+          const v = row[f.column];
+          if (f.op === "is_null") return v === null || v === undefined;
+          if (f.op === "is_not_null") return v !== null && v !== undefined;
+          if (v === null || v === undefined) return false;
+          return matchesFilter(v as Row[string], f);
+        }),
+      );
+    }
+
+    // Apply OR filter groups (each group is AND-connected, groups are OR'd)
+    if (query.filterGroups && query.filterGroups.length > 0) {
+      rows = rows.filter(row =>
+        query.filterGroups!.some(group =>
+          group.every(f => {
+            const v = row[f.column];
+            if (f.op === "is_null") return v === null || v === undefined;
+            if (f.op === "is_not_null") return v !== null && v !== undefined;
+            if (v === null || v === undefined) return false;
+            return matchesFilter(v as Row[string], f);
+          }),
+        ),
+      );
     }
 
     // Apply projections
