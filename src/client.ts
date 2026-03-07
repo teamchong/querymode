@@ -169,6 +169,11 @@ export class DataFrame<T extends Row = Row> {
     return this.where(column, op, value);
   }
 
+  /** Filter rows where column value is between low and high (inclusive). */
+  whereBetween(column: string, low: number | bigint, high: number | bigint): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "between", value: [low, high] }] });
+  }
+
   /** Filter rows where a column is not null. */
   whereNotNull(column: string): DataFrame<T> {
     return this.derive({ filters: [...this._filters, { column, op: "is_not_null", value: 0 }] });

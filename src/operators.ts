@@ -41,6 +41,23 @@ export interface FragmentSource {
   readPage(col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer>;
 }
 
+/** Check if a page can be skipped by checking ALL filter columns' min/max stats.
+ *  Returns true if ANY filter column's stats prove zero rows can match. */
+function canSkipPageMultiCol(
+  columns: ColumnMeta[], pageIdx: number, filters: QueryDescriptor["filters"],
+): boolean {
+  if (filters.length === 0) return false;
+  const colMap = new Map(columns.map(c => [c.name, c]));
+  for (const f of filters) {
+    const col = colMap.get(f.column);
+    if (!col) continue;
+    const page = col.pages[pageIdx];
+    if (!page) continue;
+    if (canSkipPage(page, [f], f.column)) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // ScanOperator — reads pages from fragments, decodes, yields batches
 // ---------------------------------------------------------------------------
@@ -110,8 +127,7 @@ export class ScanOperator implements Operator {
     const firstCol = frag.columns[0];
     if (!firstCol) return -1;
     for (let i = start; i < firstCol.pages.length; i++) {
-      const page = firstCol.pages[i];
-      if (this.query.vectorSearch || !canSkipPage(page, this.query.filters, firstCol.name)) {
+      if (this.query.vectorSearch || !canSkipPageMultiCol(frag.columns, i, this.query.filters)) {
         return i;
       }
     }
@@ -156,9 +172,8 @@ export class ScanOperator implements Operator {
         const pi = this.pageIdx;
         this.pageIdx++;
 
-        // Page-level skip via min/max stats on first column
-        const page = firstCol.pages[pi];
-        if (!this.query.vectorSearch && canSkipPage(page, this.query.filters, firstCol.name)) {
+        // Page-level skip via min/max stats — check ALL filter columns, not just first
+        if (!this.query.vectorSearch && canSkipPageMultiCol(frag.columns, pi, this.query.filters)) {
           this.pagesSkipped += frag.columns.length;
           continue;
         }
@@ -318,7 +333,7 @@ function scanFilterIndices(
       return new Uint32Array(0);
     }
 
-    const wasmOp = filter.op !== "in" ? filterOpToWasm(filter.op) : -1;
+    const wasmOp = filter.op !== "in" && filter.op !== "between" ? filterOpToWasm(filter.op) : -1;
 
     // Try WASM SIMD path for numeric scalar filters
     if (wasmOp >= 0 && typeof filter.value === "number" &&
@@ -329,6 +344,20 @@ function scanFilterIndices(
       if (filterResult) {
         indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
         if (indices.length === 0) return indices; // short-circuit: no matches left
+        continue;
+      }
+    }
+
+    // Try WASM BETWEEN path for numeric range filters
+    if (filter.op === "between" && Array.isArray(filter.value) && filter.value.length === 2 &&
+        typeof filter.value[0] === "number" && typeof filter.value[1] === "number" &&
+        (dtype === "float64" || dtype === "float32" || dtype === "int32" || dtype === "int64")) {
+      const filterResult = wasmFilterRange(
+        values, dtype, filter.value[0], filter.value[1], rowCount, wasm,
+      );
+      if (filterResult) {
+        indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
+        if (indices.length === 0) return indices;
         continue;
       }
     }
@@ -410,6 +439,60 @@ function wasmFilterNumeric(
     return null;
   } catch {
     return null; // WASM failure — fall through to JS
+  }
+}
+
+/** Run WASM BETWEEN (range) filter on decoded numeric values. */
+function wasmFilterRange(
+  values: DecodedValue[],
+  dtype: string,
+  low: number,
+  high: number,
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array | null {
+  try {
+    wasm.exports.resetHeap();
+
+    if (dtype === "float64" || dtype === "float32") {
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new Float64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterFloat64Range(dataPtr, rowCount, low, high, outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int64") {
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) {
+        const v = values[i];
+        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
+      }
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int32") {
+      const dataPtr = wasm.exports.alloc(rowCount * 4);
+      if (!dataPtr) return null;
+      const dst = new Int32Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt32Range(dataPtr, rowCount, low, high, outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -1296,8 +1379,8 @@ export class WasmAggregateOperator implements Operator {
       const pageCount = firstCol.pages.length;
 
       for (let pi = 0; pi < pageCount; pi++) {
-        // Page-level skip via min/max stats
-        if (canSkipPage(firstCol.pages[pi], filters, firstCol.name)) {
+        // Page-level skip via min/max stats — check all filter columns
+        if (canSkipPageMultiCol(frag.columns, pi, filters)) {
           this.pagesSkipped++;
           continue;
         }

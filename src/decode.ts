@@ -25,6 +25,15 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
       case "lt":  if (min >= val) return true; break;
       case "lte": if (min > val) return true; break;
       case "eq":  if (val < min || val > max) return true; break;
+      case "between": {
+        if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
+        let lo = filter.value[0];
+        let hi = filter.value[1];
+        if (typeof min === "bigint" && typeof lo === "number") { lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
+        else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
+        if (max < lo || min > hi) return true;
+        break;
+      }
     }
   }
   return false;
@@ -383,6 +392,13 @@ export function matchesFilter(
     case "lt":  { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) < (b as number | bigint | string); }
     case "lte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) <= (b as number | bigint | string); }
     case "in":  return Array.isArray(t) && t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
+    case "between": {
+      if (!Array.isArray(t) || t.length !== 2) return false;
+      const [, lo] = coerceCompare(val, t[0]);
+      const [a, hi] = coerceCompare(val, t[1]);
+      return (a as number | bigint | string) >= (lo as number | bigint | string) &&
+             (a as number | bigint | string) <= (hi as number | bigint | string);
+    }
     default:    return true;
   }
 }

@@ -805,6 +805,48 @@ export fn filterFloat64Range(
     return out_count;
 }
 
+/// Filter int32 with range (BETWEEN): returns indices where low <= val <= high
+export fn filterInt32Range(
+    data_ptr: [*]const i32,
+    len: usize,
+    low: i32,
+    high: i32,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    for (0..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        if (v >= low and v <= high) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
+/// Filter int64 with range (BETWEEN): returns indices where low <= val <= high
+export fn filterInt64Range(
+    data_ptr: [*]const i64,
+    len: usize,
+    low: i64,
+    high: i64,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    for (0..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        if (v >= low and v <= high) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
 /// AND two index arrays (intersection)
 /// Uses O(n+m) sorted merge since filter outputs are always in ascending order
 export fn intersectIndices(

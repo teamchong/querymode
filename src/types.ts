@@ -85,7 +85,7 @@ export interface TableMeta {
 /** A filter predicate that can be pushed down to page-level skipping */
 export interface FilterOp {
   column: string;
-  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is_null" | "is_not_null";
+  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "between" | "is_null" | "is_not_null";
   value: number | bigint | string | (number | bigint | string)[];
 }
 

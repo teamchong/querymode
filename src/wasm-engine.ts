@@ -67,6 +67,9 @@ export interface WasmExports {
   filterFloat64Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
   filterInt32Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
   filterInt64Buffer(dataPtr: number, len: number, op: number, value: bigint, outPtr: number, maxOut: number): number;
+  filterFloat64Range(dataPtr: number, len: number, low: number, high: number, outPtr: number, maxOut: number): number;
+  filterInt32Range(dataPtr: number, len: number, low: number, high: number, outPtr: number, maxOut: number): number;
+  filterInt64Range(dataPtr: number, len: number, low: bigint, high: bigint, outPtr: number, maxOut: number): number;
   intersectIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
   unionIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
 
