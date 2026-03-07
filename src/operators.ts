@@ -333,7 +333,8 @@ function scanFilterIndices(
       return new Uint32Array(0);
     }
 
-    const wasmOp = filter.op !== "in" && filter.op !== "between" ? filterOpToWasm(filter.op) : -1;
+    const isCompoundOp = filter.op === "in" || filter.op === "not_in" || filter.op === "between" || filter.op === "not_between" || filter.op === "like" || filter.op === "not_like";
+    const wasmOp = !isCompoundOp ? filterOpToWasm(filter.op) : -1;
 
     // Try WASM SIMD path for numeric scalar filters
     if (wasmOp >= 0 && typeof filter.value === "number" &&
@@ -1311,7 +1312,7 @@ export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[
 
   // Filters are allowed if they are on numeric columns with scalar/range ops
   for (const f of query.filters) {
-    if (f.op === "in" || f.op === "is_null" || f.op === "is_not_null") return false;
+    if (f.op === "in" || f.op === "not_in" || f.op === "like" || f.op === "not_like" || f.op === "is_null" || f.op === "is_not_null") return false;
     const fc = colMap.get(f.column);
     if (!fc) return false;
     if (fc.dtype !== "float64" && fc.dtype !== "int32" && fc.dtype !== "int64") return false;
