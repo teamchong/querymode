@@ -1309,14 +1309,19 @@ export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[
 
   const colMap = new Map(columns.map(c => [c.name, c]));
 
-  // Filters are allowed if they are on numeric columns with scalar ops (no "in")
+  // Filters are allowed if they are on numeric columns with scalar/range ops
   for (const f of query.filters) {
-    if (f.op === "in") return false;
+    if (f.op === "in" || f.op === "is_null" || f.op === "is_not_null") return false;
     const fc = colMap.get(f.column);
     if (!fc) return false;
     if (fc.dtype !== "float64" && fc.dtype !== "int32" && fc.dtype !== "int64") return false;
     if (fc.pages.some(p => p.encoding)) return false;
-    if (typeof f.value !== "number") return false;
+    if (f.op === "between") {
+      if (!Array.isArray(f.value) || f.value.length !== 2) return false;
+      if (typeof f.value[0] !== "number" || typeof f.value[1] !== "number") return false;
+    } else {
+      if (typeof f.value !== "number") return false;
+    }
   }
 
   for (const agg of query.aggregates) {
@@ -1406,12 +1411,10 @@ export class WasmAggregateOperator implements Operator {
             const col = colMap.get(f.column);
             const buf = pageBuffers.get(f.column);
             if (!col || !buf) { currentIndices = new Uint32Array(0); break; }
-            const wasmOp = filterOpToWasm(f.op);
-            if (wasmOp < 0) { currentIndices = new Uint32Array(0); break; }
             if (col.dtype !== "float64" && col.dtype !== "int32" && col.dtype !== "int64") {
               currentIndices = new Uint32Array(0); break;
             }
-            const elemSize = col.dtype === "int32" ? 4 : 8; // f64 and i64 are both 8 bytes
+            const elemSize = col.dtype === "int32" ? 4 : 8;
             const rowCount = buf.byteLength / elemSize;
 
             // Copy data to WASM
@@ -1422,12 +1425,26 @@ export class WasmAggregateOperator implements Operator {
             if (!outPtr) { currentIndices = new Uint32Array(0); break; }
 
             let count: number;
-            if (col.dtype === "float64") {
-              count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
-            } else if (col.dtype === "int64") {
-              count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
+            if (f.op === "between" && Array.isArray(f.value) && f.value.length === 2) {
+              // BETWEEN: use range filter
+              if (col.dtype === "float64") {
+                count = this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+              } else if (col.dtype === "int64") {
+                count = this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
+              } else {
+                count = this.wasm.exports.filterInt32Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+              }
             } else {
-              count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+              // Scalar comparison filter
+              const wasmOp = filterOpToWasm(f.op);
+              if (wasmOp < 0) { currentIndices = new Uint32Array(0); break; }
+              if (col.dtype === "float64") {
+                count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+              } else if (col.dtype === "int64") {
+                count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
+              } else {
+                count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+              }
             }
             const filterResult = new Uint32Array(this.wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
 
