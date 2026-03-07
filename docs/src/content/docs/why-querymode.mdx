@@ -3,15 +3,15 @@ title: Why QueryMode
 description: Agents are the new users. They need dynamic pipelines, not pre-built ETL.
 ---
 
-## The world is changing
+## Agents can't coordinate
 
-Three things are happening at once:
+Agents share the same training data and independently reach the same conclusions. They serve different owners, run in different parts of the world, and have no way to talk to each other. When thousands of agents independently decide to query the same data at the same millisecond, the result looks like a DDoS — except every request is legitimate. Thundering herds become the normal traffic pattern, not an anomaly. Data must live at the edge to survive this.
 
-1. **Agents are becoming the majority of internet traffic.** Unlike humans, agents share the same training data and reach the same conclusions independently. They can't coordinate with each other — they serve different owners, run in different parts of the world. When thousands of agents independently decide to query the same data at the same millisecond, the result looks like a DDoS — except every request is legitimate. Thundering herds become the normal traffic pattern, not an anomaly. Data must live at the edge to survive this.
+Training data can't keep up with the speed the world produces information, so agents make API calls for live data. Because they can't coordinate, the same data gets requested independently by thousands of agents. That data needs to live at the edge, close to where agents run.
 
-2. **Agents need live data.** Training data can't keep up with the speed the world produces information. Agents will make API calls — lots of them. And because they can't coordinate (they're not a hive mind), the same data gets requested independently by thousands of agents. That data needs to live at the edge, close to where agents run.
+## Pre-built ETL can't serve agents
 
-3. **Pre-built ETL can't serve agents.** Traditional data pipelines assume a human pre-defines what questions matter, builds a pipeline on a schedule, and stores the results. Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it.
+Traditional data pipelines assume a human pre-defines what questions matter, builds a pipeline on a schedule, and stores the results. Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it.
 
 ## Fixed ETL vs dynamic pipelines
 
@@ -58,7 +58,7 @@ Three analyses on one result set. No SQL string construction, no JSON parsing, n
 
 ## What we've tested so far
 
-We ported query patterns from two open-source analytics platforms to see where dynamic pipelines help and where they don't:
+We ported query patterns from two open-source analytics platforms:
 
 **[Counterscale](https://github.com/benvinegar/counterscale)** (Cloudflare Analytics Engine) — 7 query patterns. Each one normally goes through Analytics Engine's HTTP SQL API with JSON serialization per request. The same patterns run on QueryMode's DataFrame API without that overhead.
 
@@ -68,4 +68,4 @@ Both test suites also include multi-step analyses that would be awkward with the
 
 ## The agent IS the pipeline
 
-QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, all at the edge, all without waiting for a pipeline that someone built last quarter.
+QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, same process. If the data is well-structured, the agent queries it directly. If it's not, the agent builds the transformation on the spot. Either way, no one had to anticipate the question in advance.
