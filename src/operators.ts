@@ -1412,13 +1412,11 @@ export class InMemorySortOperator implements Operator {
 export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[]): boolean {
   if (!query.aggregates || query.aggregates.length === 0) return false;
   if (query.groupBy && query.groupBy.length > 0) return false;
-  if (query.filterGroups && query.filterGroups.length > 0) return false;
-
   const colMap = new Map(columns.map(c => [c.name, c]));
 
-  // Filters are allowed if they are on numeric columns with scalar/range ops
-  for (const f of query.filters) {
-    if (f.op === "in" || f.op === "not_in" || f.op === "like" || f.op === "not_like" || f.op === "is_null" || f.op === "is_not_null") return false;
+  // Validate filter is numeric with scalar/range op
+  const isValidFilter = (f: FilterOp): boolean => {
+    if (f.op === "in" || f.op === "not_in" || f.op === "like" || f.op === "not_like" || f.op === "not_between" || f.op === "is_null" || f.op === "is_not_null") return false;
     const fc = colMap.get(f.column);
     if (!fc) return false;
     if (fc.dtype !== "float64" && fc.dtype !== "int32" && fc.dtype !== "int64") return false;
@@ -1428,6 +1426,21 @@ export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[
       if (typeof f.value[0] !== "number" || typeof f.value[1] !== "number") return false;
     } else {
       if (typeof f.value !== "number") return false;
+    }
+    return true;
+  };
+
+  // AND filters must all be valid
+  for (const f of query.filters) {
+    if (!isValidFilter(f)) return false;
+  }
+
+  // OR filter groups: each group's filters must all be valid
+  if (query.filterGroups) {
+    for (const group of query.filterGroups) {
+      for (const f of group) {
+        if (!isValidFilter(f)) return false;
+      }
     }
   }
 
@@ -1471,7 +1484,8 @@ export class WasmAggregateOperator implements Operator {
 
     const aggregates = this.query.aggregates ?? [];
     const filters = this.query.filters;
-    const hasFilters = filters.length > 0;
+    const filterGroups = this.query.filterGroups;
+    const hasFilters = filters.length > 0 || (filterGroups && filterGroups.length > 0);
     // Accumulator per aggregate
     const acc: { sum: number; count: number; min: number; max: number }[] =
       aggregates.map(() => ({ sum: 0, count: 0, min: Infinity, max: -Infinity }));
@@ -1482,6 +1496,7 @@ export class WasmAggregateOperator implements Operator {
 
       // Separate filter columns from aggregate-only columns
       const filterColNames = new Set(filters.map(f => f.column));
+      if (filterGroups) for (const g of filterGroups) for (const f of g) filterColNames.add(f.column);
       const aggOnlyColNames = new Set<string>();
       for (const agg of aggregates) {
         if (agg.column !== "*" && !filterColNames.has(agg.column)) aggOnlyColNames.add(agg.column);
@@ -1492,7 +1507,7 @@ export class WasmAggregateOperator implements Operator {
       const pageCount = firstCol.pages.length;
 
       for (let pi = 0; pi < pageCount; pi++) {
-        if (canSkipPageMultiCol(frag.columns, pi, filters)) {
+        if (canSkipPageMultiCol(frag.columns, pi, filters, filterGroups)) {
           this.pagesSkipped++;
           continue;
         }
@@ -1512,59 +1527,28 @@ export class WasmAggregateOperator implements Operator {
         let indicesPtr = 0;
         if (hasFilters) {
           this.wasm.exports.resetHeap();
+
+          // Evaluate AND filters
           let currentIndices: Uint32Array | null = null;
-
-          for (const f of filters) {
-            const col = colMap.get(f.column);
-            const buf = pageBuffers.get(f.column);
-            if (!col || !buf) { currentIndices = new Uint32Array(0); break; }
-            if (col.dtype !== "float64" && col.dtype !== "int32" && col.dtype !== "int64") {
-              currentIndices = new Uint32Array(0); break;
-            }
-            const elemSize = col.dtype === "int32" ? 4 : 8;
-            const rowCount = buf.byteLength / elemSize;
-
-            // Copy data to WASM
-            const dataPtr = this.wasm.exports.alloc(buf.byteLength);
-            if (!dataPtr) { currentIndices = new Uint32Array(0); break; }
-            new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
-            const outPtr = this.wasm.exports.alloc(rowCount * 4);
-            if (!outPtr) { currentIndices = new Uint32Array(0); break; }
-
-            let count: number;
-            if (f.op === "between" && Array.isArray(f.value) && f.value.length === 2) {
-              // BETWEEN: use range filter
-              if (col.dtype === "float64") {
-                count = this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
-              } else if (col.dtype === "int64") {
-                count = this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
-              } else {
-                count = this.wasm.exports.filterInt32Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
-              }
-            } else {
-              // Scalar comparison filter
-              const wasmOp = filterOpToWasm(f.op);
-              if (wasmOp < 0) { currentIndices = new Uint32Array(0); break; }
-              if (col.dtype === "float64") {
-                count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
-              } else if (col.dtype === "int64") {
-                count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
-              } else {
-                count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
-              }
-            }
-            const filterResult = new Uint32Array(this.wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
-
-            if (currentIndices) {
-              currentIndices = wasmIntersect(currentIndices, filterResult, this.wasm);
-              if (currentIndices.length === 0) break; // short-circuit: no matches left
-            } else {
-              currentIndices = filterResult;
-              if (currentIndices.length === 0) break;
-            }
+          if (filters.length > 0) {
+            currentIndices = this.evalAndFilters(filters, colMap, pageBuffers);
+            if (currentIndices.length === 0) continue;
           }
 
-          if (!currentIndices || currentIndices.length === 0) continue; // all filtered out
+          // Evaluate OR filter groups: each group independently, union results
+          if (filterGroups && filterGroups.length > 0) {
+            let orResult: Uint32Array | null = null;
+            for (const group of filterGroups) {
+              const groupResult = this.evalAndFilters(group, colMap, pageBuffers);
+              if (groupResult.length === 0) continue;
+              orResult = orResult ? wasmUnion(orResult, groupResult, this.wasm) : groupResult;
+            }
+            if (!orResult) continue; // all OR groups empty
+            // Intersect OR result with AND result
+            currentIndices = currentIndices ? wasmIntersect(currentIndices, orResult, this.wasm) : orResult;
+          }
+
+          if (!currentIndices || currentIndices.length === 0) continue;
 
           // Copy indices to WASM for indexed aggregates
           this.wasm.exports.resetHeap();
@@ -1649,6 +1633,63 @@ export class WasmAggregateOperator implements Operator {
     }
 
     return [row];
+  }
+
+  /** Evaluate AND-connected filters on page buffers, returning matching row indices. */
+  private evalAndFilters(
+    filters: FilterOp[],
+    colMap: Map<string, ColumnMeta>,
+    pageBuffers: Map<string, ArrayBuffer>,
+  ): Uint32Array {
+    let currentIndices: Uint32Array | null = null;
+
+    for (const f of filters) {
+      const col = colMap.get(f.column);
+      const buf = pageBuffers.get(f.column);
+      if (!col || !buf) return new Uint32Array(0);
+      if (col.dtype !== "float64" && col.dtype !== "int32" && col.dtype !== "int64") return new Uint32Array(0);
+      const elemSize = col.dtype === "int32" ? 4 : 8;
+      const rowCount = buf.byteLength / elemSize;
+
+      this.wasm.exports.resetHeap();
+      const dataPtr = this.wasm.exports.alloc(buf.byteLength);
+      if (!dataPtr) return new Uint32Array(0);
+      new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
+      const outPtr = this.wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return new Uint32Array(0);
+
+      let count: number;
+      if (f.op === "between" && Array.isArray(f.value) && f.value.length === 2) {
+        if (col.dtype === "float64") {
+          count = this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+        } else if (col.dtype === "int64") {
+          count = this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
+        } else {
+          count = this.wasm.exports.filterInt32Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+        }
+      } else {
+        const wasmOp = filterOpToWasm(f.op);
+        if (wasmOp < 0) return new Uint32Array(0);
+        if (col.dtype === "float64") {
+          count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+        } else if (col.dtype === "int64") {
+          count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
+        } else {
+          count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+        }
+      }
+      const filterResult = new Uint32Array(this.wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+
+      if (currentIndices) {
+        currentIndices = wasmIntersect(currentIndices, filterResult, this.wasm);
+        if (currentIndices.length === 0) return currentIndices;
+      } else {
+        currentIndices = filterResult;
+        if (currentIndices.length === 0) return currentIndices;
+      }
+    }
+
+    return currentIndices ?? new Uint32Array(0);
   }
 
   async close(): Promise<void> { /* no-op */ }

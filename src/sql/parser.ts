@@ -808,7 +808,8 @@ function isKeywordIdentifier(type: TokenType): boolean {
     type === TokenType.RANK || type === TokenType.PARTITION ||
     type === TokenType.OVER || type === TokenType.ROW_NUMBER ||
     type === TokenType.DENSE_RANK || type === TokenType.LAG || type === TokenType.LEAD ||
-    type === TokenType.NULL || type === TokenType.TRUE || type === TokenType.FALSE;
+    type === TokenType.NULL || type === TokenType.TRUE || type === TokenType.FALSE ||
+    type === TokenType.DATA || type === TokenType.VERSION;
 }
 
 export class SqlParseError extends Error {
