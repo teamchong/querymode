@@ -155,10 +155,13 @@ describe("SQL Compiler", () => {
     expect(desc.windows![0].alias).toBe("rn");
   });
 
-  it("skips OR conditions gracefully", () => {
+  it("compiles OR into filterGroups", () => {
     const desc = sql("SELECT * FROM t WHERE a = 1 OR b = 2");
-    // OR cannot be flattened into FilterOp[] — filters will be empty
     expect(desc.filters).toEqual([]);
+    expect(desc.filterGroups).toEqual([
+      [{ column: "a", op: "eq", value: 1 }],
+      [{ column: "b", op: "eq", value: 2 }],
+    ]);
   });
 
   it("handles AND with NEAR (mixed filters)", () => {
@@ -170,13 +173,22 @@ describe("SQL Compiler", () => {
 });
 
 describe("SQL Compiler - compileFull", () => {
-  it("returns whereExpr for OR conditions", () => {
+  it("flattens OR into filterGroups", () => {
     const result = sqlFull("SELECT * FROM t WHERE a = 1 OR b = 2");
-    expect(result.whereExpr).toBeDefined();
-    expect(result.whereExpr!.kind).toBe("binary");
-    if (result.whereExpr!.kind === "binary") {
-      expect(result.whereExpr!.op).toBe("or");
-    }
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filterGroups).toEqual([
+      [{ column: "a", op: "eq", value: 1 }],
+      [{ column: "b", op: "eq", value: 2 }],
+    ]);
+  });
+
+  it("flattens complex OR with AND branches", () => {
+    const result = sqlFull("SELECT * FROM t WHERE (a = 1 AND b = 2) OR (c = 3 AND d = 4)");
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filterGroups).toEqual([
+      [{ column: "a", op: "eq", value: 1 }, { column: "b", op: "eq", value: 2 }],
+      [{ column: "c", op: "eq", value: 3 }, { column: "d", op: "eq", value: 4 }],
+    ]);
   });
 
   it("returns no whereExpr for simple AND filters", () => {

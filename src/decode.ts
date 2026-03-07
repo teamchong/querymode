@@ -79,12 +79,25 @@ export function assembleRows(
       row[col.name] = values ? (values[i] as Row[string]) : null;
     }
 
-    if (query.filters.every(f => {
+    // AND filters must all pass
+    const andPass = query.filters.every(f => {
       const v = row[f.column];
       return v !== null && matchesFilter(v, f);
-    })) {
-      rows.push(row);
+    });
+    if (!andPass) continue;
+
+    // OR groups: at least one group must pass
+    if (query.filterGroups && query.filterGroups.length > 0) {
+      const orPass = query.filterGroups.some(group =>
+        group.every(f => {
+          const v = row[f.column];
+          return v !== null && matchesFilter(v, f);
+        }),
+      );
+      if (!orPass) continue;
     }
+
+    rows.push(row);
   }
 
   return applySortAndLimit(rows, query);

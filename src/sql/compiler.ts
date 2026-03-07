@@ -67,13 +67,20 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     projections = [...stmt.groupBy.columns];
   }
 
-  // Process WHERE clause — try to flatten to FilterOp[]
+  // Process WHERE clause — try to flatten to FilterOp[] (and filterGroups for OR)
   let whereExpr: SqlExpr | undefined;
+  let filterGroups: FilterOp[][] | undefined;
   if (stmt.where) {
     const fullyFlattened = tryFlattenFilters(stmt.where, filters);
     if (!fullyFlattened) {
-      // Some predicates couldn't be pushed down — set whereExpr for runtime evaluation
-      whereExpr = stmt.where;
+      // Try OR decomposition: if top-level is OR, flatten each branch independently
+      const orGroups = tryFlattenOrGroups(stmt.where);
+      if (orGroups) {
+        filterGroups = orGroups;
+      } else {
+        // Some predicates couldn't be pushed down — set whereExpr for runtime evaluation
+        whereExpr = stmt.where;
+      }
     }
   }
 
@@ -133,6 +140,7 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
   const desc: QueryDescriptor = {
     table,
     filters,
+    filterGroups,
     projections: projections.length > 0 ? projections : [],
     sortColumn,
     sortDirection,
@@ -281,14 +289,13 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
     return false;
   }
 
-  // BETWEEN / NOT BETWEEN: column BETWEEN low AND high
+  // BETWEEN: column BETWEEN low AND high (NOT BETWEEN is handled via unary NOT wrapping below)
   if (expr.kind === "between") {
     const colName = extractColumnName(expr.expr);
     const low = extractLiteralValue(expr.low);
     const high = extractLiteralValue(expr.high);
     if (colName && low !== undefined && high !== undefined) {
-      const op = expr.negated ? "not_between" : "between";
-      filters.push({ column: colName, op, value: [low as number | string, high as number | string] });
+      filters.push({ column: colName, op: "between", value: [low as number | string, high as number | string] });
       return true;
     }
     return false;
@@ -339,6 +346,39 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
 
   // Everything else (OR, subqueries, etc.) can't be flattened
   return false;
+}
+
+/**
+ * Try to decompose a WHERE expression into OR-connected groups.
+ * Returns FilterOp[][] where each inner array is AND-connected, or null if not possible.
+ * Handles: (a AND b) OR (c AND d) OR e
+ */
+function tryFlattenOrGroups(expr: SqlExpr): FilterOp[][] | null {
+  // Collect OR branches
+  const branches: SqlExpr[] = [];
+  collectOrBranches(expr, branches);
+  if (branches.length < 2) return null; // not an OR expression
+
+  const groups: FilterOp[][] = [];
+  for (const branch of branches) {
+    const filters: FilterOp[] = [];
+    if (tryFlattenFilters(branch, filters) && filters.length > 0) {
+      groups.push(filters);
+    } else {
+      return null; // can't flatten this branch — bail
+    }
+  }
+  return groups;
+}
+
+/** Recursively collect OR branches from a tree of OR expressions. */
+function collectOrBranches(expr: SqlExpr, out: SqlExpr[]): void {
+  if (expr.kind === "binary" && expr.op === "or") {
+    collectOrBranches(expr.left, out);
+    collectOrBranches(expr.right, out);
+  } else {
+    out.push(expr);
+  }
 }
 
 function isComparisonOp(op: string): boolean {

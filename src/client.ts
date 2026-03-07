@@ -81,6 +81,7 @@ interface DeferredSubquery {
 export class DataFrame<T extends Row = Row> {
   private _table: string;
   private _filters: FilterOp[];
+  private _filterGroups: FilterOp[][];
   private _projections: string[];
   private _sortColumn?: string;
   private _sortDirection?: "asc" | "desc";
@@ -107,6 +108,7 @@ export class DataFrame<T extends Row = Row> {
     this._table = table;
     this._executor = executor;
     this._filters = init?.filters ?? [];
+    this._filterGroups = init?.filterGroups ?? [];
     this._projections = init?.projections ?? [];
     this._sortColumn = init?.sortColumn;
     this._sortDirection = init?.sortDirection;
@@ -133,6 +135,7 @@ export class DataFrame<T extends Row = Row> {
   private derive(overrides: Partial<DataFrameInit>): DataFrame<T> {
     return new DataFrame<T>(this._table, this._executor, {
       filters: this._filters,
+      filterGroups: this._filterGroups,
       projections: this._projections,
       sortColumn: this._sortColumn,
       sortDirection: this._sortDirection,
@@ -197,6 +200,13 @@ export class DataFrame<T extends Row = Row> {
   /** Filter rows where column value is NOT in the given list. */
   whereNotIn(column: string, values: (number | bigint | string)[]): DataFrame<T> {
     return this.derive({ filters: [...this._filters, { column, op: "not_in", value: values }] });
+  }
+
+  /** Filter with OR logic: each group is AND-connected, groups are OR'd.
+   * Example: `.whereOr([{column:"dept",op:"eq",value:"eng"}], [{column:"age",op:"gt",value:30}])`
+   * = WHERE (dept = 'eng') OR (age > 30) */
+  whereOr(...groups: FilterOp[][]): DataFrame<T> {
+    return this.derive({ filterGroups: [...this._filterGroups, ...groups] });
   }
 
   /** Filter rows where a column is not null. */
@@ -682,6 +692,7 @@ export class DataFrame<T extends Row = Row> {
     return {
       table: this._table,
       filters: this._filters,
+      filterGroups: this._filterGroups.length > 0 ? this._filterGroups : undefined,
       projections: this._projections,
       sortColumn: this._sortColumn,
       sortDirection: this._sortDirection,
@@ -836,6 +847,7 @@ export type PipeStage = (upstream: Operator) => Operator;
 
 interface DataFrameInit {
   filters: FilterOp[];
+  filterGroups: FilterOp[][];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";
@@ -866,6 +878,8 @@ interface DataFrameInit {
 export interface QueryDescriptor {
   table: string;
   filters: FilterOp[];
+  /** OR-connected groups of AND-connected filters. Each group is evaluated independently, results unioned. */
+  filterGroups?: FilterOp[][];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";

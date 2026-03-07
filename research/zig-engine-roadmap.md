@@ -61,8 +61,20 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - `canUseWasmAggregate()` correctly rejects non-numeric ops
 - `scanFilterIndices` guards new ops from WASM-only numeric paths
 
+### OR Filter Support — DONE
+- `filterGroups: FilterOp[][]` on QueryDescriptor — each group is AND-connected, groups are OR'd
+- SQL compiler decomposes `(a AND b) OR (c AND d)` into filterGroups via `tryFlattenOrGroups()`
+- `scanFilterIndices`: evaluates each OR group independently via `applyAndFilters()`, unions results via `wasmUnion()`
+- `canSkipPageMultiCol`: page skipped only if ALL OR groups eliminate it
+- `FilterOperator.matchesRow()`: AND filters + at least one OR group must pass
+- `assembleRows()` in decode.ts handles filterGroups
+- Client API: `.whereOr(...groups: FilterOp[][])`
+- `canUseWasmAggregate` rejects queries with filterGroups (not optimized for OR yet)
+
 **Remaining:**
-- OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig, needs API/type changes for compound filter groups)
+- Full columnar pipeline: connect TS pipeline to Zig SelectionVector/DataChunk types (removes Row[] batch format)
+- WASM SIMD LIKE filter (comptime string pattern matching in Zig)
+- WasmAggregateOperator OR support (union index arrays in aggregate path)
 
 ### BETWEEN Support — DONE
 - `filterFloat64Range`, `filterInt32Range`, `filterInt64Range` Zig exports

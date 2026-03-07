@@ -7,7 +7,7 @@
  * Pipeline: Scan → Filter → Aggregate|TopK|Sort|Limit → Project
  */
 
-import type { ColumnMeta, PageInfo, Row } from "./types.js";
+import type { ColumnMeta, FilterOp, PageInfo, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, decodePage } from "./decode.js";
@@ -42,12 +42,37 @@ export interface FragmentSource {
 }
 
 /** Check if a page can be skipped by checking ALL filter columns' min/max stats.
- *  Returns true if ANY filter column's stats prove zero rows can match. */
+ *  Returns true if ANY AND filter proves zero matches, or if ALL OR groups prove zero matches. */
 function canSkipPageMultiCol(
   columns: ColumnMeta[], pageIdx: number, filters: QueryDescriptor["filters"],
+  filterGroups?: FilterOp[][],
 ): boolean {
-  if (filters.length === 0) return false;
   const colMap = new Map(columns.map(c => [c.name, c]));
+
+  // Check AND filters: skip if ANY single filter eliminates the page
+  for (const f of filters) {
+    const col = colMap.get(f.column);
+    if (!col) continue;
+    const page = col.pages[pageIdx];
+    if (!page) continue;
+    if (canSkipPage(page, [f], f.column)) return true;
+  }
+
+  // Check OR groups: skip only if ALL groups eliminate the page
+  if (filterGroups && filterGroups.length > 0) {
+    const allGroupsSkip = filterGroups.every(group =>
+      canSkipAndGroup(colMap, pageIdx, group),
+    );
+    if (allGroupsSkip) return true;
+  }
+
+  return false;
+}
+
+/** Check if an AND-connected filter group can be proven to produce zero matches for a page. */
+function canSkipAndGroup(
+  colMap: Map<string, ColumnMeta>, pageIdx: number, filters: FilterOp[],
+): boolean {
   for (const f of filters) {
     const col = colMap.get(f.column);
     if (!col) continue;
@@ -83,7 +108,7 @@ export class ScanOperator implements Operator {
     this.fragments = fragments;
     this.query = query;
     this.wasm = wasm;
-    this.filtersApplied = applyFilters && query.filters.length > 0;
+    this.filtersApplied = applyFilters && (query.filters.length > 0 || !!(query.filterGroups && query.filterGroups.length > 0));
   }
 
   /** Fetch specified columns for a page in parallel. Returns the pageInfoMap. */
@@ -127,7 +152,7 @@ export class ScanOperator implements Operator {
     const firstCol = frag.columns[0];
     if (!firstCol) return -1;
     for (let i = start; i < firstCol.pages.length; i++) {
-      if (this.query.vectorSearch || !canSkipPageMultiCol(frag.columns, i, this.query.filters)) {
+      if (this.query.vectorSearch || !canSkipPageMultiCol(frag.columns, i, this.query.filters, this.query.filterGroups)) {
         return i;
       }
     }
@@ -144,9 +169,14 @@ export class ScanOperator implements Operator {
       const nextPi = this.findNextPage(frag, pi);
       if (nextPi >= 0) {
         // Two-phase: only prefetch filter columns to minimize R2 I/O
-        const cols = this.filtersApplied
-          ? frag.columns.filter(c => this.query.filters.some(f => f.column === c.name))
-          : frag.columns;
+        let cols: ColumnMeta[];
+        if (this.filtersApplied) {
+          const filterColNames = new Set(this.query.filters.map(f => f.column));
+          if (this.query.filterGroups) for (const g of this.query.filterGroups) for (const f of g) filterColNames.add(f.column);
+          cols = frag.columns.filter(c => filterColNames.has(c.name));
+        } else {
+          cols = frag.columns;
+        }
         const { promise, skipped } = this.fetchColumns(frag, nextPi, cols);
         this.prefetch = promise;
         this.prefetchPageIdx = nextPi;
@@ -173,7 +203,7 @@ export class ScanOperator implements Operator {
         this.pageIdx++;
 
         // Page-level skip via min/max stats — check ALL filter columns, not just first
-        if (!this.query.vectorSearch && canSkipPageMultiCol(frag.columns, pi, this.query.filters)) {
+        if (!this.query.vectorSearch && canSkipPageMultiCol(frag.columns, pi, this.query.filters, this.query.filterGroups)) {
           this.pagesSkipped += frag.columns.length;
           continue;
         }
@@ -195,8 +225,12 @@ export class ScanOperator implements Operator {
         this.startPrefetch();
 
         // Two-phase late materialization: fetch+decode filter cols first, skip projection I/O if no matches
-        if (this.filtersApplied && this.query.filters.length > 0) {
-          const filterColNames = new Set(this.query.filters.map(f => f.column));
+        const allFilters = this.query.filters;
+        const allFilterGroups = this.query.filterGroups;
+        const hasFilters = allFilters.length > 0 || (allFilterGroups && allFilterGroups.length > 0);
+        if (this.filtersApplied && hasFilters) {
+          const filterColNames = new Set(allFilters.map(f => f.column));
+          if (allFilterGroups) for (const g of allFilterGroups) for (const f of g) filterColNames.add(f.column);
           const filterCols = frag.columns.filter(c => filterColNames.has(c.name));
           const projCols = frag.columns.filter(c => !filterColNames.has(c.name));
 
@@ -221,6 +255,7 @@ export class ScanOperator implements Operator {
 
           const matchingIndices = scanFilterIndices(
             filterDecoded, filterCols, this.query.filters, rowCount, this.wasm,
+            this.query.filterGroups,
           );
 
           if (matchingIndices.length === 0) {
@@ -311,7 +346,7 @@ function filterOpToWasm(op: string): number {
 /**
  * Compute matching row indices by applying filters before row materialization.
  * Uses WASM SIMD for numeric scalar filters, JS for string/bool/IN filters.
- * Returns the set of row indices that pass ALL filters.
+ * Supports OR groups: each group is AND-connected, groups are OR'd (unioned).
  */
 function scanFilterIndices(
   decoded: Map<string, DecodedValue[]>,
@@ -319,17 +354,43 @@ function scanFilterIndices(
   filters: QueryDescriptor["filters"],
   rowCount: number,
   wasm: WasmEngine,
+  filterGroups?: FilterOp[][],
 ): Uint32Array {
   const colTypes = new Map(columns.map(c => [c.name, c.dtype]));
 
-  // Start with all indices
+  // Apply AND filters first
+  let indices = applyAndFilters(decoded, colTypes, filters, rowCount, wasm);
+
+  // Apply OR groups: evaluate each group independently, union results
+  if (filterGroups && filterGroups.length > 0) {
+    let orResult: Uint32Array | null = null;
+    for (const group of filterGroups) {
+      const groupResult = applyAndFilters(decoded, colTypes, group, rowCount, wasm);
+      if (groupResult.length === 0) continue;
+      orResult = orResult ? wasmUnion(orResult, groupResult, wasm) : groupResult;
+    }
+    if (!orResult) return new Uint32Array(0);
+    // Intersect OR result with AND result (AND filters + OR groups)
+    indices = indices ? wasmIntersect(indices, orResult, wasm) : orResult;
+  }
+
+  return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+}
+
+/** Apply AND-connected filters, returning matching row indices. */
+function applyAndFilters(
+  decoded: Map<string, DecodedValue[]>,
+  colTypes: Map<string, string>,
+  filters: FilterOp[],
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array {
   let indices: Uint32Array | null = null;
 
   for (const filter of filters) {
     const dtype = colTypes.get(filter.column);
     const values = decoded.get(filter.column);
     if (!values || values.length === 0) {
-      // Column not decoded (skipped) — no rows match
       return new Uint32Array(0);
     }
 
@@ -344,7 +405,7 @@ function scanFilterIndices(
       );
       if (filterResult) {
         indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
-        if (indices.length === 0) return indices; // short-circuit: no matches left
+        if (indices.length === 0) return indices;
         continue;
       }
     }
@@ -373,7 +434,7 @@ function scanFilterIndices(
       }
     }
     indices = new Uint32Array(kept);
-    if (indices.length === 0) return indices; // short-circuit: no matches left
+    if (indices.length === 0) return indices;
   }
 
   return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
@@ -518,6 +579,32 @@ function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32
   } catch {
     const setB = new Set(b);
     return a.filter(v => setB.has(v));
+  }
+}
+
+/** Union two sorted index arrays using WASM. */
+function wasmUnion(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Array {
+  try {
+    wasm.exports.resetHeap();
+    const aPtr = wasm.exports.alloc(a.byteLength);
+    const bPtr = wasm.exports.alloc(b.byteLength);
+    const outPtr = wasm.exports.alloc((a.length + b.length) * 4);
+    if (!aPtr || !bPtr || !outPtr) {
+      // Fallback: JS union
+      const set = new Set(a);
+      for (const v of b) set.add(v);
+      return new Uint32Array([...set].sort((x, y) => x - y));
+    }
+    new Uint32Array(wasm.exports.memory.buffer, aPtr, a.length).set(a);
+    new Uint32Array(wasm.exports.memory.buffer, bPtr, b.length).set(b);
+    const count = wasm.exports.unionIndices(
+      aPtr, a.length, bPtr, b.length, outPtr, a.length + b.length,
+    );
+    return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+  } catch {
+    const set = new Set(a);
+    for (const v of b) set.add(v);
+    return new Uint32Array([...set].sort((x, y) => x - y));
   }
 }
 
@@ -1001,10 +1088,33 @@ export class SetOperator implements Operator {
 export class FilterOperator implements Operator {
   private upstream: Operator;
   private filters: QueryDescriptor["filters"];
+  private filterGroups?: FilterOp[][];
 
-  constructor(upstream: Operator, filters: QueryDescriptor["filters"]) {
+  constructor(upstream: Operator, filters: QueryDescriptor["filters"], filterGroups?: FilterOp[][]) {
     this.upstream = upstream;
     this.filters = filters;
+    this.filterGroups = filterGroups;
+  }
+
+  private matchesRow(row: Row): boolean {
+    // AND filters must all pass
+    const andPass = this.filters.every(f => {
+      const v = row[f.column];
+      return v !== null && matchesFilter(v, f);
+    });
+    if (!andPass) return false;
+
+    // OR groups: at least one group must pass (each group is AND-connected)
+    if (this.filterGroups && this.filterGroups.length > 0) {
+      return this.filterGroups.some(group =>
+        group.every(f => {
+          const v = row[f.column];
+          return v !== null && matchesFilter(v, f);
+        }),
+      );
+    }
+
+    return true;
   }
 
   async next(): Promise<RowBatch | null> {
@@ -1014,12 +1124,7 @@ export class FilterOperator implements Operator {
 
       const filtered: Row[] = [];
       for (const row of batch) {
-        if (this.filters.every(f => {
-          const v = row[f.column];
-          return v !== null && matchesFilter(v, f);
-        })) {
-          filtered.push(row);
-        }
+        if (this.matchesRow(row)) filtered.push(row);
       }
       if (filtered.length > 0) return filtered;
       // Empty batch after filtering — pull next
@@ -1307,6 +1412,7 @@ export class InMemorySortOperator implements Operator {
 export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[]): boolean {
   if (!query.aggregates || query.aggregates.length === 0) return false;
   if (query.groupBy && query.groupBy.length > 0) return false;
+  if (query.filterGroups && query.filterGroups.length > 0) return false;
 
   const colMap = new Map(columns.map(c => [c.name, c]));
 
@@ -2311,8 +2417,9 @@ export function buildPipeline(
   const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
 
   // Filter — skip if ScanOperator already applies filters via WASM SIMD
-  if (query.filters.length > 0 && !scan.filtersApplied) {
-    pipeline = new FilterOperator(pipeline, query.filters);
+  const hasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
+  if (hasFilters && !scan.filtersApplied) {
+    pipeline = new FilterOperator(pipeline, query.filters, query.filterGroups);
   }
 
   // SubqueryIn filters (pre-computed value sets)
@@ -2401,8 +2508,9 @@ export function buildEdgePipeline(
   // (e.g. EdgeScanOperator Lance path uses WASM SQL with WHERE,
   //  EdgeScanOperator Parquet path now uses WASM executeQuery with filters)
   const scanHandlesFilters = "filtersApplied" in scan && (scan as { filtersApplied: boolean }).filtersApplied;
-  if (query.filters.length > 0 && !scanHandlesFilters) {
-    pipeline = new FilterOperator(pipeline, query.filters);
+  const edgeHasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
+  if (edgeHasFilters && !scanHandlesFilters) {
+    pipeline = new FilterOperator(pipeline, query.filters, query.filterGroups);
   }
 
   // SubqueryIn filters

@@ -41,6 +41,7 @@ export function buildSqlDataFrame(sql: string, executor: QueryExecutor): DataFra
 
   return new DataFrame(desc.table, effectiveExecutor, {
     filters: desc.filters,
+    filterGroups: desc.filterGroups ?? [],
     projections: desc.projections,
     sortColumn: desc.sortColumn,
     sortDirection: desc.sortDirection,
