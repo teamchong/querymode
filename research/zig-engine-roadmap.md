@@ -71,10 +71,16 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - Client API: `.whereOr(...groups: FilterOp[][])`
 - `canUseWasmAggregate` rejects queries with filterGroups (not optimized for OR yet)
 
+### NOT BETWEEN WASM Filter — DONE
+- `filterFloat64NotRange`, `filterInt32NotRange`, `filterInt64NotRange` Zig exports
+- Returns indices where `val < low OR val > high`
+- `wasmFilterNotRange()` TS helper mirrors `wasmFilterRange()`
+- `scanFilterIndices`, `WasmAggregateOperator.evalAndFilters` dispatch BETWEEN/NOT BETWEEN to range/not-range exports
+- `canUseWasmAggregate` allows NOT BETWEEN filters
+
 **Remaining:**
 - Full columnar pipeline: connect TS pipeline to Zig SelectionVector/DataChunk types (removes Row[] batch format)
 - WASM SIMD LIKE filter (comptime string pattern matching in Zig)
-- WasmAggregateOperator OR support (union index arrays in aggregate path)
 
 ### BETWEEN Support — DONE
 - `filterFloat64Range`, `filterInt32Range`, `filterInt64Range` Zig exports

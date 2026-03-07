@@ -394,7 +394,8 @@ function applyAndFilters(
       return new Uint32Array(0);
     }
 
-    const isCompoundOp = filter.op === "in" || filter.op === "not_in" || filter.op === "between" || filter.op === "not_between" || filter.op === "like" || filter.op === "not_like";
+    const isRangeOp = filter.op === "between" || filter.op === "not_between";
+    const isCompoundOp = filter.op === "in" || filter.op === "not_in" || isRangeOp || filter.op === "like" || filter.op === "not_like";
     const wasmOp = !isCompoundOp ? filterOpToWasm(filter.op) : -1;
 
     // Try WASM SIMD path for numeric scalar filters
@@ -410,11 +411,13 @@ function applyAndFilters(
       }
     }
 
-    // Try WASM BETWEEN path for numeric range filters
-    if (filter.op === "between" && Array.isArray(filter.value) && filter.value.length === 2 &&
+    // Try WASM BETWEEN/NOT BETWEEN path for numeric range filters
+    if ((filter.op === "between" || filter.op === "not_between") &&
+        Array.isArray(filter.value) && filter.value.length === 2 &&
         typeof filter.value[0] === "number" && typeof filter.value[1] === "number" &&
         (dtype === "float64" || dtype === "float32" || dtype === "int32" || dtype === "int64")) {
-      const filterResult = wasmFilterRange(
+      const filterFn = filter.op === "between" ? wasmFilterRange : wasmFilterNotRange;
+      const filterResult = filterFn(
         values, dtype, filter.value[0], filter.value[1], rowCount, wasm,
       );
       if (filterResult) {
@@ -549,6 +552,60 @@ function wasmFilterRange(
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
       const count = wasm.exports.filterInt32Range(dataPtr, rowCount, low, high, outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Run WASM NOT BETWEEN (inverted range) filter on decoded numeric values. */
+function wasmFilterNotRange(
+  values: DecodedValue[],
+  dtype: string,
+  low: number,
+  high: number,
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array | null {
+  try {
+    wasm.exports.resetHeap();
+
+    if (dtype === "float64" || dtype === "float32") {
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new Float64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterFloat64NotRange(dataPtr, rowCount, low, high, outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int64") {
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) {
+        const v = values[i];
+        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
+      }
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int32") {
+      const dataPtr = wasm.exports.alloc(rowCount * 4);
+      if (!dataPtr) return null;
+      const dst = new Int32Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt32NotRange(dataPtr, rowCount, low, high, outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -1416,12 +1473,12 @@ export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[
 
   // Validate filter is numeric with scalar/range op
   const isValidFilter = (f: FilterOp): boolean => {
-    if (f.op === "in" || f.op === "not_in" || f.op === "like" || f.op === "not_like" || f.op === "not_between" || f.op === "is_null" || f.op === "is_not_null") return false;
+    if (f.op === "in" || f.op === "not_in" || f.op === "like" || f.op === "not_like" || f.op === "is_null" || f.op === "is_not_null") return false;
     const fc = colMap.get(f.column);
     if (!fc) return false;
     if (fc.dtype !== "float64" && fc.dtype !== "int32" && fc.dtype !== "int64") return false;
     if (fc.pages.some(p => p.encoding)) return false;
-    if (f.op === "between") {
+    if (f.op === "between" || f.op === "not_between") {
       if (!Array.isArray(f.value) || f.value.length !== 2) return false;
       if (typeof f.value[0] !== "number" || typeof f.value[1] !== "number") return false;
     } else {
@@ -1659,13 +1716,20 @@ export class WasmAggregateOperator implements Operator {
       if (!outPtr) return new Uint32Array(0);
 
       let count: number;
-      if (f.op === "between" && Array.isArray(f.value) && f.value.length === 2) {
+      if ((f.op === "between" || f.op === "not_between") && Array.isArray(f.value) && f.value.length === 2) {
+        const isNotBetween = f.op === "not_between";
         if (col.dtype === "float64") {
-          count = this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+          count = isNotBetween
+            ? this.wasm.exports.filterFloat64NotRange(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount)
+            : this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
         } else if (col.dtype === "int64") {
-          count = this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
+          count = isNotBetween
+            ? this.wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount)
+            : this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
         } else {
-          count = this.wasm.exports.filterInt32Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
+          count = isNotBetween
+            ? this.wasm.exports.filterInt32NotRange(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount)
+            : this.wasm.exports.filterInt32Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
         }
       } else {
         const wasmOp = filterOpToWasm(f.op);

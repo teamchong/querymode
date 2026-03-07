@@ -847,6 +847,69 @@ export fn filterInt64Range(
     return out_count;
 }
 
+// Filter with inverted range (NOT BETWEEN): returns indices where val < low OR val > high
+export fn filterFloat64NotRange(
+    data_ptr: [*]const f64,
+    len: usize,
+    low: f64,
+    high: f64,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    for (0..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        if (v < low or v > high) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
+// Filter int32 with inverted range (NOT BETWEEN): returns indices where val < low OR val > high
+export fn filterInt32NotRange(
+    data_ptr: [*]const i32,
+    len: usize,
+    low: i32,
+    high: i32,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    for (0..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        if (v < low or v > high) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
+// Filter int64 with inverted range (NOT BETWEEN): returns indices where val < low OR val > high
+export fn filterInt64NotRange(
+    data_ptr: [*]const i64,
+    len: usize,
+    low: i64,
+    high: i64,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    for (0..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        if (v < low or v > high) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
 /// AND two index arrays (intersection)
 /// Uses O(n+m) sorted merge since filter outputs are always in ascending order
 export fn intersectIndices(
