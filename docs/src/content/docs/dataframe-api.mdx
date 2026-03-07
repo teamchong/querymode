@@ -123,6 +123,8 @@ These execute the query and return results:
 | `explain()` | `ExplainResult` | Show execution plan without running |
 | `describe()` | Table schema | Column names, types, row counts |
 | `head(n)` | `Row[]` | First N rows (shorthand for limit + collect) |
+| `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
+| `dropTable()` | `DropResult` | Delete table and all fragments |
 
 ## Progress tracking
 
@@ -135,6 +137,26 @@ const result = await df.collect({
   },
 })
 ```
+
+## Write operations
+
+```typescript
+// Append rows
+await qm.table("events").append([
+  { id: 1, type: "click", created_at: "2026-03-06" },
+])
+
+// Append to specific R2 path with metadata
+await qm.table("enriched").append(rows, {
+  path: "pipelines/job-abc/enriched.lance/",
+  metadata: { pipelineId: "job-abc", sourceTables: "orders,users", ttl: "7d" },
+})
+
+// Drop table — deletes all fragments from R2
+await qm.table("enriched").dropTable()
+```
+
+See [Write Path](/querymode/write-path/) for details on CAS coordination, read-after-write consistency, and catalog integration.
 
 ## Vector search
 

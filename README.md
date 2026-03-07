@@ -244,7 +244,7 @@ npx tsx examples/nextjs-api-route.ts
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
 - **Zig WASM engine** (`wasm/`) — column decoding, SIMD ops, SQL execution, vector search, fragment writing, compiles to `querymode.wasm`
 - **Code-first query API** — `.table().filter().select().sort().limit().exec()` or `.sql("SELECT ...")`
-- **Write path** — `TableQuery.append(rows)` with CAS-based manifest coordination via Master DO
+- **Write path** — `append(rows, { path, metadata })` with CAS-based manifest coordination via Master DO, `dropTable()` for cleanup
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
 - **Footer caching** — table footers (~4KB each) cached in DO memory with VIP eviction (hot tables protected from eviction)
 - **Bounded prefetch pipeline** — R2 range fetches overlap I/O (fetch page N+1 while WASM processes page N)
@@ -316,6 +316,15 @@ await qm.table("users").append([
   { id: 1, name: "Alice", age: 30 },
   { id: 2, name: "Bob", age: 25 },
 ])
+
+// Write to specific path with metadata (catalog-friendly)
+await qm.table("enriched").append(rows, {
+  path: "pipelines/job-abc/enriched.lance/",
+  metadata: { pipelineId: "job-abc", sourceTables: "orders,users", ttl: "7d" },
+})
+
+// Drop table (cleanup)
+await qm.table("enriched").dropTable()
 
 // Vector search (flat or IVF-PQ accelerated)
 const similar = await qm
