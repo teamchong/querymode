@@ -174,6 +174,31 @@ export class DataFrame<T extends Row = Row> {
     return this.derive({ filters: [...this._filters, { column, op: "between", value: [low, high] }] });
   }
 
+  /** Filter rows where column value is NOT between low and high. */
+  whereNotBetween(column: string, low: number | bigint, high: number | bigint): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "not_between", value: [low, high] }] });
+  }
+
+  /** Filter rows where column value matches a LIKE pattern (% = any chars, _ = one char). */
+  whereLike(column: string, pattern: string): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "like", value: pattern }] });
+  }
+
+  /** Filter rows where column value does NOT match a LIKE pattern. */
+  whereNotLike(column: string, pattern: string): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "not_like", value: pattern }] });
+  }
+
+  /** Filter rows where column value is in the given list. */
+  whereIn(column: string, values: (number | bigint | string)[]): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "in", value: values }] });
+  }
+
+  /** Filter rows where column value is NOT in the given list. */
+  whereNotIn(column: string, values: (number | bigint | string)[]): DataFrame<T> {
+    return this.derive({ filters: [...this._filters, { column, op: "not_in", value: values }] });
+  }
+
   /** Filter rows where a column is not null. */
   whereNotNull(column: string): DataFrame<T> {
     return this.derive({ filters: [...this._filters, { column, op: "is_not_null", value: 0 }] });

@@ -34,6 +34,16 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (max < lo || min > hi) return true;
         break;
       }
+      case "not_between": {
+        if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
+        let lo = filter.value[0];
+        let hi = filter.value[1];
+        if (typeof min === "bigint" && typeof lo === "number") { lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
+        else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
+        // Skip if all values are within [lo, hi] — NOT BETWEEN would exclude them all
+        if (min >= lo && max <= hi) return true;
+        break;
+      }
     }
   }
   return false;
@@ -392,12 +402,30 @@ export function matchesFilter(
     case "lt":  { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) < (b as number | bigint | string); }
     case "lte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) <= (b as number | bigint | string); }
     case "in":  return Array.isArray(t) && t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
+    case "not_in": return Array.isArray(t) && !t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
     case "between": {
       if (!Array.isArray(t) || t.length !== 2) return false;
       const [, lo] = coerceCompare(val, t[0]);
       const [a, hi] = coerceCompare(val, t[1]);
       return (a as number | bigint | string) >= (lo as number | bigint | string) &&
              (a as number | bigint | string) <= (hi as number | bigint | string);
+    }
+    case "not_between": {
+      if (!Array.isArray(t) || t.length !== 2) return false;
+      const [, lo] = coerceCompare(val, t[0]);
+      const [a, hi] = coerceCompare(val, t[1]);
+      return (a as number | bigint | string) < (lo as number | bigint | string) ||
+             (a as number | bigint | string) > (hi as number | bigint | string);
+    }
+    case "like": {
+      if (typeof val !== "string" || typeof t !== "string") return false;
+      const pattern = "^" + t.replace(/%/g, ".*").replace(/_/g, ".") + "$";
+      return new RegExp(pattern, "i").test(val);
+    }
+    case "not_like": {
+      if (typeof val !== "string" || typeof t !== "string") return false;
+      const pattern = "^" + t.replace(/%/g, ".*").replace(/_/g, ".") + "$";
+      return !new RegExp(pattern, "i").test(val);
     }
     default:    return true;
   }

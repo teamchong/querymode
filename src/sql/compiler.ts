@@ -268,29 +268,68 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
     return false;
   }
 
-  // IN list (non-negated): column IN (v1, v2, ...)
-  if (expr.kind === "in_list" && !expr.negated) {
+  // IN list: column IN (v1, v2, ...) or column NOT IN (v1, v2, ...)
+  if (expr.kind === "in_list") {
     const colName = extractColumnName(expr.expr);
     if (colName) {
       const values = expr.values.map(extractLiteralValue).filter((v): v is NonNullable<typeof v> => v !== undefined);
       if (values.length === expr.values.length) {
-        filters.push({ column: colName, op: "in", value: values as (number | string)[] });
+        filters.push({ column: colName, op: expr.negated ? "not_in" : "in", value: values as (number | string)[] });
         return true;
       }
     }
     return false;
   }
 
-  // BETWEEN: column BETWEEN low AND high → single "between" filter with [low, high]
+  // BETWEEN / NOT BETWEEN: column BETWEEN low AND high
   if (expr.kind === "between") {
     const colName = extractColumnName(expr.expr);
     const low = extractLiteralValue(expr.low);
     const high = extractLiteralValue(expr.high);
     if (colName && low !== undefined && high !== undefined) {
-      filters.push({ column: colName, op: "between", value: [low as number | string, high as number | string] });
+      const op = expr.negated ? "not_between" : "between";
+      filters.push({ column: colName, op, value: [low as number | string, high as number | string] });
       return true;
     }
     return false;
+  }
+
+  // LIKE: column LIKE 'pattern'
+  if (expr.kind === "binary" && expr.op === "like") {
+    const colName = extractColumnName(expr.left);
+    const pattern = extractLiteralValue(expr.right);
+    if (colName && typeof pattern === "string") {
+      filters.push({ column: colName, op: "like", value: pattern });
+      return true;
+    }
+    return false;
+  }
+
+  // NOT (BETWEEN | LIKE): { kind: "unary", op: "not", operand: ... }
+  if (expr.kind === "unary" && expr.op === "not") {
+    const inner = expr.operand;
+    // NOT BETWEEN
+    if (inner.kind === "between") {
+      const colName = extractColumnName(inner.expr);
+      const low = extractLiteralValue(inner.low);
+      const high = extractLiteralValue(inner.high);
+      if (colName && low !== undefined && high !== undefined) {
+        filters.push({ column: colName, op: "not_between", value: [low as number | string, high as number | string] });
+        return true;
+      }
+      return false;
+    }
+    // NOT LIKE
+    if (inner.kind === "binary" && inner.op === "like") {
+      const colName = extractColumnName(inner.left);
+      const pattern = extractLiteralValue(inner.right);
+      if (colName && typeof pattern === "string") {
+        filters.push({ column: colName, op: "not_like", value: pattern });
+        return true;
+      }
+      return false;
+    }
+    // NOT IN is already handled by in_list.negated
   }
 
   // NEAR expressions are handled separately by extractVectorSearch
@@ -298,7 +337,7 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
     return true;
   }
 
-  // Everything else (OR, NOT IN, NOT BETWEEN, LIKE, etc.) can't be flattened
+  // Everything else (OR, subqueries, etc.) can't be flattened
   return false;
 }
 

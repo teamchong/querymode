@@ -185,14 +185,28 @@ describe("SQL Compiler - compileFull", () => {
     expect(result.descriptor.filters).toHaveLength(2);
   });
 
-  it("returns whereExpr for LIKE", () => {
+  it("flattens LIKE into FilterOp", () => {
     const result = sqlFull("SELECT * FROM t WHERE name LIKE '%alice%'");
-    expect(result.whereExpr).toBeDefined();
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filters).toEqual([{ column: "name", op: "like", value: "%alice%" }]);
   });
 
-  it("returns whereExpr for NOT IN", () => {
+  it("flattens NOT LIKE into FilterOp", () => {
+    const result = sqlFull("SELECT * FROM t WHERE name NOT LIKE '%test%'");
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filters).toEqual([{ column: "name", op: "not_like", value: "%test%" }]);
+  });
+
+  it("flattens NOT IN into FilterOp", () => {
     const result = sqlFull("SELECT * FROM t WHERE id NOT IN (1, 2, 3)");
-    expect(result.whereExpr).toBeDefined();
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filters).toEqual([{ column: "id", op: "not_in", value: [1, 2, 3] }]);
+  });
+
+  it("flattens NOT BETWEEN into FilterOp", () => {
+    const result = sqlFull("SELECT * FROM t WHERE age NOT BETWEEN 18 AND 65");
+    expect(result.whereExpr).toBeUndefined();
+    expect(result.descriptor.filters).toEqual([{ column: "age", op: "not_between", value: [18, 65] }]);
   });
 
   it("returns havingExpr for HAVING clause", () => {
