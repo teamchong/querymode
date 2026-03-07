@@ -775,6 +775,7 @@ export fn intersectIndices(
 }
 
 /// OR two index arrays (union, deduplicated)
+/// Uses O(n+m) sorted merge since filter outputs are always in ascending order
 export fn unionIndices(
     a: [*]const u32,
     a_len: usize,
@@ -784,23 +785,39 @@ export fn unionIndices(
     max_out: usize,
 ) usize {
     var out_count: usize = 0;
+    var i: usize = 0;
+    var j: usize = 0;
 
-    // Add all from a
-    for (0..a_len) |i| {
+    while (i < a_len and j < b_len) {
         if (out_count >= max_out) break;
-        out[out_count] = a[i];
-        out_count += 1;
+        if (a[i] == b[j]) {
+            out[out_count] = a[i];
+            out_count += 1;
+            i += 1;
+            j += 1;
+        } else if (a[i] < b[j]) {
+            out[out_count] = a[i];
+            out_count += 1;
+            i += 1;
+        } else {
+            out[out_count] = b[j];
+            out_count += 1;
+            j += 1;
+        }
     }
 
-    // Add from b if not already in out
-    outer: for (0..b_len) |i| {
-        if (out_count >= max_out) break;
-        const b_val = b[i];
-        for (0..out_count) |j| {
-            if (out[j] == b_val) continue :outer;
-        }
-        out[out_count] = b_val;
+    // Drain remaining from a
+    while (i < a_len and out_count < max_out) {
+        out[out_count] = a[i];
         out_count += 1;
+        i += 1;
+    }
+
+    // Drain remaining from b
+    while (j < b_len and out_count < max_out) {
+        out[out_count] = b[j];
+        out_count += 1;
+        j += 1;
     }
 
     return out_count;

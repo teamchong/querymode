@@ -64,6 +64,8 @@ class EdgeScanOperator implements Operator {
   edgeCacheMisses = 0;
   r2ReadMs = 0;
   wasmExecMs = 0;
+  /** Filters are applied inside WASM executeQuery — skip downstream FilterOperator. */
+  filtersApplied = true;
 
   constructor(
     bucket: R2Bucket,
@@ -328,22 +330,49 @@ class EdgeScanOperator implements Operator {
       decodedColumns.set(col.name, decoded);
     }
 
-    // Assemble rows for this single page
+    // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort)
     let numRows = 0;
     for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
     if (numRows === 0) return this.next(); // skip empty pages
 
-    const rows: Row[] = [];
-    for (let i = 0; i < numRows; i++) {
-      const row: Row = {};
-      for (const name of colNames) {
-        const vals = decodedColumns.get(name);
-        row[name] = vals && i < vals.length ? vals[i] : null;
+    this.wasmEngine.exports.resetHeap();
+    const fragTable = `__edge_pq_${pi}`;
+    let wasmRegistered = true;
+    for (const col of cols) {
+      const values = decodedColumns.get(col.name);
+      if (!values?.length) continue;
+      if (!this.wasmEngine.registerDecodedColumn(fragTable, col.name, col.dtype, values)) {
+        wasmRegistered = false;
+        break;
       }
-      rows.push(row);
     }
+
+    let rows: Row[];
+    if (wasmRegistered) {
+      const pqQuery: QueryDescriptor = {
+        ...this.query,
+        table: fragTable,
+        sortColumn: undefined, limit: undefined, offset: undefined,
+        aggregates: undefined, join: undefined,
+      };
+      const wasmRows = this.wasmEngine.executeQuery(pqQuery);
+      this.wasmEngine.clearTable(fragTable);
+      rows = wasmRows ?? [];
+    } else {
+      // Fallback: assemble rows in JS
+      rows = [];
+      for (let i = 0; i < numRows; i++) {
+        const row: Row = {};
+        for (const name of colNames) {
+          const vals = decodedColumns.get(name);
+          row[name] = vals && i < vals.length ? vals[i] : null;
+        }
+        rows.push(row);
+      }
+    }
+
     this.wasmExecMs += Date.now() - wasmStart;
-    return rows;
+    return rows.length > 0 ? rows : this.next();
   }
 
   async close(): Promise<void> {

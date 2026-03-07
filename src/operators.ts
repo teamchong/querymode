@@ -2162,7 +2162,11 @@ export function buildEdgePipeline(
   let pipeline: Operator = scan;
   const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
 
-  if (query.filters.length > 0) {
+  // Skip FilterOperator if the scan operator already applies filters
+  // (e.g. EdgeScanOperator Lance path uses WASM SQL with WHERE,
+  //  EdgeScanOperator Parquet path now uses WASM executeQuery with filters)
+  const scanHandlesFilters = "filtersApplied" in scan && (scan as { filtersApplied: boolean }).filtersApplied;
+  if (query.filters.length > 0 && !scanHandlesFilters) {
     pipeline = new FilterOperator(pipeline, query.filters);
   }
 
