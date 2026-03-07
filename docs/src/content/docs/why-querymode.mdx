@@ -52,7 +52,7 @@ const attribution = computeAttribution(result.rows, retention.retainedUsers)
 
 Three analyses on one result set. No SQL string construction, no JSON parsing, no round-trips. The intermediate results are live objects in memory — you inspect them, branch on them, and feed them into the next stage.
 
-> **What about memory?** `collect()` doesn't load a 50GB file into a V8 isolate. Filter pushdown already skipped irrelevant pages via min/max stats, aggregation already reduced rows to group summaries, projection already dropped unused columns. What lands in memory is the *result*, not the dataset. Operators are memory-bounded (default 32MB) and [spill to R2](/operators#memory-bounded-with-r2-spill) when they exceed budget.
+> **What about memory?** `collect()` doesn't load a 50GB file into a V8 isolate. Filter pushdown already skipped irrelevant pages via min/max stats, aggregation already reduced rows to group summaries, projection already dropped unused columns. What lands in memory is the *result*, not the dataset. Operators are memory-bounded (default 32MB) and [spill to R2](/querymode/operators/#memory-bounded-with-r2-spill) when they exceed budget.
 
 ## How it actually works under the hood
 
@@ -64,7 +64,7 @@ Data sits in **R2** as columnar files (Parquet, Lance, Iceberg). Nothing gets re
 
 ### The operators ARE the optimizer
 
-Every query runs through a pull-based [operator pipeline](/operators):
+Every query runs through a pull-based [operator pipeline](/querymode/operators/):
 
 ```
 ScanOperator → FilterOperator → AggregateOperator → TopKOperator → ProjectOperator
@@ -102,4 +102,4 @@ Both test suites also include multi-step analyses that would be awkward with the
 
 QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, same process. If the data is well-structured, the agent queries it directly. If it's not, the agent builds the transformation on the spot. Either way, no one had to anticipate the question in advance.
 
-It doesn't eliminate the query optimizer either. The operators do filter pushdown, vectorized decode, memory-bounded spill — but you assemble them, you control the budget, and you can put an [ML scoring function between pipeline stages](/operators#compose-operators-directly) if you want to.
+It doesn't eliminate the query optimizer either. The operators do filter pushdown, vectorized decode, memory-bounded spill — but you assemble them, you control the budget, and you can put an [ML scoring function between pipeline stages](/querymode/operators/#compose-operators-directly) if you want to.
