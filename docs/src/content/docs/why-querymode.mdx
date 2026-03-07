@@ -1,0 +1,71 @@
+---
+title: Why QueryMode
+description: Agents are the new users. They need dynamic pipelines, not pre-built ETL.
+---
+
+## The world is changing
+
+Three things are happening at once:
+
+1. **Agents are becoming the majority of internet traffic.** Unlike humans, agents share the same training data and reach the same conclusions independently. They can't coordinate with each other — they serve different owners, run in different parts of the world. When thousands of agents independently decide to query the same data at the same millisecond, the server must be at the edge to survive.
+
+2. **Agents need live data.** Training data can't keep up with the speed the world produces information. Agents will make API calls — lots of them. And because they can't coordinate (they're not a hive mind), the same data gets requested independently by thousands of agents. That data needs to live at the edge, close to where agents run.
+
+3. **Pre-built ETL can't serve agents.** Traditional data pipelines assume a human pre-defines what questions matter, builds a pipeline on a schedule, and stores the results. Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it.
+
+## Fixed ETL vs dynamic pipelines
+
+Most data is not well-structured enough to query directly. It needs transformation. The question is: **who defines the transformation, and when?**
+
+| | Fixed ETL | QueryMode |
+|---|---|---|
+| **Who** | A human, in advance | The agent, at query time |
+| **When** | On a schedule | On demand |
+| **What** | Pre-defined transformations | Whatever the agent needs right now |
+| **Boundary** | Query → serialize → DB → serialize → result → parse → next query | Query and business logic run in the same code, same process |
+
+QueryMode replaces fixed ETL pipelines with dynamic ones. The agent writes both the query and the business logic in the same code, with no serialization overhead between stages.
+
+## The serialization boundary problem
+
+Every traditional query engine has a boundary between your code and the engine:
+
+```
+Your code → build SQL string → send to database → wait → JSON response → parse → your code
+```
+
+If you need to ask a follow-up question based on the answer, you do it all again. Umami's attribution report does this **8 times** for a single dashboard page — each query rebuilds the same base data.
+
+QueryMode has no boundary:
+
+```typescript
+// 1 collect(), then branch freely in code
+const result = await qm
+  .filter("created_at", "gte", startDate)
+  .collect()
+
+// Funnel analysis
+const funnelSessions = findFunnelCompletions(result.rows)
+
+// Retention for JUST funnel completers — no second query
+const retention = computeRetention(result.rows, funnelSessions)
+
+// Attribution for JUST retained users — still no second query
+const attribution = computeAttribution(result.rows, retention.retainedUsers)
+```
+
+Three analyses on one result set. No SQL string construction, no JSON parsing, no round-trips. The intermediate results are live objects in memory — you inspect them, branch on them, and feed them into the next stage.
+
+## Proven against real-world analytics
+
+We validated this against two popular open-source analytics platforms:
+
+**[Counterscale](https://github.com/benvinegar/counterscale)** (Cloudflare Analytics Engine) — All 7 query patterns ported. Analytics Engine sends SQL over HTTP with JSON serialization on every query. QueryMode handles the same workload with zero serialization.
+
+**[Umami](https://github.com/umami-software/umami)** (23k+ stars, PostgreSQL/ClickHouse) — All 10 query patterns ported, including funnel analysis, cohort retention, user journeys, and attribution. Umami's attribution runs 8 separate database queries that each rebuild the same CTE. QueryMode: 1 `collect()`, branch 8 ways in code. 16ms at 10K events.
+
+Both conformance tests include patterns that are impossible with the original architecture — cross-report correlation, conditional aggregation with branching, anomaly detection with thresholds, A/B test statistical analysis — all running on a single result set with no serialization between stages.
+
+## The agent IS the pipeline
+
+QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, all at the edge, all without waiting for a pipeline that someone built last quarter.

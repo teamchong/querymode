@@ -16,6 +16,7 @@ export default defineConfig({
       ],
       sidebar: [
         { label: "Overview", slug: "index" },
+        { label: "Why QueryMode", slug: "why-querymode" },
         { label: "Getting Started", slug: "getting-started" },
         { label: "DataFrame API", slug: "dataframe-api" },
         { label: "Operators", slug: "operators" },

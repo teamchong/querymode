@@ -38,6 +38,8 @@ const result = await qm
 
 A pluggable columnar query library — not a query engine you push data to, but a query capability your code uses directly. No data materialization, no engine boundary, no SQL transpilation.
 
+**[Why QueryMode?](https://teamchong.github.io/querymode/why-querymode/)** — Agents need dynamic pipelines, not pre-built ETL. QueryMode lets the agent define both query and business logic in the same code, at query time, with no serialization boundary between stages.
+
 ## Why "mode" not "engine"
 
 Every query engine — Spark, DataFusion, DuckDB, Polars — has a boundary between your code and the engine:
