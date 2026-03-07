@@ -722,6 +722,67 @@ export fn filterInt32Buffer(
     return out_count;
 }
 
+/// Filter int64 buffer
+/// Uses WASM SIMD128 intrinsics: processes 2 x i64 per cycle via @Vector(2, i64)
+export fn filterInt64Buffer(
+    data_ptr: [*]const i64,
+    len: usize,
+    op: u32,
+    value: i64,
+    out_indices: [*]u32,
+    max_indices: usize,
+) usize {
+    var out_count: usize = 0;
+    const simd_width = 2; // 128-bit / 64-bit = 2 lanes
+    const simd_chunks = len / simd_width;
+    const threshold: @Vector(simd_width, i64) = @splat(value);
+
+    // SIMD path: process 2 i64 values at a time
+    for (0..simd_chunks) |chunk| {
+        if (out_count >= max_indices) break;
+        const base = chunk * simd_width;
+        const vec: @Vector(simd_width, i64) = data_ptr[base..][0..simd_width].*;
+        const mask = switch (op) {
+            0 => vec == threshold,
+            1 => vec != threshold,
+            2 => vec < threshold,
+            3 => vec <= threshold,
+            4 => vec > threshold,
+            5 => vec >= threshold,
+            else => @as(@Vector(simd_width, bool), @splat(false)),
+        };
+        // Extract matching indices from each lane
+        inline for (0..simd_width) |lane| {
+            if (mask[lane]) {
+                if (out_count >= max_indices) break;
+                out_indices[out_count] = @intCast(base + lane);
+                out_count += 1;
+            }
+        }
+    }
+
+    // Scalar tail: handle remaining elements
+    const tail_start = simd_chunks * simd_width;
+    for (tail_start..len) |i| {
+        if (out_count >= max_indices) break;
+        const v = data_ptr[i];
+        const matches = switch (op) {
+            0 => v == value,
+            1 => v != value,
+            2 => v < value,
+            3 => v <= value,
+            4 => v > value,
+            5 => v >= value,
+            else => false,
+        };
+        if (matches) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
 /// Filter with range (BETWEEN): returns indices where low <= val <= high
 export fn filterFloat64Range(
     data_ptr: [*]const f64,

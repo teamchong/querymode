@@ -584,7 +584,7 @@
       "y": 357.6982727285686,
       "width": 302.207763671875,
       "height": 18,
-      "text": "Regional Query DOs             (1 per datacenter)",
+      "text": "Regional Query DOs (1 per datacenter)",
       "fontSize": 12,
       "fontFamily": 1,
       "textAlign": "left",
@@ -610,7 +610,7 @@
       "link": null,
       "verticalAlign": "top",
       "containerId": null,
-      "originalText": "Regional Query DOs             (1 per datacenter)",
+      "originalText": "Regional Query DOs (1 per datacenter)",
       "autoResize": true,
       "lineHeight": 1.5
     },

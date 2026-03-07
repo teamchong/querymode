@@ -324,7 +324,7 @@ function scanFilterIndices(
   return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
 }
 
-/** Run WASM filterFloat64Buffer or filterInt32Buffer on decoded numeric values. */
+/** Run WASM SIMD filter on decoded numeric values (f64, i32, i64). */
 function wasmFilterNumeric(
   values: DecodedValue[],
   dtype: string,
@@ -337,18 +337,32 @@ function wasmFilterNumeric(
     wasm.exports.resetHeap();
 
     if (dtype === "float64" || dtype === "float32") {
-      // Pack values into Float64Array
       const dataPtr = wasm.exports.alloc(rowCount * 8);
       if (!dataPtr) return null;
       const dst = new Float64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
       for (let i = 0; i < rowCount; i++) {
         dst[i] = (values[i] as number) ?? 0;
       }
-      // Allocate output indices
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
       const count = wasm.exports.filterFloat64Buffer(
         dataPtr, rowCount, op, filterValue, outPtr, rowCount,
+      );
+      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+    }
+
+    if (dtype === "int64") {
+      const dataPtr = wasm.exports.alloc(rowCount * 8);
+      if (!dataPtr) return null;
+      const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
+      for (let i = 0; i < rowCount; i++) {
+        const v = values[i];
+        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
+      }
+      const outPtr = wasm.exports.alloc(rowCount * 4);
+      if (!outPtr) return null;
+      const count = wasm.exports.filterInt64Buffer(
+        dataPtr, rowCount, op, BigInt(filterValue), outPtr, rowCount,
       );
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
@@ -1192,7 +1206,7 @@ export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[
     if (f.op === "in") return false;
     const fc = colMap.get(f.column);
     if (!fc) return false;
-    if (fc.dtype !== "float64" && fc.dtype !== "int32") return false;
+    if (fc.dtype !== "float64" && fc.dtype !== "int32" && fc.dtype !== "int64") return false;
     if (fc.pages.some(p => p.encoding)) return false;
     if (typeof f.value !== "number") return false;
   }
@@ -1286,11 +1300,10 @@ export class WasmAggregateOperator implements Operator {
             if (!col || !buf) { currentIndices = new Uint32Array(0); break; }
             const wasmOp = filterOpToWasm(f.op);
             if (wasmOp < 0) { currentIndices = new Uint32Array(0); break; }
-            if (col.dtype !== "float64" && col.dtype !== "int32") {
-              // Only f64 and i32 have WASM SIMD filter support; skip unsupported types
+            if (col.dtype !== "float64" && col.dtype !== "int32" && col.dtype !== "int64") {
               currentIndices = new Uint32Array(0); break;
             }
-            const elemSize = col.dtype === "float64" ? 8 : 4;
+            const elemSize = col.dtype === "int32" ? 4 : 8; // f64 and i64 are both 8 bytes
             const rowCount = buf.byteLength / elemSize;
 
             // Copy data to WASM
@@ -1303,6 +1316,8 @@ export class WasmAggregateOperator implements Operator {
             let count: number;
             if (col.dtype === "float64") {
               count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+            } else if (col.dtype === "int64") {
+              count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
             } else {
               count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
             }

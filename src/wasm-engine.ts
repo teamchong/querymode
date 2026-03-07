@@ -66,7 +66,9 @@ export interface WasmExports {
   // Buffer SIMD filter (aggregates.zig)
   filterFloat64Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
   filterInt32Buffer(dataPtr: number, len: number, op: number, value: number, outPtr: number, maxOut: number): number;
+  filterInt64Buffer(dataPtr: number, len: number, op: number, value: bigint, outPtr: number, maxOut: number): number;
   intersectIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
+  unionIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
 
   // Buffer SIMD aggregates (aggregates.zig) — ptr in element units, len = element count
   sumFloat64Buffer(ptr: number, len: number): number;

@@ -48,12 +48,13 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 
 **Source:** `../lanceql/src/sql/where_eval.zig`
 
-**Done:** TS `scanFilterIndices()` handles compound AND (intersect index arrays via WASM `intersectIndices`). WASM SQL path (`executeSql`) already evaluates WHERE vectorized in Zig.
+**Done:** TS `scanFilterIndices()` handles compound AND (intersect index arrays via WASM `intersectIndices`). WASM SQL path (`executeSql`) already evaluates WHERE vectorized in Zig. `unionIndices` upgraded to O(n+m) sorted merge. `WasmAggregateOperator` supports filtered aggregates via indexed aggregate exports (`sumFloat64Indexed`, etc.) — zero Row[] materialization for filter+aggregate queries.
 
 **Remaining:**
-- OR support in TS scan-time filter (union index arrays via `unionIndices`)
+- OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig)
 - Short-circuit evaluation: if first AND filter returns 0 matches, skip remaining filters
 - Complex expressions (BETWEEN, LIKE) in the WASM filter fast path
+- `filterInt64Buffer` SIMD export (currently only f64/i32 have WASM filter paths)
 
 **Files modified:** `src/operators.ts` (scanFilterIndices)
 
