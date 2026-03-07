@@ -1,0 +1,132 @@
+---
+title: SQL
+description: SQL frontend — same operator pipeline, SQL syntax.
+---
+
+SQL is another way into the same operator pipeline. The parser compiles SQL to a `QueryDescriptor`, which builds the same pull-based operator chain as the DataFrame API.
+
+## Usage
+
+```typescript
+import { QueryMode } from "querymode/local"
+
+const qm = QueryMode.local()
+
+const results = await qm
+  .sql("SELECT region, SUM(amount) AS total FROM orders GROUP BY region ORDER BY total DESC")
+  .collect()
+```
+
+## SQL + DataFrame compose
+
+`.sql()` returns a `DataFrame`, so you can chain DataFrame methods after it:
+
+```typescript
+const results = await qm
+  .sql("SELECT * FROM events WHERE created_at > '2026-01-01'")
+  .filter("country", "eq", "US")
+  .sort("amount", "desc")
+  .limit(50)
+  .collect()
+```
+
+## Supported syntax
+
+### SELECT
+
+```sql
+SELECT *
+SELECT col1, col2
+SELECT col1 AS alias
+SELECT DISTINCT col1, col2
+SELECT COUNT(*), SUM(amount), AVG(score)
+```
+
+### WHERE
+
+```sql
+WHERE age > 25
+WHERE status = 'active' AND amount >= 100
+WHERE dept = 'eng' OR age > 30
+WHERE name LIKE '%alice%'
+WHERE id IN (1, 2, 3)
+WHERE id NOT IN (4, 5)
+WHERE amount BETWEEN 100 AND 500
+WHERE email IS NULL
+WHERE email IS NOT NULL
+WHERE NOT (status = 'deleted')
+```
+
+### GROUP BY / HAVING
+
+```sql
+GROUP BY region
+GROUP BY region, category
+HAVING SUM(amount) > 1000
+```
+
+### ORDER BY
+
+```sql
+ORDER BY amount DESC
+ORDER BY region ASC, amount DESC
+```
+
+### LIMIT / OFFSET
+
+```sql
+LIMIT 100
+LIMIT 100 OFFSET 50
+```
+
+### Expressions
+
+```sql
+SELECT salary / 1000 AS salary_k
+SELECT CASE WHEN age > 30 THEN 'senior' ELSE 'junior' END AS level
+SELECT CAST(age AS text) AS age_str
+```
+
+### Aggregate functions
+
+`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT col)`.
+
+### JOINs
+
+```sql
+SELECT * FROM orders JOIN users ON orders.user_id = users.id
+SELECT * FROM orders LEFT JOIN users ON orders.user_id = users.id
+```
+
+## How it works
+
+```
+SQL string → lexer → parser → AST → compiler → QueryDescriptor → operator pipeline
+```
+
+The SQL frontend is a recursive descent parser written in TypeScript. It produces an AST that the compiler maps to the same `QueryDescriptor` the DataFrame API uses. Features that can be expressed as `FilterOp[]` (simple AND conditions with eq/gt/lt/etc) are pushed down to the inner executor. Features that can't (OR, LIKE, NOT IN, HAVING, multi-column ORDER BY, CASE/CAST/arithmetic) are handled by `SqlWrappingExecutor`, which applies them on the result rows.
+
+## Programmatic access
+
+If you need the parsed AST or compiled descriptor directly:
+
+```typescript
+import { parse, compile, compileFull, sqlToDescriptor } from "querymode/sql"
+
+// Parse SQL to AST
+const ast = parse("SELECT * FROM users WHERE age > 25")
+
+// Compile AST to QueryDescriptor
+const descriptor = compile(ast)
+
+// Or do both in one step
+const descriptor = sqlToDescriptor("SELECT * FROM users WHERE age > 25")
+
+// compileFull returns additional metadata for the wrapping executor
+const result = compileFull(ast)
+// result.descriptor — QueryDescriptor
+// result.whereExpr — full WHERE expression (when OR/LIKE/NOT IN present)
+// result.havingExpr — HAVING expression
+// result.allOrderBy — multi-column ORDER BY
+// result.computedExprs — CASE/CAST/arithmetic in SELECT
+```

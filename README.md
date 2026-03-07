@@ -193,9 +193,26 @@ const rows = await drainPipeline(sorted)
 await spill.cleanup()
 ```
 
-### Planned: SQL → AST → operators
+### SQL frontend
 
-For users who prefer SQL syntax, a future layer can parse SQL into an AST and compile it to operator composition — same zero-copy pipeline underneath, SQL is just another frontend.
+SQL is another way in — same operator pipeline underneath:
+
+```typescript
+const qm = QueryMode.local()
+const results = await qm
+  .sql("SELECT region, SUM(amount) AS total FROM orders WHERE status = 'active' GROUP BY region ORDER BY total DESC LIMIT 10")
+  .collect()
+
+// SQL and DataFrame compose — chain further operations after SQL
+const filtered = await qm
+  .sql("SELECT * FROM events WHERE created_at > '2026-01-01'")
+  .filter("country", "eq", "US")
+  .sort("amount", "desc")
+  .limit(50)
+  .collect()
+```
+
+Supports: SELECT, WHERE (AND/OR/NOT, LIKE, IN, NOT IN, BETWEEN, IS NULL), GROUP BY, HAVING, ORDER BY (multi-column), LIMIT/OFFSET, DISTINCT, CASE/CAST, arithmetic expressions, JOINs.
 
 ### Why this matters
 
@@ -226,7 +243,7 @@ npx tsx examples/nextjs-api-route.ts
 
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
 - **Zig WASM engine** (`wasm/`) — column decoding, SIMD ops, SQL execution, vector search, fragment writing, compiles to `querymode.wasm`
-- **Code-first query API** — `.table().filter().select().sort().limit().exec()`, no SQL
+- **Code-first query API** — `.table().filter().select().sort().limit().exec()` or `.sql("SELECT ...")`
 - **Write path** — `TableQuery.append(rows)` with CAS-based manifest coordination via Master DO
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
 - **Footer caching** — table footers (~4KB each) cached in DO memory with VIP eviction (hot tables protected from eviction)
@@ -243,7 +260,6 @@ npx tsx examples/nextjs-api-route.ts
 - No deployed instance
 - No browser mode
 - No npm package published (install from source via git clone)
-- No SQL mode (planned — SQL frontend compiling to operator pipeline)
 
 ## Architecture
 ![querymode-architecture](docs/architecture/querymode-architecture.svg)

@@ -19,6 +19,7 @@ export default defineConfig({
         { label: "Why QueryMode", slug: "why-querymode" },
         { label: "Getting Started", slug: "getting-started" },
         { label: "DataFrame API", slug: "dataframe-api" },
+        { label: "SQL", slug: "sql" },
         { label: "Operators", slug: "operators" },
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },
