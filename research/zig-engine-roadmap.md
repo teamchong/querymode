@@ -53,9 +53,16 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 
 **Done:** TS `scanFilterIndices()` handles compound AND (intersect index arrays via WASM `intersectIndices`). WASM SQL path (`executeSql`) already evaluates WHERE vectorized in Zig. `unionIndices` upgraded to O(n+m) sorted merge. `WasmAggregateOperator` supports filtered aggregates via indexed aggregate exports (`sumFloat64Indexed`, etc.) — zero Row[] materialization for filter+aggregate queries. Short-circuit evaluation: both `scanFilterIndices` and `WasmAggregateOperator` bail immediately when any AND filter returns 0 matches. `filterInt64Buffer` SIMD128 added for int64 column filtering.
 
+### LIKE / NOT IN / NOT BETWEEN / NOT LIKE Filter Pushdown — DONE
+- SQL compiler now flattens LIKE, NOT LIKE, NOT IN, NOT BETWEEN into FilterOp[] (was falling through to SqlWrappingExecutor)
+- `matchesFilter()` handles all four ops in JS evaluation path
+- `canSkipPage()` handles NOT BETWEEN (skip if all values within [lo, hi])
+- Client API: `.whereLike()`, `.whereNotLike()`, `.whereIn()`, `.whereNotIn()`, `.whereNotBetween()`
+- `canUseWasmAggregate()` correctly rejects non-numeric ops
+- `scanFilterIndices` guards new ops from WASM-only numeric paths
+
 **Remaining:**
 - OR support in TS scan-time filter (union index arrays via `unionIndices` — already implemented in Zig, needs API/type changes for compound filter groups)
-- LIKE in the WASM filter fast path (BETWEEN is done — see below)
 
 ### BETWEEN Support — DONE
 - `filterFloat64Range`, `filterInt32Range`, `filterInt64Range` Zig exports

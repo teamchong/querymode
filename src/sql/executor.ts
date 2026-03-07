@@ -1,8 +1,10 @@
 /**
  * SqlWrappingExecutor — applies SQL features that can't be pushed down to FilterOp[].
  *
- * Handles: OR conditions, LIKE, NOT IN, NOT BETWEEN, HAVING, multi-column ORDER BY,
+ * Handles: OR conditions, HAVING, multi-column ORDER BY,
  * and computed SELECT expressions (CASE, CAST, arithmetic).
+ *
+ * LIKE, NOT IN, NOT BETWEEN are now flattened into FilterOp[] by the compiler.
  *
  * The inner executor still receives FilterOp[] for page-level pushdown optimization.
  * This executor applies the remaining logic on the result rows.
