@@ -55,11 +55,10 @@ describe("SQL Compiler", () => {
     expect(desc.filters).toEqual([{ column: "id", op: "in", value: [1, 2, 3] }]);
   });
 
-  it("compiles BETWEEN as gte + lte", () => {
+  it("compiles BETWEEN as single between filter", () => {
     const desc = sql("SELECT * FROM t WHERE age BETWEEN 18 AND 65");
     expect(desc.filters).toEqual([
-      { column: "age", op: "gte", value: 18 },
-      { column: "age", op: "lte", value: 65 },
+      { column: "age", op: "between", value: [18, 65] },
     ]);
   });
 

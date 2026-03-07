@@ -281,14 +281,13 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
     return false;
   }
 
-  // BETWEEN: column BETWEEN low AND high → gte + lte
+  // BETWEEN: column BETWEEN low AND high → single "between" filter with [low, high]
   if (expr.kind === "between") {
     const colName = extractColumnName(expr.expr);
     const low = extractLiteralValue(expr.low);
     const high = extractLiteralValue(expr.high);
     if (colName && low !== undefined && high !== undefined) {
-      filters.push({ column: colName, op: "gte", value: low as number | string });
-      filters.push({ column: colName, op: "lte", value: high as number | string });
+      filters.push({ column: colName, op: "between", value: [low as number | string, high as number | string] });
       return true;
     }
     return false;

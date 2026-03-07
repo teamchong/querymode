@@ -114,8 +114,7 @@ describe("SQL Integration", () => {
     const { sqlToDescriptor } = await import("./index.js");
     const desc = sqlToDescriptor("SELECT * FROM t WHERE age BETWEEN 20 AND 40");
     expect(desc.filters).toEqual([
-      { column: "age", op: "gte", value: 20 },
-      { column: "age", op: "lte", value: 40 },
+      { column: "age", op: "between", value: [20, 40] },
     ]);
   });
 });
