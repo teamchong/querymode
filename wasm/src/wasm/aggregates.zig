@@ -822,3 +822,66 @@ export fn unionIndices(
 
     return out_count;
 }
+
+// ============================================================================
+// Indexed Aggregates — operate on a subset of rows identified by an index array.
+// Used for filtered aggregates: filter → get indices → aggregate only matches.
+// ============================================================================
+
+/// Sum float64 values at given indices
+export fn sumFloat64Indexed(data: [*]const f64, indices: [*]const u32, count: usize) f64 {
+    var sum: f64 = 0;
+    for (0..count) |i| sum += data[indices[i]];
+    return sum;
+}
+
+/// Min float64 values at given indices
+export fn minFloat64Indexed(data: [*]const f64, indices: [*]const u32, count: usize) f64 {
+    if (count == 0) return 0;
+    var min_val = data[indices[0]];
+    for (1..count) |i| {
+        const v = data[indices[i]];
+        if (v < min_val) min_val = v;
+    }
+    return min_val;
+}
+
+/// Max float64 values at given indices
+export fn maxFloat64Indexed(data: [*]const f64, indices: [*]const u32, count: usize) f64 {
+    if (count == 0) return 0;
+    var max_val = data[indices[0]];
+    for (1..count) |i| {
+        const v = data[indices[i]];
+        if (v > max_val) max_val = v;
+    }
+    return max_val;
+}
+
+/// Sum int64 values at given indices
+export fn sumInt64Indexed(data: [*]const i64, indices: [*]const u32, count: usize) i64 {
+    var sum: i64 = 0;
+    for (0..count) |i| sum += data[indices[i]];
+    return sum;
+}
+
+/// Min int64 values at given indices
+export fn minInt64Indexed(data: [*]const i64, indices: [*]const u32, count: usize) i64 {
+    if (count == 0) return 0;
+    var min_val = data[indices[0]];
+    for (1..count) |i| {
+        const v = data[indices[i]];
+        if (v < min_val) min_val = v;
+    }
+    return min_val;
+}
+
+/// Max int64 values at given indices
+export fn maxInt64Indexed(data: [*]const i64, indices: [*]const u32, count: usize) i64 {
+    if (count == 0) return 0;
+    var max_val = data[indices[0]];
+    for (1..count) |i| {
+        const v = data[indices[i]];
+        if (v > max_val) max_val = v;
+    }
+    return max_val;
+}

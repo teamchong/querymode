@@ -78,6 +78,14 @@ export interface WasmExports {
   minInt64Buffer(ptr: number, len: number): bigint;
   maxInt64Buffer(ptr: number, len: number): bigint;
 
+  // Indexed aggregates — operate on filtered subsets (aggregates.zig)
+  sumFloat64Indexed(dataPtr: number, indicesPtr: number, count: number): number;
+  minFloat64Indexed(dataPtr: number, indicesPtr: number, count: number): number;
+  maxFloat64Indexed(dataPtr: number, indicesPtr: number, count: number): number;
+  sumInt64Indexed(dataPtr: number, indicesPtr: number, count: number): bigint;
+  minInt64Indexed(dataPtr: number, indicesPtr: number, count: number): bigint;
+  maxInt64Indexed(dataPtr: number, indicesPtr: number, count: number): bigint;
+
   // Compression (compression.zig)
   zstd_decompress(compressedPtr: number, compressedLen: number, decompressedPtr: number, decompressedCapacity: number): number;
   zstd_get_decompressed_size(compressedPtr: number, compressedLen: number): number;

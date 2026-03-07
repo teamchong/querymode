@@ -1184,9 +1184,19 @@ export class InMemorySortOperator implements Operator {
 export function canUseWasmAggregate(query: QueryDescriptor, columns: ColumnMeta[]): boolean {
   if (!query.aggregates || query.aggregates.length === 0) return false;
   if (query.groupBy && query.groupBy.length > 0) return false;
-  if (query.filters.length > 0) return false;
 
   const colMap = new Map(columns.map(c => [c.name, c]));
+
+  // Filters are allowed if they are on numeric columns with scalar ops (no "in")
+  for (const f of query.filters) {
+    if (f.op === "in") return false;
+    const fc = colMap.get(f.column);
+    if (!fc) return false;
+    if (fc.dtype !== "float64" && fc.dtype !== "int32") return false;
+    if (fc.pages.some(p => p.encoding)) return false;
+    if (typeof f.value !== "number") return false;
+  }
+
   for (const agg of query.aggregates) {
     if (agg.column === "*") continue; // count(*) is always fine
     const col = colMap.get(agg.column);
@@ -1226,6 +1236,8 @@ export class WasmAggregateOperator implements Operator {
     this.consumed = true;
 
     const aggregates = this.query.aggregates ?? [];
+    const filters = this.query.filters;
+    const hasFilters = filters.length > 0;
     // Accumulator per aggregate
     const acc: { sum: number; count: number; min: number; max: number }[] =
       aggregates.map(() => ({ sum: 0, count: 0, min: Infinity, max: -Infinity }));
@@ -1234,58 +1246,126 @@ export class WasmAggregateOperator implements Operator {
     for (const frag of this.fragments) {
       const colMap = new Map(frag.columns.map(c => [c.name, c]));
 
-      for (let ai = 0; ai < aggregates.length; ai++) {
-        const agg = aggregates[ai];
-        if (agg.column === "*") {
-          // count(*): just sum row counts from page metadata
-          const firstCol = frag.columns[0];
-          if (firstCol) {
-            for (const page of firstCol.pages) {
-              acc[ai].count += page.rowCount;
-            }
-          }
+      // Collect all columns needed (aggregate + filter)
+      const neededCols = new Set<string>();
+      for (const agg of aggregates) if (agg.column !== "*") neededCols.add(agg.column);
+      for (const f of filters) neededCols.add(f.column);
+
+      // Process page by page
+      const firstCol = frag.columns[0];
+      if (!firstCol) continue;
+      const pageCount = firstCol.pages.length;
+
+      for (let pi = 0; pi < pageCount; pi++) {
+        // Page-level skip via min/max stats
+        if (canSkipPage(firstCol.pages[pi], filters, firstCol.name)) {
+          this.pagesSkipped++;
           continue;
         }
 
-        const col = colMap.get(agg.column);
-        if (!col) continue;
+        // Read needed columns for this page
+        const pageBuffers = new Map<string, ArrayBuffer>();
+        for (const colName of neededCols) {
+          const col = colMap.get(colName);
+          if (!col || !col.pages[pi]) continue;
+          const buf = await frag.readPage(col, col.pages[pi]);
+          this.bytesRead += buf.byteLength;
+          pageBuffers.set(colName, buf);
+        }
 
-        for (const page of col.pages) {
-          if (canSkipPage(page, this.query.filters, col.name)) {
-            this.pagesSkipped++;
+        // Compute matching indices if filters exist
+        let matchCount = -1; // -1 = no filter, use full buffer
+        let indicesPtr = 0;
+        if (hasFilters) {
+          this.wasm.exports.resetHeap();
+          let currentIndices: Uint32Array | null = null;
+
+          for (const f of filters) {
+            const col = colMap.get(f.column);
+            const buf = pageBuffers.get(f.column);
+            if (!col || !buf) { currentIndices = new Uint32Array(0); break; }
+            const wasmOp = filterOpToWasm(f.op);
+            if (wasmOp < 0) { currentIndices = new Uint32Array(0); break; }
+            if (col.dtype !== "float64" && col.dtype !== "int32") {
+              // Only f64 and i32 have WASM SIMD filter support; skip unsupported types
+              currentIndices = new Uint32Array(0); break;
+            }
+            const elemSize = col.dtype === "float64" ? 8 : 4;
+            const rowCount = buf.byteLength / elemSize;
+
+            // Copy data to WASM
+            const dataPtr = this.wasm.exports.alloc(buf.byteLength);
+            if (!dataPtr) { currentIndices = new Uint32Array(0); break; }
+            new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
+            const outPtr = this.wasm.exports.alloc(rowCount * 4);
+            if (!outPtr) { currentIndices = new Uint32Array(0); break; }
+
+            let count: number;
+            if (col.dtype === "float64") {
+              count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+            } else {
+              count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
+            }
+            const filterResult = new Uint32Array(this.wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+
+            if (currentIndices) {
+              currentIndices = wasmIntersect(currentIndices, filterResult, this.wasm);
+            } else {
+              currentIndices = filterResult;
+            }
+          }
+
+          if (!currentIndices || currentIndices.length === 0) continue; // all filtered out
+
+          // Copy indices to WASM for indexed aggregates
+          this.wasm.exports.resetHeap();
+          indicesPtr = this.wasm.exports.alloc(currentIndices.byteLength);
+          if (indicesPtr) {
+            new Uint32Array(this.wasm.exports.memory.buffer, indicesPtr, currentIndices.length).set(currentIndices);
+          }
+          matchCount = currentIndices.length;
+        }
+
+        // Aggregate per column
+        for (let ai = 0; ai < aggregates.length; ai++) {
+          const agg = aggregates[ai];
+          if (agg.column === "*") {
+            acc[ai].count += hasFilters ? matchCount : firstCol.pages[pi].rowCount;
             continue;
           }
 
-          const buf = await frag.readPage(col, page);
-          this.bytesRead += buf.byteLength;
+          const col = colMap.get(agg.column);
+          const buf = pageBuffers.get(agg.column);
+          if (!col || !buf) continue;
 
-          if (col.dtype === "float64") {
+          if (!hasFilters) {
+            // Unfiltered: use full-buffer SIMD aggregates
             const count = buf.byteLength >> 3;
             acc[ai].count += count;
-            if (agg.fn === "sum" || agg.fn === "avg") {
-              acc[ai].sum += this.wasm.sumFloat64(buf);
+            if (col.dtype === "float64") {
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += this.wasm.sumFloat64(buf);
+              if (agg.fn === "min") { const v = this.wasm.minFloat64(buf); if (v < acc[ai].min) acc[ai].min = v; }
+              if (agg.fn === "max") { const v = this.wasm.maxFloat64(buf); if (v > acc[ai].max) acc[ai].max = v; }
+            } else if (col.dtype === "int64") {
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += Number(this.wasm.sumInt64(buf));
+              if (agg.fn === "min") { const v = Number(this.wasm.minInt64(buf)); if (v < acc[ai].min) acc[ai].min = v; }
+              if (agg.fn === "max") { const v = Number(this.wasm.maxInt64(buf)); if (v > acc[ai].max) acc[ai].max = v; }
             }
-            if (agg.fn === "min") {
-              const v = this.wasm.minFloat64(buf);
-              if (v < acc[ai].min) acc[ai].min = v;
-            }
-            if (agg.fn === "max") {
-              const v = this.wasm.maxFloat64(buf);
-              if (v > acc[ai].max) acc[ai].max = v;
-            }
-          } else if (col.dtype === "int64") {
-            const count = buf.byteLength >> 3;
-            acc[ai].count += count;
-            if (agg.fn === "sum" || agg.fn === "avg") {
-              acc[ai].sum += Number(this.wasm.sumInt64(buf));
-            }
-            if (agg.fn === "min") {
-              const v = Number(this.wasm.minInt64(buf));
-              if (v < acc[ai].min) acc[ai].min = v;
-            }
-            if (agg.fn === "max") {
-              const v = Number(this.wasm.maxInt64(buf));
-              if (v > acc[ai].max) acc[ai].max = v;
+          } else {
+            // Filtered: use indexed aggregates on matching rows only
+            acc[ai].count += matchCount;
+            const dataPtr = this.wasm.exports.alloc(buf.byteLength);
+            if (!dataPtr) continue;
+            new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
+
+            if (col.dtype === "float64") {
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += this.wasm.exports.sumFloat64Indexed(dataPtr, indicesPtr, matchCount);
+              if (agg.fn === "min") { const v = this.wasm.exports.minFloat64Indexed(dataPtr, indicesPtr, matchCount); if (v < acc[ai].min) acc[ai].min = v; }
+              if (agg.fn === "max") { const v = this.wasm.exports.maxFloat64Indexed(dataPtr, indicesPtr, matchCount); if (v > acc[ai].max) acc[ai].max = v; }
+            } else if (col.dtype === "int64") {
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += Number(this.wasm.exports.sumInt64Indexed(dataPtr, indicesPtr, matchCount));
+              if (agg.fn === "min") { const v = Number(this.wasm.exports.minInt64Indexed(dataPtr, indicesPtr, matchCount)); if (v < acc[ai].min) acc[ai].min = v; }
+              if (agg.fn === "max") { const v = Number(this.wasm.exports.maxInt64Indexed(dataPtr, indicesPtr, matchCount)); if (v > acc[ai].max) acc[ai].max = v; }
             }
           }
         }
