@@ -251,8 +251,8 @@ npx tsx examples/nextjs-api-route.ts
 - **IVF-PQ vector search** — index-aware routing in Query DO, falls back to flat SIMD search when no index present
 - **Multi-format support** — Lance, Parquet, and Iceberg tables
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
-- **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 20 slots per datacenter)
-- **112 unit tests + 26 conformance tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration; conformance tests validate every operator against DuckDB at 1M-5M row scale
+- **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 100 slots per datacenter)
+- **460+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
 - **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to [GitHub Actions summary](https://github.com/teamchong/querymode/actions/workflows/ci.yml)
 
 ## What doesn't exist yet

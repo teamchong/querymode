@@ -10,6 +10,7 @@ Every operator in QueryMode implements one interface:
 ```typescript
 interface Operator {
   next(): Promise<RowBatch | null>
+  nextColumnar?(): Promise<ColumnarBatch | null>  // optional columnar mode
   close(): Promise<void>
 }
 ```

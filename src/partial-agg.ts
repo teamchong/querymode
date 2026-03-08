@@ -2,6 +2,17 @@ import type { Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
 
+const _identityCacheLocal = new Map<number, Uint32Array>();
+function identityIndicesLocal(n: number): Uint32Array {
+  let cached = _identityCacheLocal.get(n);
+  if (cached) return cached;
+  cached = new Uint32Array(n);
+  for (let i = 0; i < n; i++) cached[i] = i;
+  if (_identityCacheLocal.size > 16) _identityCacheLocal.clear();
+  _identityCacheLocal.set(n, cached);
+  return cached;
+}
+
 export interface PartialAgg {
   states: PartialAggState[];
   groups?: Map<string, PartialAggState[]>;
@@ -143,7 +154,11 @@ export function computePartialAgg(
   const groupCols = query.groupBy;
 
   for (const row of rows) {
-    const key = groupCols.map((c) => String(row[c] ?? "")).join("\x00");
+    let key = "";
+    for (let g = 0; g < groupCols.length; g++) {
+      if (g > 0) key += "\x00";
+      key += String(row[groupCols[g]] ?? "");
+    }
     let states = groups.get(key);
     if (!states) {
       states = aggregates.map((agg) =>
@@ -176,7 +191,7 @@ export function computePartialAggColumnar(
   query: QueryDescriptor,
 ): PartialAgg {
   const aggregates = query.aggregates ?? [];
-  const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+  const indices = batch.selection ?? identityIndicesLocal(batch.rowCount);
 
   if (!query.groupBy || query.groupBy.length === 0) {
     const states = aggregates.map((agg) =>
@@ -207,10 +222,12 @@ export function computePartialAggColumnar(
   const groupCols = query.groupBy;
 
   for (const idx of indices) {
-    const key = groupCols.map((c) => {
-      const vals = batch.columns.get(c);
-      return String(vals ? (vals[idx] ?? "") : "");
-    }).join("\x00");
+    let key = "";
+    for (let g = 0; g < groupCols.length; g++) {
+      if (g > 0) key += "\x00";
+      const vals = batch.columns.get(groupCols[g]);
+      key += String(vals ? (vals[idx] ?? "") : "");
+    }
     let states = groups.get(key);
     if (!states) {
       states = aggregates.map((agg) =>

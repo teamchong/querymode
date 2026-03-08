@@ -15,6 +15,19 @@ import { decodeParquetColumnChunk } from "./parquet-decode.js";
 
 const _textEncoder = new TextEncoder();
 
+/** Cached identity index arrays to avoid repeated allocations on hot paths. */
+const _identityCache = new Map<number, Uint32Array>();
+function identityIndices(n: number): Uint32Array {
+  let cached = _identityCache.get(n);
+  if (cached) return cached;
+  cached = new Uint32Array(n);
+  for (let i = 0; i < n; i++) cached[i] = i;
+  // Keep cache bounded — only cache common page sizes
+  if (_identityCache.size > 16) _identityCache.clear();
+  _identityCache.set(n, cached);
+  return cached;
+}
+
 export type DecodedValue = number | bigint | string | boolean | Float32Array | null;
 import {
   computePartialAgg,
@@ -54,7 +67,7 @@ export interface Operator {
 /** Materialize a ColumnarBatch into Row[] — used at pipeline boundaries. */
 export function materializeRows(batch: ColumnarBatch): Row[] {
   const rows: Row[] = [];
-  const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+  const indices = batch.selection ?? identityIndices(batch.rowCount);
   for (const idx of indices) {
     const row: Row = {};
     for (const [name, vals] of batch.columns) {
@@ -399,7 +412,7 @@ function scanFilterIndices(
     indices = indices ? wasmIntersect(indices, orResult, wasm) : orResult;
   }
 
-  return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+  return indices ?? identityIndices(rowCount);
 }
 
 /** Apply AND-connected filters, returning matching row indices. */
@@ -467,7 +480,7 @@ function applyAndFilters(
     }
 
     // JS fallback: evaluate filter on current index set
-    const src = indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+    const src = indices ?? identityIndices(rowCount);
     const kept: number[] = [];
     for (const idx of src) {
       const v = values[idx];
@@ -481,7 +494,7 @@ function applyAndFilters(
     if (indices.length === 0) return indices;
   }
 
-  return indices ?? Uint32Array.from({ length: rowCount }, (_, i) => i);
+  return indices ?? identityIndices(rowCount);
 }
 
 /** Run WASM SIMD filter on decoded numeric values (f64, i32, i64). */
@@ -1112,15 +1125,17 @@ export class DistinctOperator implements Operator {
       const batch = await this.upstream.nextColumnar();
       if (!batch) return null;
 
-      const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+      const indices = batch.selection ?? identityIndices(batch.rowCount);
       const kept: number[] = [];
       const cols = this.columns.length > 0 ? this.columns : Array.from(batch.columns.keys());
 
       for (const idx of indices) {
-        const key = cols.map(c => {
-          const vals = batch.columns.get(c);
-          return String(vals ? (vals[idx] ?? "") : "");
-        }).join("\x00");
+        let key = "";
+        for (let g = 0; g < cols.length; g++) {
+          if (g > 0) key += "\x00";
+          const vals = batch.columns.get(cols[g]);
+          key += String(vals ? (vals[idx] ?? "") : "");
+        }
         if (!this.seen.has(key)) {
           this.seen.add(key);
           kept.push(idx);
@@ -1139,9 +1154,12 @@ export class DistinctOperator implements Operator {
 
       const unique: Row[] = [];
       for (const row of batch) {
-        const key = this.columns.length > 0
-          ? this.columns.map(c => String(row[c] ?? "")).join("\x00")
-          : Object.keys(row).map(k => String(row[k] ?? "")).join("\x00");
+        let key = "";
+        const keyCols = this.columns.length > 0 ? this.columns : Object.keys(row);
+        for (let g = 0; g < keyCols.length; g++) {
+          if (g > 0) key += "\x00";
+          key += String(row[keyCols[g]] ?? "");
+        }
         if (!this.seen.has(key)) {
           this.seen.add(key);
           unique.push(row);
@@ -1354,7 +1372,7 @@ export class FilterOperator implements Operator {
       if (!batch) return null;
 
       // Apply filters on the columnar batch — narrow the selection vector
-      const srcIndices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+      const srcIndices = batch.selection ?? identityIndices(batch.rowCount);
       const kept: number[] = [];
 
       for (const idx of srcIndices) {
@@ -1681,7 +1699,7 @@ export class TopKOperator implements Operator {
       while (true) {
         const batch = await this.upstream.nextColumnar();
         if (!batch) break;
-        const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+        const indices = batch.selection ?? identityIndices(batch.rowCount);
         const colNames = Array.from(batch.columns.keys());
         const sortVals = batch.columns.get(col);
         for (const idx of indices) {

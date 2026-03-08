@@ -81,7 +81,7 @@ In-memory materialization for small datasets:
 
 ```typescript
 // From CSV string
-const qm = QueryMode.fromCSV(csvString, "my_table")
+const qm = await QueryMode.fromCSV(csvString, "my_table")
 
 // From JSON array
 const qm = QueryMode.fromJSON(jsonArray, "my_table")
