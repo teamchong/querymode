@@ -196,9 +196,9 @@ function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | b
     const v = row[agg.column];
     if (v === null || v === undefined) continue;
     const num = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : parseFloat(String(v));
+    if (agg.fn === "count_distinct") seen.add(String(v));
     if (!isNaN(num)) {
       values.push(num);
-      if (agg.fn === "count_distinct") seen.add(String(v));
     }
   }
 

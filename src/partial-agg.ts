@@ -186,8 +186,12 @@ export function computePartialAgg(
           updatePartialAgg(states[i], val, val);
         } else if (typeof val === "bigint") {
           updatePartialAgg(states[i], Number(val), val);
-        } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
-          updatePartialAgg(states[i], 0, val);
+        } else if (val !== null && val !== undefined) {
+          if (aggregates[i].fn === "count_distinct") {
+            updatePartialAgg(states[i], 0, val);
+          } else if (aggregates[i].fn === "count") {
+            states[i].count++;
+          }
         }
       }
     }
@@ -219,8 +223,12 @@ export function computePartialAggColumnar(
             updatePartialAgg(states[i], val, val);
           } else if (typeof val === "bigint") {
             updatePartialAgg(states[i], Number(val), val);
-          } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
-            updatePartialAgg(states[i], 0, val);
+          } else if (val !== null && val !== undefined) {
+            if (aggregates[i].fn === "count_distinct") {
+              updatePartialAgg(states[i], 0, val);
+            } else if (aggregates[i].fn === "count") {
+              states[i].count++;
+            }
           }
         }
       }
@@ -257,8 +265,12 @@ export function computePartialAggColumnar(
           updatePartialAgg(states[i], val, val);
         } else if (typeof val === "bigint") {
           updatePartialAgg(states[i], Number(val), val);
-        } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
-          updatePartialAgg(states[i], 0, val);
+        } else if (val !== null && val !== undefined) {
+          if (aggregates[i].fn === "count_distinct") {
+            updatePartialAgg(states[i], 0, val);
+          } else if (aggregates[i].fn === "count") {
+            states[i].count++;
+          }
         }
       }
     }
