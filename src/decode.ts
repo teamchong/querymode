@@ -475,7 +475,7 @@ export function matchesFilter(
     case "in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      if (set.has(val)) return true;
+      if (set.has(val as number | bigint | string)) return true;
       // bigint/number cross-type: 5n !== 5 for Set.has, so coerce
       if (typeof val === "bigint") return set.has(Number(val));
       if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return set.has(BigInt(val));
@@ -484,7 +484,7 @@ export function matchesFilter(
     case "not_in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      if (set.has(val)) return false;
+      if (set.has(val as number | bigint | string)) return false;
       if (typeof val === "bigint") return !set.has(Number(val));
       if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return !set.has(BigInt(val));
       return true;
