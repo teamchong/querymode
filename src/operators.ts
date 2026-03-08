@@ -924,9 +924,16 @@ export class WindowOperator implements Operator {
     // Group by partitionBy keys
     const partitions = new Map<string, number[]>();
     for (let i = 0; i < rows.length; i++) {
-      const key = win.partitionBy.length > 0
-        ? win.partitionBy.map(c => String(rows[i][c] ?? "")).join("\x00")
-        : "__all__";
+      let key: string;
+      if (win.partitionBy.length > 0) {
+        key = "";
+        for (let p = 0; p < win.partitionBy.length; p++) {
+          if (p > 0) key += "\x00";
+          key += String(rows[i][win.partitionBy[p]] ?? "");
+        }
+      } else {
+        key = "__all__";
+      }
       const indices = partitions.get(key);
       if (indices) indices.push(i);
       else partitions.set(key, [i]);
@@ -1199,7 +1206,13 @@ export class SetOperator implements Operator {
   }
 
   private rowKey(row: Row): string {
-    return Object.keys(row).sort().map(k => `${k}=${String(row[k] ?? "")}`).join("\x00");
+    const keys = Object.keys(row).sort();
+    let result = "";
+    for (let i = 0; i < keys.length; i++) {
+      if (i > 0) result += "\x00";
+      result += keys[i] + "=" + String(row[keys[i]] ?? "");
+    }
+    return result;
   }
 
   async next(): Promise<RowBatch | null> {

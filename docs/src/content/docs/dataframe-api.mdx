@@ -172,8 +172,6 @@ These execute the query and return results:
 | `stream(batchSize)` | `AsyncGenerator<Row[]>` | Async generator over result batches |
 | `cursor({ batchSize })` | `AsyncIterable<Row[]>` | Async iterable over batches |
 | `materialize()` | `DataFrame` | Execute and re-wrap as in-memory DataFrame |
-| `toCode(opts?)` | `string` | Convert query to fluent builder TypeScript code |
-| `toDescriptor()` | `QueryDescriptor` | Serializable query plan (JSON) |
 | `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
 | `dropTable()` | `DropResult` | Delete table and all fragments |
 
@@ -203,6 +201,15 @@ const csv = await df.toCSV({ delimiter: "\t" })
 ```
 
 These are all sugar over existing methods — `shape()` calls `explain()`, `valueCounts()` uses `groupBy().aggregate()`, `fillNull()` and `cast()` use `computed()`.
+
+## Introspection
+
+These methods inspect the query without executing it:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `toCode(opts?)` | `string` | Convert query to fluent builder TypeScript code |
+| `toDescriptor()` | `QueryDescriptor` | Serializable query plan (JSON) |
 
 ## Query decompilation (toCode)
 
