@@ -17,6 +17,7 @@ import type {
 } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
 import { matchesFilter } from "./decode.js";
+import { descriptorToCode } from "./descriptor-to-code.js";
 
 // ---------------------------------------------------------------------------
 // Progress callback for collect()
@@ -803,6 +804,20 @@ export class DataFrame<T extends Row = Row> {
       pipeStages: this._pipeStages.length > 0 ? this._pipeStages : undefined,
     };
   }
+
+  /**
+   * Convert this query to readable fluent builder TypeScript code.
+   * Produces compact, copy-pasteable code that recreates the exact same query.
+   *
+   * Use cases: logging, debugging, context compression for LLM agents (~50x
+   * smaller than raw QueryDescriptor JSON), auto-generating documentation.
+   */
+  toCode(opts?: { variableName?: string; tableFn?: string }): string {
+    return descriptorToCode(this.toDescriptor(), opts);
+  }
+
+  /** Convert a QueryDescriptor back to fluent DataFrame builder code. */
+  static descriptorToCode = descriptorToCode;
 }
 
 /** Backward-compatible alias */
