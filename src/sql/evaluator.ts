@@ -78,16 +78,21 @@ export function isTruthy(val: unknown): boolean {
 }
 
 function evaluateBinary(op: string, leftExpr: SqlExpr, rightExpr: SqlExpr, row: Row): unknown {
-  // Short-circuit for AND/OR
+  // SQL three-valued logic for AND/OR
   if (op === "and") {
     const left = evaluateExpr(leftExpr, row);
-    if (!isTruthy(left)) return false;
-    return isTruthy(evaluateExpr(rightExpr, row));
+    const right = evaluateExpr(rightExpr, row);
+    if (left === false || left === 0) return false;
+    if (right === false || right === 0) return false;
+    if (left === null || right === null) return null;
+    return isTruthy(left) && isTruthy(right);
   }
   if (op === "or") {
     const left = evaluateExpr(leftExpr, row);
-    if (isTruthy(left)) return true;
-    return isTruthy(evaluateExpr(rightExpr, row));
+    const right = evaluateExpr(rightExpr, row);
+    if (isTruthy(left) || isTruthy(right)) return true;
+    if (left === null || right === null) return null;
+    return false;
   }
 
   const left = evaluateExpr(leftExpr, row);

@@ -158,7 +158,10 @@ function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): 
 
   const groups = new Map<string, Row[]>();
   for (const row of rows) {
-    const key = groupBy.map(col => String(row[col] ?? "")).join("\0");
+    const key = groupBy.map(col => {
+      const v = row[col];
+      return v === null || v === undefined ? "\x01NULL\x01" : String(v);
+    }).join("\0");
     let group = groups.get(key);
     if (!group) {
       group = [];
@@ -224,8 +227,11 @@ function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | b
     case "percentile": {
       if (agg.percentileTarget === undefined) return null;
       const sorted = [...values].sort((a, b) => a - b);
-      const idx = Math.ceil(agg.percentileTarget * sorted.length) - 1;
-      return sorted[Math.max(0, idx)];
+      const p = agg.percentileTarget;
+      const idx = p * (sorted.length - 1);
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
     }
     default: return null;
   }

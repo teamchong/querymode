@@ -146,9 +146,12 @@ export function computePartialAgg(
             updatePartialAgg(states[i], val, val);
           } else if (typeof val === "bigint") {
             updatePartialAgg(states[i], Number(val), val);
-          } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
-            // count_distinct handles non-numeric values too
-            updatePartialAgg(states[i], 0, val);
+          } else if (val !== null && val !== undefined) {
+            if (aggregates[i].fn === "count_distinct") {
+              updatePartialAgg(states[i], 0, val);
+            } else if (aggregates[i].fn === "count") {
+              states[i].count++;
+            }
           }
         }
       }
@@ -284,7 +287,9 @@ function mergeStates(
     if (source[i].min < target[i].min) target[i].min = source[i].min;
     if (source[i].max > target[i].max) target[i].max = source[i].max;
     if (target[i].values !== undefined && source[i].values !== undefined) {
-      target[i].values!.push(...source[i].values!);
+      const src = source[i].values!;
+      const tgt = target[i].values!;
+      for (let j = 0; j < src.length; j++) tgt.push(src[j]);
     }
     if (target[i].distinctSet !== undefined && source[i].distinctSet !== undefined) {
       for (const v of source[i].distinctSet!) target[i].distinctSet!.add(v);

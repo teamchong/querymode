@@ -140,14 +140,17 @@ export function mergeQueryResults(
     };
   }
 
-  // Sort path: k-way merge (works with or without limit)
+  // Sort path: k-way merge with offset support
   if (query.sortColumn) {
-    const rows = kWayMerge(
+    const off = query.offset ?? 0;
+    const effectiveLimit = (query.limit ?? Infinity) + off;
+    let rows = kWayMerge(
       partials.map((p) => p.rows),
       query.sortColumn,
       query.sortDirection ?? "asc",
-      query.limit ?? Infinity,
+      effectiveLimit,
     );
+    if (off > 0) rows = rows.slice(off);
     return {
       rows,
       rowCount: rows.length,
