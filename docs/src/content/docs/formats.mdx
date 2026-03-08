@@ -81,10 +81,10 @@ In-memory materialization for small datasets:
 
 ```typescript
 // From CSV string
-const qm = await QueryMode.fromCSV(csvString, "my_table")
+const df = await QueryMode.fromCSV(csvString, "my_table")
 
 // From JSON array
-const qm = QueryMode.fromJSON(jsonArray, "my_table")
+const df = QueryMode.fromJSON(jsonArray, "my_table")
 ```
 
 These materialize all data in memory. Use Parquet or Lance for large datasets.

@@ -91,6 +91,23 @@ SELECT CAST(age AS text) AS age_str
 
 `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT col)`, `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)`.
 
+### Window functions
+
+```sql
+SELECT name, ROW_NUMBER() OVER (PARTITION BY region ORDER BY amount DESC) AS rn FROM orders
+SELECT name, LAG(amount, 1) OVER (ORDER BY created_at) AS prev_amount FROM orders
+```
+
+`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, and rolling `SUM`/`AVG`/`MIN`/`MAX`/`COUNT` with frame specification.
+
+### Set operations
+
+```sql
+SELECT * FROM orders_2025 UNION ALL SELECT * FROM orders_2026
+SELECT region FROM orders INTERSECT SELECT region FROM users
+SELECT id FROM orders EXCEPT SELECT id FROM refunds
+```
+
 ### JOINs
 
 ```sql

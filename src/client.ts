@@ -927,7 +927,14 @@ export class MaterializedExecutor implements QueryExecutor {
       const groups = query.groupBy && query.groupBy.length > 0 ? query.groupBy : undefined;
       const buckets = new Map<string, Row[]>();
       for (const row of rows) {
-        const key = groups ? groups.map(g => String(row[g] ?? "")).join("\0") : "";
+        let key = "";
+        if (groups) {
+          for (let g = 0; g < groups.length; g++) {
+            if (g > 0) key += "\0";
+            const v = row[groups[g]];
+            key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+          }
+        }
         let bucket = buckets.get(key);
         if (!bucket) { bucket = []; buckets.set(key, bucket); }
         bucket.push(row);
@@ -939,17 +946,25 @@ export class MaterializedExecutor implements QueryExecutor {
         for (const agg of aggregates) {
           const alias = agg.alias ?? `${agg.fn}_${agg.column}`;
           if (agg.fn === "count") {
-            out[alias] = agg.column === "*" ? bucket.length : bucket.filter(r => r[agg.column] != null).length;
+            if (agg.column === "*") { out[alias] = bucket.length; }
+            else { let cnt = 0; for (const r of bucket) if (r[agg.column] != null) cnt++; out[alias] = cnt; }
           } else {
-            const vals = bucket.map(r => r[agg.column])
-              .filter(v => v != null && (typeof v === "number" || typeof v === "bigint"))
-              .map(v => typeof v === "bigint" ? Number(v) : v) as number[];
-            if (vals.length === 0) { out[alias] = null; continue; }
+            let sum = 0, count = 0, min = Infinity, max = -Infinity;
+            for (const r of bucket) {
+              const v = r[agg.column];
+              if (v == null) continue;
+              const n = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : NaN;
+              if (isNaN(n)) continue;
+              sum += n; count++;
+              if (n < min) min = n;
+              if (n > max) max = n;
+            }
+            if (count === 0) { out[alias] = null; continue; }
             switch (agg.fn) {
-              case "sum": out[alias] = vals.reduce((a, b) => a + b, 0); break;
-              case "avg": out[alias] = vals.reduce((a, b) => a + b, 0) / vals.length; break;
-              case "min": out[alias] = vals.reduce((a, b) => a < b ? a : b); break;
-              case "max": out[alias] = vals.reduce((a, b) => a > b ? a : b); break;
+              case "sum": out[alias] = sum; break;
+              case "avg": out[alias] = sum / count; break;
+              case "min": out[alias] = min; break;
+              case "max": out[alias] = max; break;
               default: out[alias] = null;
             }
           }

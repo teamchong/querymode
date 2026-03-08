@@ -174,6 +174,8 @@ These execute the query and return results:
 | `materialize()` | `DataFrame` | Execute and re-wrap as in-memory DataFrame |
 | `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
 | `dropTable()` | `DropResult` | Delete table and all fragments |
+| `execStream()` | `ReadableStream<Row>` | Streaming columnar binary (remote executor) |
+| `toOperator()` | `Operator` | Escape hatch: get raw operator pipeline |
 
 ## Data exploration
 

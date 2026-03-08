@@ -61,8 +61,8 @@ const data = [
   { id: 3, name: "Carol", score: 91 },
 ]
 
-const qm = QueryMode.fromJSON(data, "students")
-const top = await qm
+const df = QueryMode.fromJSON(data, "students")
+const top = await df
   .filter("score", "gt", 85)
   .sort("score", "desc")
   .collect()

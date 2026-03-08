@@ -213,7 +213,7 @@ const filtered = await qm
   .collect()
 ```
 
-Supports: SELECT, WHERE (AND/OR/NOT, LIKE, IN, NOT IN, BETWEEN, IS NULL), GROUP BY, HAVING, ORDER BY (multi-column), LIMIT/OFFSET, DISTINCT, CASE/CAST, arithmetic expressions, JOINs.
+Supports: SELECT, WHERE (AND/OR/NOT, LIKE, NOT LIKE, IN, NOT IN, BETWEEN, NOT BETWEEN, IS NULL, IS NOT NULL), GROUP BY, HAVING, ORDER BY (multi-column), LIMIT/OFFSET, DISTINCT, CASE/CAST, arithmetic expressions, JOINs, window functions (ROW_NUMBER, RANK, LAG, LEAD), UNION/INTERSECT/EXCEPT.
 
 ### Why this matters
 

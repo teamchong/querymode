@@ -258,24 +258,28 @@ export function decodePage(
   if ((dtype === "utf8" || dtype === "binary") && rowCount > 0 && buf.byteLength >= rowCount * 8) {
     const decodeCount = isLanceV2Nullable ? rowCount : numValues;
     const v2Strings = decodeLanceV2Utf8(buf, decodeCount);
-    if (v2Strings.length === decodeCount && v2Strings.every(s => typeof s === "string")) {
-      const looksValid = v2Strings.every(s => s.length < buf.byteLength);
-      if (looksValid) {
-        if (nulls && nulls.size > 0) {
-          if (isLanceV2Nullable) {
-            // Lance v2: all slots present, just null-mask them
-            return v2Strings.map((s, i) => nulls!.has(i) ? null : s);
-          }
-          // Parquet-style: packed non-null values, interleave with nulls
-          const withNulls: (string | null)[] = [];
-          let vi = 0;
-          for (let i = 0; i < rowCount; i++) {
-            withNulls.push(nulls.has(i) ? null : (vi < v2Strings.length ? v2Strings[vi++] : null));
-          }
-          return withNulls;
-        }
-        return v2Strings;
+    let v2Valid = v2Strings.length === decodeCount;
+    if (v2Valid) {
+      for (let i = 0; i < v2Strings.length; i++) {
+        if (typeof v2Strings[i] !== "string" || v2Strings[i].length >= buf.byteLength) { v2Valid = false; break; }
       }
+    }
+    if (v2Valid) {
+      if (nulls && nulls.size > 0) {
+        if (isLanceV2Nullable) {
+          // Lance v2: all slots present, null-mask in place
+          for (let i = 0; i < v2Strings.length; i++) if (nulls.has(i)) (v2Strings as (string | null)[])[i] = null;
+          return v2Strings as (string | null)[];
+        }
+        // Parquet-style: packed non-null values, interleave with nulls
+        const withNulls: (string | null)[] = [];
+        let vi = 0;
+        for (let i = 0; i < rowCount; i++) {
+          withNulls.push(nulls.has(i) ? null : (vi < v2Strings.length ? v2Strings[vi++] : null));
+        }
+        return withNulls;
+      }
+      return v2Strings;
     }
   }
 
@@ -283,8 +287,9 @@ export function decodePage(
 
   if (nulls && nulls.size > 0) {
     if (isLanceV2Nullable) {
-      // Lance v2: all row slots present, replace null positions with null
-      return values.map((v, i) => nulls!.has(i) ? null : v);
+      // Lance v2: all row slots present, null-mask in place
+      for (let i = 0; i < values.length; i++) if (nulls.has(i)) values[i] = null;
+      return values;
     }
     // Parquet-style: packed non-null values, interleave with nulls
     const withNulls: (number | bigint | string | null)[] = [];
@@ -473,7 +478,7 @@ export function matchesFilter(
       if (set.has(val)) return true;
       // bigint/number cross-type: 5n !== 5 for Set.has, so coerce
       if (typeof val === "bigint") return set.has(Number(val));
-      if (typeof val === "number") return set.has(BigInt(val));
+      if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return set.has(BigInt(val));
       return false;
     }
     case "not_in": {
@@ -481,7 +486,7 @@ export function matchesFilter(
       const set = getInSet(t);
       if (set.has(val)) return false;
       if (typeof val === "bigint") return !set.has(Number(val));
-      if (typeof val === "number") return !set.has(BigInt(val));
+      if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return !set.has(BigInt(val));
       return true;
     }
     case "between": {

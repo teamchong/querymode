@@ -151,12 +151,18 @@ export class ScanOperator implements Operator {
   private prefetchPageIdx = -1;
   private prefetchFragIdx = -1;
   private prefetchSkipped = 0;
+  private _filterColNames: Set<string> | null = null;
 
   constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine, applyFilters = false) {
     this.fragments = fragments;
     this.query = query;
     this.wasm = wasm;
     this.filtersApplied = applyFilters && (query.filters.length > 0 || !!(query.filterGroups && query.filterGroups.length > 0));
+    if (this.filtersApplied) {
+      this._filterColNames = new Set<string>();
+      for (const f of query.filters) this._filterColNames.add(f.column);
+      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) this._filterColNames.add(f.column);
+    }
   }
 
   /** Fetch specified columns for a page in parallel. Returns the pageInfoMap. */
@@ -218,10 +224,8 @@ export class ScanOperator implements Operator {
       if (nextPi >= 0) {
         // Two-phase: only prefetch filter columns to minimize R2 I/O
         let cols: ColumnMeta[];
-        if (this.filtersApplied) {
-          const filterColNames = new Set(this.query.filters.map(f => f.column));
-          if (this.query.filterGroups) for (const g of this.query.filterGroups) for (const f of g) filterColNames.add(f.column);
-          cols = frag.columns.filter(c => filterColNames.has(c.name));
+        if (this.filtersApplied && this._filterColNames) {
+          cols = frag.columns.filter(c => this._filterColNames!.has(c.name));
         } else {
           cols = frag.columns;
         }
@@ -277,10 +281,9 @@ export class ScanOperator implements Operator {
         const allFilterGroups = this.query.filterGroups;
         const hasFilters = allFilters.length > 0 || (allFilterGroups && allFilterGroups.length > 0);
         if (this.filtersApplied && hasFilters) {
-          const filterColNames = new Set(allFilters.map(f => f.column));
-          if (allFilterGroups) for (const g of allFilterGroups) for (const f of g) filterColNames.add(f.column);
-          const filterCols = frag.columns.filter(c => filterColNames.has(c.name));
-          const projCols = frag.columns.filter(c => !filterColNames.has(c.name));
+          const fcn = this._filterColNames!;
+          const filterCols = frag.columns.filter(c => fcn.has(c.name));
+          const projCols = frag.columns.filter(c => !fcn.has(c.name));
 
           // Phase 1: Fetch + decode only filter columns
           let filterPageMap: Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>;
@@ -1040,7 +1043,7 @@ export class WindowOperator implements Operator {
     if (frameStart === "unbounded" && frameEnd === "current") {
       let runSum = 0, runCount = 0, runMin = Infinity, runMax = -Infinity;
       for (let i = 0; i < indices.length; i++) {
-        const val = rows[indices[i]][col];
+        const val = col === "*" ? 1 : rows[indices[i]][col];
         if (val !== null && val !== undefined) {
           const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
           runSum += n;
@@ -1072,7 +1075,7 @@ export class WindowOperator implements Operator {
 
       let sum = 0, count = 0, min = Infinity, max = -Infinity;
       for (let j = start; j <= end; j++) {
-        const val = rows[indices[j]][col];
+        const val = col === "*" ? 1 : rows[indices[j]][col];
         if (val === null || val === undefined) continue;
         const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
         sum += n;
