@@ -161,6 +161,41 @@ describe("PartitionCatalog", () => {
     });
   });
 
+  describe("prune — non-exact partition (range data)", () => {
+    it("returns null for eq on range data (prevents false negatives)", () => {
+      // min=1, max=100 — value 50 exists but isn't indexed
+      const fragments = new Map<number, TableMeta>([
+        makeFragmentMeta(1, "id", 1, 100),
+        makeFragmentMeta(2, "id", 101, 200),
+      ]);
+      const catalog = PartitionCatalog.fromFragments("id", fragments);
+      const result = catalog.prune([{ column: "id", op: "eq", value: 50 }]);
+      // Must return null (can't safely prune), not [] (no fragments)
+      expect(result).toBeNull();
+    });
+
+    it("returns null for in on range data", () => {
+      const fragments = new Map<number, TableMeta>([
+        makeFragmentMeta(1, "id", 1, 100),
+        makeFragmentMeta(2, "id", 101, 200),
+      ]);
+      const catalog = PartitionCatalog.fromFragments("id", fragments);
+      const result = catalog.prune([{ column: "id", op: "in", value: [50, 150] }]);
+      expect(result).toBeNull();
+    });
+
+    it("neq still works on range data (conservative — includes all non-excluded)", () => {
+      const fragments = new Map<number, TableMeta>([
+        makeFragmentMeta(1, "id", 1, 100),
+        makeFragmentMeta(2, "id", 101, 200),
+      ]);
+      const catalog = PartitionCatalog.fromFragments("id", fragments);
+      // neq is safe even for range data — worst case is slightly over-inclusive
+      const result = catalog.prune([{ column: "id", op: "neq", value: 1 }]);
+      expect(result).not.toBeNull();
+    });
+  });
+
   describe("prune — non-partition column", () => {
     it("returns null when filter is on a different column", () => {
       const catalog = buildCatalog();

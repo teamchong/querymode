@@ -102,6 +102,8 @@ export interface AggregateOp {
 /** Window function specification (serializable — no callbacks) */
 export interface WindowSpec {
   fn: "row_number" | "rank" | "dense_rank" | "lag" | "lead" | "sum" | "avg" | "min" | "max" | "count";
+  /** Target column for lag/lead/sum/avg/min/max/count. Falls back to orderBy[0].column if not set. */
+  column?: string;
   args?: { offset?: number; default_?: unknown };
   partitionBy: string[];
   orderBy: { column: string; direction: "asc" | "desc" }[];

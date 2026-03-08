@@ -33,6 +33,9 @@ export class PartitionCatalog {
   private allFragmentIds: number[] = [];
   /** O(1) dedup during construction/registration. */
   private allFragmentIdSet = new Set<number>();
+  /** True when every indexed page has min===max (Hive-style partitioning).
+   *  Only exact-partition catalogs are safe for eq/in lookups. */
+  private exactPartition = true;
 
   constructor(column: string) {
     this.column = column;
@@ -53,6 +56,11 @@ export class PartitionCatalog {
       for (const page of col.pages) {
         if (page.minValue !== undefined) values.add(String(page.minValue));
         if (page.maxValue !== undefined) values.add(String(page.maxValue));
+        // If min !== max on any page, this isn't exact-partition data
+        if (page.minValue !== undefined && page.maxValue !== undefined &&
+            String(page.minValue) !== String(page.maxValue)) {
+          catalog.exactPartition = false;
+        }
       }
 
       for (const v of values) {
@@ -116,10 +124,14 @@ export class PartitionCatalog {
   private matchFilter(filter: FilterOp): number[] | null {
     switch (filter.op) {
       case "eq": {
+        // Only safe for exact-partition data (min===max per page).
+        // For range data, a value between min and max wouldn't be indexed.
+        if (!this.exactPartition) return null;
         const entry = this.index.get(String(filter.value));
         return entry ?? [];
       }
       case "in": {
+        if (!this.exactPartition) return null;
         if (!Array.isArray(filter.value)) return null;
         const ids = new Set<number>();
         for (const v of filter.value) {
@@ -149,19 +161,21 @@ export class PartitionCatalog {
   }
 
   /** Serialize to a plain object for DO durable storage. */
-  serialize(): { column: string; index: Record<string, number[]>; allFragmentIds: number[] } {
+  serialize(): { column: string; index: Record<string, number[]>; allFragmentIds: number[]; exactPartition: boolean } {
     const index: Record<string, number[]> = {};
     for (const [key, ids] of this.index) index[key] = ids;
-    return { column: this.column, index, allFragmentIds: this.allFragmentIds };
+    return { column: this.column, index, allFragmentIds: this.allFragmentIds, exactPartition: this.exactPartition };
   }
 
   /** Restore from serialized form. */
-  static deserialize(data: { column: string; index: Record<string, number[]>; allFragmentIds: number[] }): PartitionCatalog {
+  static deserialize(data: { column: string; index: Record<string, number[]>; allFragmentIds: number[]; exactPartition?: boolean }): PartitionCatalog {
     const catalog = new PartitionCatalog(data.column);
     for (const [key, ids] of Object.entries(data.index)) {
       catalog.index.set(key, ids);
     }
     catalog.allFragmentIds = data.allFragmentIds;
+    catalog.allFragmentIdSet = new Set(data.allFragmentIds);
+    catalog.exactPartition = data.exactPartition ?? true; // backwards-compat: old catalogs assumed exact
     return catalog;
   }
 

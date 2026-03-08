@@ -973,10 +973,11 @@ export class WindowOperator implements Operator {
       case "lag": {
         const offset = win.args?.offset ?? 1;
         const defaultVal = win.args?.default_ ?? null;
+        const lagCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
         for (let i = 0; i < indices.length; i++) {
           const srcIdx = i - offset;
-          if (srcIdx >= 0 && srcIdx < indices.length && orderBy.length > 0) {
-            rows[indices[i]][alias] = rows[indices[srcIdx]][orderBy[0].column] as Row[string];
+          if (srcIdx >= 0 && srcIdx < indices.length && lagCol) {
+            rows[indices[i]][alias] = rows[indices[srcIdx]][lagCol] as Row[string];
           } else {
             rows[indices[i]][alias] = defaultVal as Row[string];
           }
@@ -987,10 +988,11 @@ export class WindowOperator implements Operator {
       case "lead": {
         const offset = win.args?.offset ?? 1;
         const defaultVal = win.args?.default_ ?? null;
+        const leadCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
         for (let i = 0; i < indices.length; i++) {
           const srcIdx = i + offset;
-          if (srcIdx >= 0 && srcIdx < indices.length && orderBy.length > 0) {
-            rows[indices[i]][alias] = rows[indices[srcIdx]][orderBy[0].column] as Row[string];
+          if (srcIdx >= 0 && srcIdx < indices.length && leadCol) {
+            rows[indices[i]][alias] = rows[indices[srcIdx]][leadCol] as Row[string];
           } else {
             rows[indices[i]][alias] = defaultVal as Row[string];
           }
@@ -999,7 +1001,7 @@ export class WindowOperator implements Operator {
       }
 
       case "sum": case "avg": case "min": case "max": case "count": {
-        const col = orderBy.length > 0 ? orderBy[0].column : "";
+        const col = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
         this.applyAggregateWindow(rows, indices, win, col);
         break;
       }
