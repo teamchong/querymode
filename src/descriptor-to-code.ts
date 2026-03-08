@@ -176,10 +176,15 @@ export function descriptorToCode(
 
 /** Extract the fluent chain body from generated code (strips variable declaration and terminal). */
 function extractChainBody(code: string): string {
-  return code.split("\n")
-    .map(l => l.trim())
-    .filter(l => l && !l.startsWith("const ") && l !== ".collect()")
-    .join("\n    ");
+  // Strip "const <var> = await " prefix and trailing ".collect()"
+  const awaitIdx = code.indexOf("await ");
+  const body = awaitIdx >= 0 ? code.slice(awaitIdx + 6) : code;
+  const lines = body.split("\n").map(l => l.trim()).filter(Boolean);
+  // Remove trailing .collect()
+  if (lines.length > 0 && lines[lines.length - 1] === ".collect()") {
+    lines.pop();
+  }
+  return lines.join("\n    ");
 }
 
 function str(v: unknown): string {

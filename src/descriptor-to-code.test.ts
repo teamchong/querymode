@@ -225,6 +225,19 @@ describe("descriptorToCode", () => {
     expect(code).toContain('"left"');
   });
 
+  it("join — right side has tableFn prefix (not bare .table())", () => {
+    const code = descriptorToCode(makeDesc({
+      join: {
+        right: makeDesc({ table: "users" }),
+        leftKey: "user_id",
+        rightKey: "id",
+        type: "left",
+      },
+    }));
+    // The join argument must start with "qm" (or custom tableFn), not bare ".table()"
+    expect(code).toMatch(/\.join\(\s*\n\s*qm\s*\n/);
+  });
+
   it("join — inner (default) omits type", () => {
     const code = descriptorToCode(makeDesc({
       join: {
@@ -244,6 +257,13 @@ describe("descriptorToCode", () => {
     }));
     expect(code).toContain(".union(");
     expect(code).toContain('.table("archive_orders")');
+  });
+
+  it("set operation — right side has tableFn prefix", () => {
+    const code = descriptorToCode(makeDesc({
+      setOperation: { mode: "union", right: makeDesc({ table: "archive" }) },
+    }), { tableFn: "db" });
+    expect(code).toMatch(/\.union\(\s*\n\s*db\s*\n/);
   });
 
   it("set operation — union all", () => {
@@ -384,6 +404,26 @@ describe("descriptorToCode", () => {
   it("limit 0 is preserved", () => {
     const code = descriptorToCode(makeDesc({ limit: 0 }));
     expect(code).toContain(".limit(0)");
+  });
+
+  it("string values with special characters are properly escaped", () => {
+    const code = descriptorToCode(makeDesc({
+      filters: [{ column: "name", op: "eq", value: 'O\'Brien "Bob"' }],
+    }));
+    expect(code).toContain('.filter("name", "eq", "O\'Brien \\"Bob\\"")');
+  });
+
+  it("multiple windows produce multiple .window() calls", () => {
+    const code = descriptorToCode(makeDesc({
+      windows: [
+        { fn: "row_number", partitionBy: ["a"], orderBy: [{ column: "b", direction: "asc" }], alias: "rn" },
+        { fn: "sum", column: "val", partitionBy: ["a"], orderBy: [], alias: "running_sum" },
+      ],
+    }));
+    const windowMatches = code.match(/\.window\(/g);
+    expect(windowMatches).toHaveLength(2);
+    expect(code).toContain('alias: "rn"');
+    expect(code).toContain('alias: "running_sum"');
   });
 
   it("offset 0 is NOT emitted (falsy)", () => {

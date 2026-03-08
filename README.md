@@ -243,7 +243,7 @@ npx tsx examples/nextjs-api-route.ts
 
 - **TypeScript orchestration** — Durable Object lifecycle, R2 range reads, footer caching, request routing
 - **Zig WASM engine** (`wasm/`) — column decoding, SIMD ops, SQL execution, vector search, fragment writing, compiles to `querymode.wasm`
-- **Code-first query API** — `.table().filter().select().sort().limit().exec()` or `.sql("SELECT ...")`
+- **Code-first query API** — `.table().filter().select().sort().limit().exec()` or `.sql("SELECT ...")`, with `.toCode()` decompiler for logging and LLM context compression
 - **Write path** — `append(rows, { path, metadata })` with CAS-based manifest coordination via Master DO, `dropTable()` for cleanup
 - **Master/Query DO split** — single-writer Master broadcasts footer invalidations to per-region Query DOs
 - **Footer caching** — table footers (~4KB each) cached in DO memory with VIP eviction (hot tables protected from eviction)
