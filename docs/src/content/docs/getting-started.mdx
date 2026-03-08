@@ -89,7 +89,10 @@ Same API, but queries run inside regional Durable Objects with R2 storage:
 ```typescript
 import { QueryMode } from "querymode"
 
-const qm = QueryMode.remote(env.QUERY_DO, { region: "SJC" })
+const qm = QueryMode.remote(env.QUERY_DO, {
+  region: "SJC",
+  masterDoNamespace: env.MASTER_DO, // required for write operations
+})
 const result = await qm
   .table("users")
   .filter("age", "gt", 25)

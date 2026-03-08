@@ -114,6 +114,33 @@ df1.intersect(df2)
 df1.except(df2)
 ```
 
+## Convenience filter aliases
+
+```typescript
+df.where("age", "gt", 25)                 // alias for filter()
+df.whereIn("status", ["active", "trial"]) // shorthand for in
+df.whereNotIn("role", ["banned"])          // shorthand for not_in
+df.whereBetween("score", [80, 100])       // shorthand for between
+df.whereNotBetween("age", [0, 17])        // shorthand for not_between
+df.whereLike("name", "%alice%")           // shorthand for like
+df.whereNotLike("email", "%spam%")        // shorthand for not_like
+df.filterIn("region", subquery)           // IN subquery (semi-join)
+```
+
+## Keyset pagination
+
+```typescript
+// Cursor-based pagination (efficient for large offsets)
+df.sort("id", "asc").after(lastSeenId).limit(50)
+```
+
+## Versioning and caching
+
+```typescript
+df.version(3)                   // query a specific Lance dataset version
+df.cache({ ttl: 60_000 })      // cache results for 60 seconds
+```
+
 ## Distinct
 
 ```typescript

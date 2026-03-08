@@ -8,6 +8,7 @@ Every query operation is a composable operator implementing the same interface:
 ```typescript
 interface Operator {
   next(): Promise<RowBatch | null>
+  nextColumnar?(): Promise<ColumnarBatch | null>  // optional columnar mode
   close(): Promise<void>
 }
 ```
@@ -18,7 +19,7 @@ Pull-based: call `next()` to get the next batch of rows. Returns `null` when don
 
 | Category | Operator | Description |
 |----------|----------|-------------|
-| **Scan** | `ScanOperator` | Page reads with prefetch, coalesced I/O, WASM SIMD filter |
+| **Scan** | `ScanOperator` *(internal)* | Page reads with prefetch, coalesced I/O, WASM SIMD filter |
 | **Filter** | `FilterOperator` | eq, neq, gt, gte, lt, lte, in, not_in, between, not_between, like, not_like, is_null, is_not_null |
 | **Filter** | `SubqueryInOperator` | Semi-join filter against a value set |
 | **Project** | `ProjectOperator` | Column selection |

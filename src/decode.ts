@@ -455,11 +455,14 @@ function vectorSearch(
 
 // --- Filters ---
 
-/** Coerce bigint↔number for cross-type comparisons (filter values are numbers, int64 columns decode as bigint). */
+/** Coerce bigint↔number for cross-type comparisons (filter values are numbers, int64 columns decode as bigint).
+ *  Returns coerced values via out parameter to avoid tuple allocation on hot path. */
+const _cmp: [unknown, unknown] = [null, null];
 function coerceCompare(a: unknown, b: unknown): [unknown, unknown] {
-  if (typeof a === "bigint" && typeof b === "number") return [a, BigInt(Math.trunc(b))];
-  if (typeof a === "number" && typeof b === "bigint") return [BigInt(Math.trunc(a)), b];
-  return [a, b];
+  if (typeof a === "bigint" && typeof b === "number") { _cmp[0] = a; _cmp[1] = BigInt(Math.trunc(b)); }
+  else if (typeof a === "number" && typeof b === "bigint") { _cmp[0] = BigInt(Math.trunc(a as number)); _cmp[1] = b; }
+  else { _cmp[0] = a; _cmp[1] = b; }
+  return _cmp;
 }
 
 export function matchesFilter(

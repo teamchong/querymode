@@ -119,22 +119,11 @@ The SQL frontend is a recursive descent parser written in TypeScript. It produce
 If you need the parsed AST or compiled descriptor directly:
 
 ```typescript
-import { parse, compile, compileFull, sqlToDescriptor } from "querymode/sql"
+import { parseSql, sqlToDescriptor } from "querymode"
 
 // Parse SQL to AST
-const ast = parse("SELECT * FROM users WHERE age > 25")
+const ast = parseSql("SELECT * FROM users WHERE age > 25")
 
-// Compile AST to QueryDescriptor
-const descriptor = compile(ast)
-
-// Or do both in one step
+// Convert SQL directly to QueryDescriptor
 const descriptor = sqlToDescriptor("SELECT * FROM users WHERE age > 25")
-
-// compileFull returns additional metadata for the wrapping executor
-const result = compileFull(ast)
-// result.descriptor — QueryDescriptor
-// result.whereExpr — WHERE expression (when predicates can't be fully pushed down)
-// result.havingExpr — HAVING expression
-// result.allOrderBy — multi-column ORDER BY
-// result.computedExprs — CASE/CAST/arithmetic in SELECT
 ```

@@ -86,7 +86,7 @@ Time →
   ...
 ```
 
-Up to 8 R2 reads in-flight simultaneously.
+Prefetches the next page while decoding the current page, keeping the pipeline saturated.
 
 ## Spill to R2
 
@@ -177,7 +177,8 @@ Tests run in two runtimes:
 
 | Runtime | What | Count |
 |---------|------|-------|
-| **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | 150+ tests |
-| **Node** | DuckDB conformance (1M-5M rows), fixture files, SQL, infra | 380+ tests |
+| **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | — |
+| **Node** | DuckDB conformance (1M-5M rows), fixture files, SQL, infra | — |
+| **Total** | All runtimes | **550+ tests** |
 
 Conformance tests validate every operator against DuckDB at scale. CI benchmarks compare QueryMode vs DuckDB on every push.

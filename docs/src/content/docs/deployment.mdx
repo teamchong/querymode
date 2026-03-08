@@ -73,7 +73,7 @@ binding = "DATA_BUCKET_3"
 bucket_name = "querymode-data-shard-3"
 ```
 
-QueryMode automatically distributes tables across buckets using FNV-1a hash routing on the table name. All DOs (Master, Query, Fragment) and the Worker use the same deterministic routing — no configuration needed beyond binding the extra buckets.
+QueryMode automatically distributes tables across buckets using FNV-1a hash routing on the R2 key prefix (first path segment, typically the table name). All DOs (Master, Query, Fragment) and the Worker use the same deterministic routing — no configuration needed beyond binding the extra buckets.
 
 ### Deploy
 

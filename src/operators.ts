@@ -13,6 +13,8 @@ import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, decodePage } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 
+const _textEncoder = new TextEncoder();
+
 export type DecodedValue = number | bigint | string | boolean | Float32Array | null;
 import {
   computePartialAgg,
@@ -664,7 +666,7 @@ function wasmFilterLike(
 ): Uint32Array | null {
   try {
     wasm.exports.resetHeap();
-    const encoder = new TextEncoder();
+    const encoder = _textEncoder;
 
     // Build offsets array and packed string data
     const offsets = new Uint32Array(rowCount + 1);
@@ -1010,10 +1012,33 @@ export class WindowOperator implements Operator {
 
   private applyAggregateWindow(rows: Row[], indices: number[], win: WindowSpec, col: string): void {
     const { fn, alias, frame } = win;
-    const frameType = frame?.type ?? "range";
     const frameStart = frame?.start ?? "unbounded";
     const frameEnd = frame?.end ?? "current";
 
+    // Fast path: "unbounded preceding ... current row" uses O(n) running accumulators
+    if (frameStart === "unbounded" && frameEnd === "current") {
+      let runSum = 0, runCount = 0, runMin = Infinity, runMax = -Infinity;
+      for (let i = 0; i < indices.length; i++) {
+        const val = rows[indices[i]][col];
+        if (val !== null && val !== undefined) {
+          const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
+          runSum += n;
+          runCount++;
+          if (n < runMin) runMin = n;
+          if (n > runMax) runMax = n;
+        }
+        switch (fn) {
+          case "sum": rows[indices[i]][alias] = runSum; break;
+          case "avg": rows[indices[i]][alias] = runCount === 0 ? 0 : runSum / runCount; break;
+          case "min": rows[indices[i]][alias] = runMin === Infinity ? null : runMin; break;
+          case "max": rows[indices[i]][alias] = runMax === -Infinity ? null : runMax; break;
+          case "count": rows[indices[i]][alias] = runCount; break;
+        }
+      }
+      return;
+    }
+
+    // General path for custom frames
     for (let i = 0; i < indices.length; i++) {
       let start: number, end: number;
 
