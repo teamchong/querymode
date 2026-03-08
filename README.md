@@ -252,7 +252,7 @@ npx tsx examples/nextjs-api-route.ts
 - **Multi-format support** — Lance, Parquet, and Iceberg tables
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
 - **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 100 slots per datacenter)
-- **460+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
+- **580+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor, toCode decompiler; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
 - **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to [GitHub Actions summary](https://github.com/teamchong/querymode/actions/workflows/ci.yml)
 
 ## What doesn't exist yet
@@ -345,7 +345,7 @@ QueryMode:           plan instantly (footer cached) → fetch ONLY matching byte
 3. **Coalesced Range reads** — nearby byte ranges merged within 64KB gaps into fewer R2 requests.
 4. **Zero-copy WASM** — raw bytes from R2 are passed directly to Zig SIMD. No Arrow conversion, no DataFrame construction.
 5. **VIP eviction** — frequently-accessed table footers are protected from cache eviction by cold one-off accesses.
-6. **Bounded prefetch** — up to 8 R2 reads in-flight simultaneously, overlapping I/O with compute.
+6. **Bounded prefetch** — prefetch next page while WASM decodes current page, with up to 8 concurrent R2 range reads per page fetch.
 
 ## License
 
