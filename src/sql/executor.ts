@@ -182,7 +182,10 @@ function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): 
 }
 
 function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | boolean | Float32Array | null {
-  if (agg.fn === "count") return rows.length;
+  if (agg.fn === "count") {
+    if (agg.column === "*") return rows.length;
+    return rows.filter(r => r[agg.column] != null).length;
+  }
 
   const values: number[] = [];
   const seen = new Set<string>();

@@ -158,19 +158,14 @@ export function mergeQueryResults(
     };
   }
 
-  // Unsorted: limit-aware concat with early termination
+  // Unsorted: concat with offset + limit
   let rows: Row[];
-  if (query.limit) {
-    rows = [];
-    for (const p of partials) {
-      for (const row of p.rows) {
-        rows.push(row);
-        if (rows.length >= query.limit) break;
-      }
-      if (rows.length >= query.limit) break;
-    }
+  const allRows = partials.flatMap((p) => p.rows);
+  const off = query.offset ?? 0;
+  if (off > 0 || query.limit !== undefined) {
+    rows = allRows.slice(off, query.limit !== undefined ? off + query.limit : undefined);
   } else {
-    rows = partials.flatMap((p) => p.rows);
+    rows = allRows;
   }
 
   return {

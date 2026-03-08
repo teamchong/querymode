@@ -2902,6 +2902,13 @@ export function buildPipeline(
     pipeline = new ComputedColumnOperator(pipeline, query.computedColumns);
   }
 
+  // User-injected pipe stages (inserted after filter/computed, before agg/sort)
+  if (query.pipeStages) {
+    for (const stage of query.pipeStages) {
+      pipeline = stage(pipeline);
+    }
+  }
+
   // Window functions
   if (query.windows && query.windows.length > 0) {
     pipeline = new WindowOperator(pipeline, query.windows);

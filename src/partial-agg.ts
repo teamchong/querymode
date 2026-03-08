@@ -25,8 +25,8 @@ export interface PartialAggState {
   count: number;
   min: number;
   max: number;
-  /** For stddev/variance: sum of squared values (Welford's online algorithm) */
-  sumSq?: number;
+  /** For stddev/variance: Welford's M2 = sum of squared deviations from mean */
+  m2?: number;
   /** For median/percentile: collected values (exact mode) */
   values?: number[];
   /** For count_distinct: set of seen values */
@@ -41,7 +41,7 @@ export function initPartialAggState(
   opts?: { percentileTarget?: number },
 ): PartialAggState {
   const state: PartialAggState = { fn, column, sum: 0, count: 0, min: Infinity, max: -Infinity };
-  if (fn === "stddev" || fn === "variance") state.sumSq = 0;
+  if (fn === "stddev" || fn === "variance") state.m2 = 0;
   if (fn === "median" || fn === "percentile") {
     state.values = [];
     if (fn === "percentile" && opts?.percentileTarget !== undefined) {
@@ -57,11 +57,20 @@ export function updatePartialAgg(
   value: number,
   rawValue?: unknown,
 ): void {
-  state.sum += value;
-  state.count++;
+  if (state.m2 !== undefined) {
+    // Welford's online algorithm — compute before updating sum/count
+    const oldMean = state.count > 0 ? state.sum / state.count : 0;
+    const delta = value - oldMean;
+    state.sum += value;
+    state.count++;
+    const newMean = state.sum / state.count;
+    state.m2 += delta * (value - newMean);
+  } else {
+    state.sum += value;
+    state.count++;
+  }
   if (value < state.min) state.min = value;
   if (value > state.max) state.max = value;
-  if (state.sumSq !== undefined) state.sumSq += value * value;
   if (state.values !== undefined) state.values.push(value);
   if (state.distinctSet !== undefined) {
     state.distinctSet.add(rawValue !== undefined ? String(rawValue) : String(value));
@@ -84,14 +93,11 @@ function resolveValue(state: PartialAggState): number {
       return state.distinctSet?.size ?? 0;
     case "stddev": {
       if (state.count < 2) return 0;
-      const mean = state.sum / state.count;
-      const variance = (state.sumSq ?? 0) / state.count - mean * mean;
-      return Math.sqrt(Math.max(0, variance));
+      return Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
     }
     case "variance": {
       if (state.count < 2) return 0;
-      const mean = state.sum / state.count;
-      return (state.sumSq ?? 0) / state.count - mean * mean;
+      return (state.m2 ?? 0) / state.count;
     }
     case "median": {
       const vals = state.values ?? [];
@@ -157,7 +163,8 @@ export function computePartialAgg(
     let key = "";
     for (let g = 0; g < groupCols.length; g++) {
       if (g > 0) key += "\x00";
-      key += String(row[groupCols[g]] ?? "");
+      const v = row[groupCols[g]];
+      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
     }
     let states = groups.get(key);
     if (!states) {
@@ -226,7 +233,8 @@ export function computePartialAggColumnar(
     for (let g = 0; g < groupCols.length; g++) {
       if (g > 0) key += "\x00";
       const vals = batch.columns.get(groupCols[g]);
-      key += String(vals ? (vals[idx] ?? "") : "");
+      const v = vals ? vals[idx] : null;
+      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
     }
     let states = groups.get(key);
     if (!states) {
@@ -261,14 +269,20 @@ function mergeStates(
   source: PartialAggState[],
 ): void {
   for (let i = 0; i < target.length; i++) {
+    // Parallel Welford merge for m2 (must be computed before sum/count merge)
+    if (target[i].m2 !== undefined && source[i].m2 !== undefined) {
+      const nA = target[i].count, nB = source[i].count;
+      if (nA > 0 && nB > 0) {
+        const delta = (source[i].sum / nB) - (target[i].sum / nA);
+        target[i].m2 = target[i].m2! + source[i].m2! + delta * delta * nA * nB / (nA + nB);
+      } else {
+        target[i].m2! += source[i].m2!;
+      }
+    }
     target[i].sum += source[i].sum;
     target[i].count += source[i].count;
     if (source[i].min < target[i].min) target[i].min = source[i].min;
     if (source[i].max > target[i].max) target[i].max = source[i].max;
-    // Extended aggregate state merge
-    if (target[i].sumSq !== undefined && source[i].sumSq !== undefined) {
-      target[i].sumSq! += source[i].sumSq!;
-    }
     if (target[i].values !== undefined && source[i].values !== undefined) {
       target[i].values!.push(...source[i].values!);
     }
@@ -329,7 +343,14 @@ export function finalizePartialAgg(
     const row: Row = {};
     const keyParts = key.split("\x00");
     for (let i = 0; i < groupCols.length; i++) {
-      row[groupCols[i]] = keyParts[i];
+      const part = keyParts[i];
+      if (part === "\x01NULL\x01") {
+        row[groupCols[i]] = null;
+      } else {
+        // Attempt to restore numeric types
+        const num = Number(part);
+        row[groupCols[i]] = part !== "" && !isNaN(num) && String(num) === part ? num : part;
+      }
     }
     for (let i = 0; i < states.length; i++) {
       const alias = aliasFor(aggregates[i]);
