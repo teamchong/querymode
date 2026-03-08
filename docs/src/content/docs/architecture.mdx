@@ -41,13 +41,13 @@ One per datacenter region. Caches table footers in memory (~4KB each) with VIP e
 
 ### FragmentDO (fan-out pool)
 
-Up to 20 per datacenter. Each scans a subset of fragments in parallel. Handles column reads, page decode, filter pushdown, and partial aggregation.
+Up to 100 per datacenter. Each scans a subset of fragments in parallel. Handles column reads, page decode, filter pushdown, and partial aggregation. Partial allocation — if only 30 slots are free, QueryDO dispatches 30 fragments to DOs and scans the remainder locally in parallel.
 
 ## Query flow
 
 1. **Request arrives** at Worker → routes to regional QueryDO
 2. **QueryDO** checks footer cache → if miss, fetches from R2
-3. **QueryDO** partitions fragments across FragmentDO pool
+3. **QueryDO** prunes fragments (partition catalog → min/max stats) and partitions survivors across FragmentDO pool
 4. **Each FragmentDO** runs the operator pipeline:
    - Page-level skip (min/max stats)
    - Coalesced R2 range reads
@@ -96,6 +96,50 @@ Operators that accumulate state (sort, join) accept a memory budget. When exceed
 - **ExternalSortOperator** — writes sorted runs to R2, k-way merges
 
 Same `SpillBackend` interface for R2 (edge) and filesystem (local).
+
+## PB-scale infrastructure
+
+### Multi-bucket sharding
+
+R2 has per-bucket rate limits. At PB scale, a single bucket becomes a bottleneck. QueryMode distributes data across up to 4 R2 buckets (`DATA_BUCKET` + `DATA_BUCKET_1/2/3`) using FNV-1a hash routing on the R2 key prefix. All DOs (Master, Query, Fragment) and the Worker use the shared `resolveBucket()` utility — reads and writes are automatically routed to the correct shard.
+
+```typescript
+// wrangler.toml — bind extra buckets
+[durable_objects]
+DATA_BUCKET_1 = { bucket_name = "data-shard-1" }
+DATA_BUCKET_2 = { bucket_name = "data-shard-2" }
+DATA_BUCKET_3 = { bucket_name = "data-shard-3" }
+```
+
+### Partition catalog
+
+For datasets with millions of fragments, evaluating min/max stats on every fragment is too slow. The partition catalog provides O(1) fragment lookup: given a filter on the partition column, return only the fragment IDs that could contain matching rows.
+
+```
+Query: WHERE region = 'us'
+
+Without catalog:  scan all 1M fragment stats  → 200ms
+With catalog:     lookup "us" → [frag-1, frag-5, frag-12]  → <1ms
+```
+
+Catalogs are built automatically (best-column auto-detection) or explicitly via `partitionBy` during ingest. They support `eq`, `in`, `neq`, and `not_in` filters. Catalogs persist to DO durable storage and restore on wake.
+
+### Two-phase fragment pruning
+
+1. **Partition catalog prune** — O(1) lookup eliminates fragments that can't match the partition filter
+2. **Min/max stat prune** — remaining fragments are checked against per-column page stats
+
+This two-phase approach means a query on a PB-scale dataset with a selective partition filter touches only the relevant fragments — no full scan of metadata.
+
+### Partition-aware ingest
+
+```typescript
+await qm.table("events").append(rows, {
+  partitionBy: "region",  // each region value gets its own fragment
+})
+```
+
+Rows are grouped by partition column value and written to separate fragments. This creates clean partition boundaries that the catalog can exploit for O(1) pruning.
 
 ## Local mode
 

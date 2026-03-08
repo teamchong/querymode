@@ -484,7 +484,7 @@ export class QueryDO extends DurableObject<Env> {
     if (partitionBy) {
       const catalog = PartitionCatalog.fromFragments(partitionBy, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
-      this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
+      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
       this.log("info", "partition_catalog_built", { ...catalog.stats(), source: "explicit" });
       return;
     }
@@ -494,7 +494,8 @@ export class QueryDO extends DurableObject<Env> {
     if (!firstMeta) return;
 
     let bestColumn = "";
-    let bestDistinct = 0;
+    let bestScore = 0;
+    const fragCount = fragmentMetas.size;
 
     for (const col of firstMeta.columns) {
       if (col.pages.length === 0) continue;
@@ -507,9 +508,15 @@ export class QueryDO extends DurableObject<Env> {
           if (page.maxValue !== undefined) values.add(String(page.maxValue));
         }
       }
-      // Good partition key: many distinct values but not too many (< 10K)
-      if (values.size > bestDistinct && values.size < 10_000) {
-        bestDistinct = values.size;
+      if (values.size < 2 || values.size >= 10_000) continue;
+      // Good partition key: multiple fragments per value (not near-unique).
+      // Score = distinct values, penalized if ratio of values-to-fragments is too high
+      // (e.g., 9000 values across 10 fragments = useless, 50 values across 10 fragments = great)
+      const ratio = values.size / fragCount;
+      if (ratio > 100) continue; // too many unique values per fragment — skip (likely timestamps/IDs)
+      const score = values.size / (1 + ratio); // reward cardinality, penalize high ratio
+      if (score > bestScore) {
+        bestScore = score;
         bestColumn = col.name;
       }
     }
@@ -517,7 +524,7 @@ export class QueryDO extends DurableObject<Env> {
     if (bestColumn) {
       const catalog = PartitionCatalog.fromFragments(bestColumn, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
-      this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
+      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
       this.log("info", "partition_catalog_built", catalog.stats());
     }
   }

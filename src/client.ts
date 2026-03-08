@@ -926,7 +926,9 @@ export class MaterializedExecutor implements QueryExecutor {
           if (agg.fn === "count") {
             out[alias] = agg.column === "*" ? bucket.length : bucket.filter(r => r[agg.column] != null).length;
           } else {
-            const vals = bucket.map(r => r[agg.column]).filter(v => v != null && typeof v === "number") as number[];
+            const vals = bucket.map(r => r[agg.column])
+              .filter(v => v != null && (typeof v === "number" || typeof v === "bigint"))
+              .map(v => typeof v === "bigint" ? Number(v) : v) as number[];
             if (vals.length === 0) { out[alias] = null; continue; }
             switch (agg.fn) {
               case "sum": out[alias] = vals.reduce((a, b) => a + b, 0); break;
