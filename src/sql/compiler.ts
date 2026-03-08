@@ -216,6 +216,15 @@ function compileWindowFunction(expr: SqlExpr & { kind: "call" }, alias?: string)
     alias: alias ?? `${fn}_result`,
   };
 
+  if (expr.args.length > 0) {
+    const colArg = expr.args[0];
+    if (colArg.kind === "column") {
+      spec.column = colArg.name;
+    } else if (colArg.kind === "star") {
+      spec.column = "*";
+    }
+  }
+
   if ((fn === "lag" || fn === "lead") && expr.args.length > 1) {
     const args: WindowSpec["args"] = {};
     if (expr.args[1]?.kind === "value" && expr.args[1].value.type === "integer") {

@@ -929,7 +929,8 @@ export class WindowOperator implements Operator {
         key = "";
         for (let p = 0; p < win.partitionBy.length; p++) {
           if (p > 0) key += "\x00";
-          key += String(rows[i][win.partitionBy[p]] ?? "");
+          const v = rows[i][win.partitionBy[p]];
+          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
         }
       } else {
         key = "__all__";
@@ -1141,7 +1142,8 @@ export class DistinctOperator implements Operator {
         for (let g = 0; g < cols.length; g++) {
           if (g > 0) key += "\x00";
           const vals = batch.columns.get(cols[g]);
-          key += String(vals ? (vals[idx] ?? "") : "");
+          const v = vals ? vals[idx] : null;
+          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
         }
         if (!this.seen.has(key)) {
           this.seen.add(key);
@@ -1165,7 +1167,8 @@ export class DistinctOperator implements Operator {
         const keyCols = this.columns.length > 0 ? this.columns : Object.keys(row);
         for (let g = 0; g < keyCols.length; g++) {
           if (g > 0) key += "\x00";
-          key += String(row[keyCols[g]] ?? "");
+          const v = row[keyCols[g]];
+          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
         }
         if (!this.seen.has(key)) {
           this.seen.add(key);
@@ -1205,12 +1208,15 @@ export class SetOperator implements Operator {
     if (mode !== "union_all") this.seen = new Set();
   }
 
+  private _sortedKeys: string[] | null = null;
   private rowKey(row: Row): string {
-    const keys = Object.keys(row).sort();
+    if (!this._sortedKeys) this._sortedKeys = Object.keys(row).sort();
+    const keys = this._sortedKeys;
     let result = "";
     for (let i = 0; i < keys.length; i++) {
       if (i > 0) result += "\x00";
-      result += keys[i] + "=" + String(row[keys[i]] ?? "");
+      const v = row[keys[i]];
+      result += keys[i] + "=" + (v === null || v === undefined ? "\x01NULL\x01" : String(v));
     }
     return result;
   }
@@ -1476,29 +1482,27 @@ export class LimitOperator implements Operator {
       const batch = await this.upstream.nextColumnar();
       if (!batch) return null;
 
-      let indices = batch.selection
-        ? Array.from(batch.selection)
-        : Array.from({ length: batch.rowCount }, (_, i) => i);
+      let sel = batch.selection ?? identityIndices(batch.rowCount);
 
       // Handle offset: skip rows
       if (this.skipped < this.offset) {
         const toSkip = this.offset - this.skipped;
-        if (toSkip >= indices.length) {
-          this.skipped += indices.length;
+        if (toSkip >= sel.length) {
+          this.skipped += sel.length;
           continue;
         }
-        indices = indices.slice(toSkip);
+        sel = sel.subarray(toSkip);
         this.skipped = this.offset;
       }
 
       // Apply limit
-      if (indices.length > this.remaining) {
-        indices = indices.slice(0, this.remaining);
+      if (sel.length > this.remaining) {
+        sel = sel.slice(0, this.remaining);
       }
-      this.remaining -= indices.length;
+      this.remaining -= sel.length;
 
-      if (indices.length > 0) {
-        return { columns: batch.columns, rowCount: batch.rowCount, selection: new Uint32Array(indices) };
+      if (sel.length > 0) {
+        return { columns: batch.columns, rowCount: batch.rowCount, selection: sel };
       }
       return null;
     }

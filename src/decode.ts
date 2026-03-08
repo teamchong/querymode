@@ -228,29 +228,16 @@ export function decodePage(
   rowCount = 0,
   dataOffsetInPage?: number,
 ): (number | bigint | string | null)[] {
-  let nulls: Set<number> | null = null;
+  let nullBitmap: Uint8Array | null = null;
+  let nulls: { has(i: number): boolean; size: number } | null = null;
   if (nullCount > 0 && rowCount > 0) {
     const bitmapBytes = Math.ceil(rowCount / 8);
     if (buf.byteLength < bitmapBytes) return [];
-    const bytes = new Uint8Array(buf, 0, bitmapBytes);
-    nulls = new Set<number>();
-    // Fast path: skip bytes that are 0xFF (all valid) — avoids per-bit work
-    for (let b = 0; b < bitmapBytes; b++) {
-      const byte = bytes[b];
-      if (byte === 0xFF) continue; // all 8 bits valid, skip
-      const base = b << 3;
-      if (byte === 0x00) {
-        // all 8 bits null — add them all
-        const end = Math.min(base + 8, rowCount);
-        for (let i = base; i < end; i++) nulls.add(i);
-      } else {
-        // mixed — check each bit
-        const end = Math.min(8, rowCount - base);
-        for (let bit = 0; bit < end; bit++) {
-          if (((byte >> bit) & 1) === 0) nulls.add(base + bit);
-        }
-      }
-    }
+    nullBitmap = new Uint8Array(buf, 0, bitmapBytes);
+    nulls = {
+      has(i: number): boolean { return (nullBitmap![i >> 3] & (1 << (i & 7))) === 0; },
+      get size() { return nullCount; },
+    };
     // Lance v2 uses alignment padding between bitmap and data.
     // dataOffsetInPage gives the exact data start; otherwise strip only bitmap bytes.
     const stripBytes = dataOffsetInPage ?? bitmapBytes;
@@ -483,12 +470,19 @@ export function matchesFilter(
     case "in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      return set.has(val);
+      if (set.has(val)) return true;
+      // bigint/number cross-type: 5n !== 5 for Set.has, so coerce
+      if (typeof val === "bigint") return set.has(Number(val));
+      if (typeof val === "number") return set.has(BigInt(val));
+      return false;
     }
     case "not_in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      return !set.has(val);
+      if (set.has(val)) return false;
+      if (typeof val === "bigint") return !set.has(Number(val));
+      if (typeof val === "number") return !set.has(BigInt(val));
+      return true;
     }
     case "between": {
       if (!Array.isArray(t) || t.length !== 2) return false;

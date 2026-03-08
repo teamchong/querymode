@@ -211,14 +211,13 @@ export function computePartialAggColumnar(
     const states = aggregates.map((agg) =>
       initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
     );
+    const aggArrays = aggregates.map(a => a.column === "*" ? null : (batch.columns.get(a.column) ?? null));
     for (const idx of indices) {
       for (let i = 0; i < aggregates.length; i++) {
-        const col = aggregates[i].column;
-        if (col === "*") {
+        if (!aggArrays[i]) {
           states[i].count++;
         } else {
-          const vals = batch.columns.get(col);
-          const val = vals ? vals[idx] : null;
+          const val = aggArrays[i]![idx];
           if (typeof val === "number") {
             updatePartialAgg(states[i], val, val);
           } else if (typeof val === "bigint") {
@@ -238,13 +237,14 @@ export function computePartialAggColumnar(
 
   const groups = new Map<string, PartialAggState[]>();
   const groupCols = query.groupBy;
+  const groupArrays = groupCols.map(c => batch.columns.get(c) ?? null);
+  const aggArrays2 = aggregates.map(a => a.column === "*" ? null : (batch.columns.get(a.column) ?? null));
 
   for (const idx of indices) {
     let key = "";
     for (let g = 0; g < groupCols.length; g++) {
       if (g > 0) key += "\x00";
-      const vals = batch.columns.get(groupCols[g]);
-      const v = vals ? vals[idx] : null;
+      const v = groupArrays[g] ? groupArrays[g]![idx] : null;
       key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
     }
     let states = groups.get(key);
@@ -255,12 +255,10 @@ export function computePartialAggColumnar(
       groups.set(key, states);
     }
     for (let i = 0; i < aggregates.length; i++) {
-      const col = aggregates[i].column;
-      if (col === "*") {
+      if (!aggArrays2[i]) {
         states[i].count++;
       } else {
-        const vals = batch.columns.get(col);
-        const val = vals ? vals[idx] : null;
+        const val = aggArrays2[i]![idx];
         if (typeof val === "number") {
           updatePartialAgg(states[i], val, val);
         } else if (typeof val === "bigint") {

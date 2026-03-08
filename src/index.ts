@@ -21,13 +21,14 @@ export {
   ComputedColumnOperator, HashJoinOperator, ExternalSortOperator,
   InMemorySortOperator, WindowOperator, DistinctOperator, SetOperator,
   LimitOperator, SubqueryInOperator,
-  drainPipeline, buildEdgePipeline,
+  drainPipeline, buildEdgePipeline, FsSpillBackend,
 } from "./operators.js";
 export type { Operator, RowBatch } from "./operators.js";
 export { QueryModeError } from "./errors.js";
 export type { ErrorCode } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
 export { bigIntReplacer } from "./decode.js";
+export { R2SpillBackend } from "./r2-spill.js";
 export { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 export { formatResultSummary, formatExplain, formatBytes } from "./format.js";
 export type { LocalTimingInfo } from "./format.js";

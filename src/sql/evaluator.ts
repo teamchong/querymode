@@ -28,8 +28,10 @@ export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
     case "in_list": {
       const val = evaluateExpr(expr.expr, row);
       if (val === null) return null;
-      const values = expr.values.map(v => evaluateExpr(v, row));
-      const found = values.some(v => looseEqual(val, v));
+      let found = false;
+      for (const v of expr.values) {
+        if (looseEqual(val, evaluateExpr(v, row))) { found = true; break; }
+      }
       return expr.negated ? !found : found;
     }
 

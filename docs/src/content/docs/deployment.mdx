@@ -108,7 +108,8 @@ pnpm build && wrangler deploy
     { "column": "amount", "op": "gt", "value": 100 }
   ],
   "projections": ["id", "amount", "region"],
-  "orderBy": { "column": "amount", "desc": true },
+  "sortColumn": "amount",
+  "sortDirection": "desc",
   "limit": 20
 }
 ```

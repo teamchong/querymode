@@ -75,7 +75,7 @@ export class SqlWrappingExecutor implements QueryExecutor {
     }
 
     const result = await this.inner.execute(innerQuery);
-    let rows = [...result.rows];
+    let rows: Row[] = result.rows as Row[];
 
     // 1. Apply WHERE expression filter
     if (this.opts.whereExpr) {
@@ -118,6 +118,7 @@ export class SqlWrappingExecutor implements QueryExecutor {
 
     // 5. Multi-column ORDER BY
     if (hasMultiSort) {
+      if (rows === (result.rows as Row[])) rows = [...rows];
       const orderBy = this.opts.allOrderBy!;
       rows.sort((a, b) => {
         for (const { column, direction } of orderBy) {
@@ -158,10 +159,12 @@ function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): 
 
   const groups = new Map<string, Row[]>();
   for (const row of rows) {
-    const key = groupBy.map(col => {
-      const v = row[col];
-      return v === null || v === undefined ? "\x01NULL\x01" : String(v);
-    }).join("\0");
+    let key = "";
+    for (let g = 0; g < groupBy.length; g++) {
+      if (g > 0) key += "\0";
+      const v = row[groupBy[g]];
+      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+    }
     let group = groups.get(key);
     if (!group) {
       group = [];
@@ -187,51 +190,67 @@ function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): 
 function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | boolean | Float32Array | null {
   if (agg.fn === "count") {
     if (agg.column === "*") return rows.length;
-    return rows.filter(r => r[agg.column] != null).length;
+    let cnt = 0;
+    for (const r of rows) if (r[agg.column] != null) cnt++;
+    return cnt;
   }
 
-  const values: number[] = [];
-  const seen = new Set<string>();
+  if (agg.fn === "count_distinct") {
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const v = row[agg.column];
+      if (v !== null && v !== undefined) seen.add(String(v));
+    }
+    return seen.size;
+  }
+
+  const needValues = agg.fn === "median" || agg.fn === "percentile" || agg.fn === "stddev" || agg.fn === "variance";
+  const values: number[] = needValues ? [] : (undefined as unknown as number[]);
+  let sum = 0, count = 0, min = Infinity, max = -Infinity;
+
   for (const row of rows) {
     const v = row[agg.column];
     if (v === null || v === undefined) continue;
     const num = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : parseFloat(String(v));
-    if (agg.fn === "count_distinct") seen.add(String(v));
-    if (!isNaN(num)) {
-      values.push(num);
-    }
+    if (isNaN(num)) continue;
+    sum += num; count++;
+    if (num < min) min = num;
+    if (num > max) max = num;
+    if (needValues) values.push(num);
   }
 
-  if (agg.fn === "count_distinct") return seen.size;
-  if (values.length === 0) return null;
+  if (count === 0) return null;
 
   switch (agg.fn) {
-    case "sum": return values.reduce((a, b) => a + b, 0);
-    case "avg": return values.reduce((a, b) => a + b, 0) / values.length;
-    case "min": return values.reduce((a, b) => a < b ? a : b);
-    case "max": return values.reduce((a, b) => a > b ? a : b);
+    case "sum": return sum;
+    case "avg": return sum / count;
+    case "min": return min;
+    case "max": return max;
     case "stddev": {
-      const mean = values.reduce((a, b) => a + b, 0) / values.length;
-      const sq = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
-      return Math.sqrt(sq);
+      const mean = sum / count;
+      let sq = 0;
+      for (const v of values) sq += (v - mean) ** 2;
+      return Math.sqrt(sq / count);
     }
     case "variance": {
-      const mean = values.reduce((a, b) => a + b, 0) / values.length;
-      return values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+      const mean = sum / count;
+      let sq = 0;
+      for (const v of values) sq += (v - mean) ** 2;
+      return sq / count;
     }
     case "median": {
-      const sorted = [...values].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      values.sort((a, b) => a - b);
+      const mid = Math.floor(count / 2);
+      return count % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
     }
     case "percentile": {
       if (agg.percentileTarget === undefined) return null;
-      const sorted = [...values].sort((a, b) => a - b);
+      values.sort((a, b) => a - b);
       const p = agg.percentileTarget;
-      const idx = p * (sorted.length - 1);
+      const idx = p * (count - 1);
       const lo = Math.floor(idx);
       const hi = Math.ceil(idx);
-      return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+      return lo === hi ? values[lo] : values[lo] + (values[hi] - values[lo]) * (idx - lo);
     }
     default: return null;
   }

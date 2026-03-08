@@ -93,7 +93,8 @@ Operation         Operator class              What it does
 ─────────         ──────────────              ────────────
 
 Filtering
-  predicate       FilterOperator              eq, neq, gt, gte, lt, lte, in
+  predicate       FilterOperator              14 ops: eq, neq, gt, gte, lt, lte, in, not_in,
+                                              between, not_between, like, not_like, is_null, is_not_null
   membership      SubqueryInOperator          Semi-join filter against a value set
 
 Projection
@@ -125,7 +126,7 @@ Set operations
 
 Limiting
   limit/offset    LimitOperator               Row limiting with offset
-  sample          (planned)                   Random sampling
+  sample          DataFrame.sample()            Random sampling (Fisher-Yates)
 
 Similarity
   vector near     (planned)                   NEAR topK as composable operator — currently in scan layer
@@ -252,7 +253,7 @@ npx tsx examples/nextjs-api-route.ts
 - **Multi-format support** — Lance, Parquet, and Iceberg tables
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
 - **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 100 slots per datacenter)
-- **580+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor, toCode decompiler; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
+- **600+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor, toCode decompiler; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
 - **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to [GitHub Actions summary](https://github.com/teamchong/querymode/actions/workflows/ci.yml)
 
 ## What doesn't exist yet
