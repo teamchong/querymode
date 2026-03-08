@@ -105,9 +105,41 @@ export class MasterDO extends DurableObject<Env> {
     return this.wasmEngine;
   }
 
-  /** Core append logic. */
+  /** Core append logic. Supports partitioned writes via options.partitionBy. */
   private async executeAppend(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!rows?.length) throw new Error("No rows provided");
+
+    // Partition-aware ingest: split rows by partition value, write separate fragments
+    if (options?.partitionBy) {
+      const partCol = options.partitionBy;
+      const groups = new Map<string, Record<string, unknown>[]>();
+      for (const row of rows) {
+        const key = String(row[partCol] ?? "__null__");
+        let group = groups.get(key);
+        if (!group) { group = []; groups.set(key, group); }
+        group.push(row);
+      }
+
+      // Write each partition group as a separate fragment
+      let totalWritten = 0;
+      let lastResult: AppendResult | null = null;
+      for (const [, groupRows] of groups) {
+        lastResult = await this.executeAppendSingle(table, groupRows, options);
+        totalWritten += groupRows.length;
+      }
+
+      return {
+        ...lastResult!,
+        rowsWritten: totalWritten,
+        metadata: { ...options.metadata, partitionBy: partCol, partitions: String(groups.size) },
+      };
+    }
+
+    return this.executeAppendSingle(table, rows, options);
+  }
+
+  /** Write a single fragment (no partitioning). */
+  private async executeAppendSingle(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
 
     const wasm = await this.getWasm();
 

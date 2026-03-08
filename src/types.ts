@@ -237,6 +237,8 @@ export interface DatasetMeta {
   fragmentMetas: Map<number, TableMeta>;
   totalRows: number;
   updatedAt: number;
+  /** User-specified partition column (set during partitioned ingest). */
+  partitionBy?: string;
 }
 
 /** Iceberg table schema */
@@ -263,6 +265,9 @@ export interface AppendOptions {
   path?: string;
   /** Metadata attached to this write — visible to catalog layers for lineage/lifecycle. */
   metadata?: Record<string, string>;
+  /** Partition column — rows are grouped by this column's value and written to separate fragments.
+   *  Enables partition catalog pruning at query time for O(1) fragment lookup. */
+  partitionBy?: string;
 }
 
 /** Result of an append (write) operation */

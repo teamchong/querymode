@@ -191,6 +191,12 @@ await qm.table("events").append([
   { id: 1, type: "click", created_at: "2026-03-06" },
 ])
 
+// Partitioned write — each region value gets its own fragment
+// Enables O(1) fragment lookup at query time via partition catalog
+await qm.table("events").append(rows, {
+  partitionBy: "region",
+})
+
 // Append to specific R2 path with metadata
 await qm.table("enriched").append(rows, {
   path: "pipelines/job-abc/enriched.lance/",

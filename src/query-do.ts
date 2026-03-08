@@ -25,7 +25,7 @@ import { resolveBucket } from "./bucket.js";
 import { PartitionCatalog } from "./partition-catalog.js";
 import wasmModule from "./wasm-module.js";
 
-const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
+const FRAGMENT_POOL_MAX = 100; // Max Fragment DO slots per datacenter (idle slots cost nothing)
 const R2_TIMEOUT_MS = 10_000;
 const FRAGMENT_TIMEOUT_MS = 25_000;
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
@@ -477,10 +477,18 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
   /** Auto-detect best partition column and build catalog from fragment metadata. */
-  private buildPartitionCatalog(tableName: string, fragmentMetas: Map<number, TableMeta>): void {
+  private buildPartitionCatalog(tableName: string, fragmentMetas: Map<number, TableMeta>, partitionBy?: string): void {
     if (fragmentMetas.size < 2) return; // no point for single-fragment tables
 
-    // Find column with the most distinct min/max values across fragments (best partition key)
+    // User-specified partition column takes priority
+    if (partitionBy) {
+      const catalog = PartitionCatalog.fromFragments(partitionBy, fragmentMetas);
+      this.partitionCatalogs.set(tableName, catalog);
+      this.log("info", "partition_catalog_built", { ...catalog.stats(), source: "explicit" });
+      return;
+    }
+
+    // Auto-detect: find column with the most distinct min/max values across fragments
     const firstMeta = fragmentMetas.values().next().value;
     if (!firstMeta) return;
 
@@ -1735,14 +1743,13 @@ export class QueryDO extends DurableObject<Env> {
    *  Slots are per-datacenter, named frag-{region}-slot-{N}.
    *  Idle slots cost nothing (hibernated DOs). Active tracking prevents
    *  concurrent queries from queueing behind each other on the same slot. */
-  private claimSlots(needed: number): number[] | null {
+  private claimSlots(needed: number): number[] {
     const slots: number[] = [];
     for (let i = 0; i < FRAGMENT_POOL_MAX && slots.length < needed; i++) {
       if (!this.activeFragmentSlots.has(i)) slots.push(i);
     }
-    if (slots.length < needed) return null; // not enough capacity
     for (const s of slots) this.activeFragmentSlots.add(s);
-    return slots;
+    return slots; // may be fewer than requested — caller handles overflow
   }
 
   private releaseSlots(slots: number[]): void {
@@ -1753,33 +1760,44 @@ export class QueryDO extends DurableObject<Env> {
    *  Uses Promise.allSettled for partial failure tolerance.
    *  Pool is per-datacenter (frag-{region}-slot-{N}), max FRAGMENT_POOL_MAX slots. */
   private async executeWithFragmentDOs(query: QueryDescriptor, prunedFragments: TableMeta[], t0: number): Promise<QueryResult> {
-    const fragments = prunedFragments.map((meta, i) => [i, meta] as const);
-    const slotsNeeded = Math.min(fragments.length, FRAGMENT_POOL_MAX - this.activeFragmentSlots.size);
+    const allFragItems = prunedFragments.map(meta => ({ r2Key: meta.r2Key, meta }));
 
-    if (slotsNeeded <= 0) {
-      // All slots busy — scan locally rather than queueing
-      const partials: QueryResult[] = [];
-      for (const [, meta] of fragments) {
-        partials.push(await this.scanPages(query, meta, t0));
-      }
-      return mergeQueryResults(partials, query);
-    }
-
-    const slots = this.claimSlots(slotsNeeded)!;
-    const chunkSize = Math.ceil(fragments.length / slots.length);
-
-    // Partition fragments across claimed slots
-    const groups: { r2Key: string; meta: TableMeta }[][] = [];
-    for (let i = 0; i < fragments.length; i += chunkSize) {
-      groups.push(fragments.slice(i, i + chunkSize).map(([, meta]) => ({
-        r2Key: meta.r2Key, meta,
-      })));
-    }
+    // Claim as many slots as we can (may be fewer than fragments)
+    const slotsWanted = Math.min(allFragItems.length, FRAGMENT_POOL_MAX);
+    const slots = this.claimSlots(slotsWanted);
 
     const region = (await this.ctx.storage.get<string>("region")) ?? "default";
 
     try {
+      if (slots.length === 0) {
+        // All slots busy — scan locally in parallel batches
+        this.log("info", "fragment_fan_out_local", { fragments: allFragItems.length, reason: "no_slots" });
+        const partials = await Promise.all(
+          allFragItems.map(({ meta }) => this.scanPages(query, meta, t0)),
+        );
+        return mergeQueryResults(partials, query);
+      }
+
+      // Distribute fragments across available slots
+      const chunkSize = Math.ceil(allFragItems.length / slots.length);
+      const groups: typeof allFragItems[] = [];
+      for (let i = 0; i < allFragItems.length; i += chunkSize) {
+        groups.push(allFragItems.slice(i, i + chunkSize));
+      }
+
+      this.log("info", "fragment_fan_out", {
+        fragments: allFragItems.length, slots: slots.length,
+        chunksPerSlot: chunkSize,
+      });
+
       const settled = await Promise.allSettled(groups.map(async (group, idx) => {
+        if (idx >= slots.length) {
+          // Overflow: scan locally (shouldn't happen with Math.ceil, but safe)
+          const partials = await Promise.all(
+            group.map(({ meta }) => this.scanPages(query, meta, t0)),
+          );
+          return mergeQueryResults(partials, query);
+        }
         const doName = `frag-${region}-slot-${slots[idx]}`;
         const doId = this.env.FRAGMENT_DO.idFromName(doName);
         const fragmentRpc = this.env.FRAGMENT_DO.get(doId) as unknown as { scanRpc(fragments: typeof group, query: QueryDescriptor): Promise<QueryResult> };
