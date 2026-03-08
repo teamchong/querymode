@@ -13,7 +13,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
 
     let { minValue: min, maxValue: max } = page;
     let val = filter.value;
-    if (typeof val === "object") continue;
+    if (typeof val === "object" && !Array.isArray(val)) continue;
 
     // Coerce bigint↔number for cross-type comparisons
     if (typeof min === "bigint" && typeof val === "number") val = BigInt(Math.trunc(val as number));
@@ -141,6 +141,8 @@ export function assembleRows(
     // AND filters must all pass
     const andPass = query.filters.every(f => {
       const v = row[f.column];
+      if (f.op === "is_null") return v === null || v === undefined;
+      if (f.op === "is_not_null") return v !== null && v !== undefined;
       return v !== null && matchesFilter(v, f);
     });
     if (!andPass) continue;
@@ -150,6 +152,8 @@ export function assembleRows(
       const orPass = query.filterGroups.some(group =>
         group.every(f => {
           const v = row[f.column];
+          if (f.op === "is_null") return v === null || v === undefined;
+          if (f.op === "is_not_null") return v !== null && v !== undefined;
           return v !== null && matchesFilter(v, f);
         }),
       );
@@ -491,16 +495,28 @@ export function matchesFilter(
     }
     case "like": {
       if (typeof val !== "string" || typeof t !== "string") return false;
-      const pattern = "^" + t.replace(/%/g, ".*").replace(/_/g, ".") + "$";
-      return new RegExp(pattern, "i").test(val);
+      return compileLikeRegex(t).test(val);
     }
     case "not_like": {
       if (typeof val !== "string" || typeof t !== "string") return false;
-      const pattern = "^" + t.replace(/%/g, ".*").replace(/_/g, ".") + "$";
-      return !new RegExp(pattern, "i").test(val);
+      return !compileLikeRegex(t).test(val);
     }
     default:    return true;
   }
+}
+
+/** Cache compiled LIKE regexes — avoids re-compilation per row. */
+const likeRegexCache = new Map<string, RegExp>();
+
+function compileLikeRegex(pattern: string): RegExp {
+  let cached = likeRegexCache.get(pattern);
+  if (cached) return cached;
+  // Escape regex metacharacters, then replace SQL wildcards
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\*]/g, "\\$&");
+  const re = new RegExp("^" + escaped.replace(/%/g, ".*").replace(/_/g, ".") + "$", "i");
+  likeRegexCache.set(pattern, re);
+  if (likeRegexCache.size > 1000) likeRegexCache.clear(); // prevent unbounded growth
+  return re;
 }
 
 export function bigIntReplacer(_key: string, value: unknown): unknown {

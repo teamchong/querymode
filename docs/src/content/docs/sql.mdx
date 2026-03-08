@@ -89,7 +89,7 @@ SELECT CAST(age AS text) AS age_str
 
 ### Aggregate functions
 
-`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT col)`.
+`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT col)`, `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)`.
 
 ### JOINs
 
@@ -98,13 +98,21 @@ SELECT * FROM orders JOIN users ON orders.user_id = users.id
 SELECT * FROM orders LEFT JOIN users ON orders.user_id = users.id
 ```
 
+### Vector search
+
+```sql
+SELECT * FROM images WHERE embedding NEAR [0.1, 0.2, 0.3] TOPK 10
+```
+
+The `NEAR` operator performs vector similarity search on the specified column. `TOPK` limits results to the K nearest neighbors. Uses IVF-PQ index when available, falls back to flat SIMD scan.
+
 ## How it works
 
 ```
 SQL string → lexer → parser → AST → compiler → QueryDescriptor → operator pipeline
 ```
 
-The SQL frontend is a recursive descent parser written in TypeScript. It produces an AST that the compiler maps to the same `QueryDescriptor` the DataFrame API uses. Features that can be expressed as `FilterOp[]` (simple AND conditions with eq/gt/lt/etc) are pushed down to the inner executor. Features that can't (OR, LIKE, NOT IN, HAVING, multi-column ORDER BY, CASE/CAST/arithmetic) are handled by `SqlWrappingExecutor`, which applies them on the result rows.
+The SQL frontend is a recursive descent parser written in TypeScript. It produces an AST that the compiler maps to the same `QueryDescriptor` the DataFrame API uses. Features that can be expressed as `FilterOp[]` (AND conditions with eq/gt/lt/in/not_in/between/not_between/like/not_like/is_null/is_not_null) are pushed down to the inner executor. Simple OR expressions are decomposed into `filterGroups` for pushdown. Features that can't be pushed down (complex OR expressions, HAVING, multi-column ORDER BY, CASE/CAST/arithmetic) are handled by `SqlWrappingExecutor`, which applies them on the result rows.
 
 ## Programmatic access
 
@@ -125,7 +133,7 @@ const descriptor = sqlToDescriptor("SELECT * FROM users WHERE age > 25")
 // compileFull returns additional metadata for the wrapping executor
 const result = compileFull(ast)
 // result.descriptor — QueryDescriptor
-// result.whereExpr — full WHERE expression (when OR/LIKE/NOT IN present)
+// result.whereExpr — WHERE expression (when predicates can't be fully pushed down)
 // result.havingExpr — HAVING expression
 // result.allOrderBy — multi-column ORDER BY
 // result.computedExprs — CASE/CAST/arithmetic in SELECT

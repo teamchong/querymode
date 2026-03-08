@@ -469,6 +469,8 @@ function applyAndFilters(
     const kept: number[] = [];
     for (const idx of src) {
       const v = values[idx];
+      if (filter.op === "is_null") { if (v === null || v === undefined) kept.push(idx); continue; }
+      if (filter.op === "is_not_null") { if (v !== null && v !== undefined) kept.push(idx); continue; }
       if (v !== null && v !== undefined && matchesFilter(v as Row[string], filter)) {
         kept.push(idx);
       }
@@ -1286,6 +1288,8 @@ export class FilterOperator implements Operator {
     // AND filters must all pass
     const andPass = this.filters.every(f => {
       const v = row[f.column];
+      if (f.op === "is_null") return v === null || v === undefined;
+      if (f.op === "is_not_null") return v !== null && v !== undefined;
       return v !== null && matchesFilter(v, f);
     });
     if (!andPass) return false;
@@ -1295,6 +1299,8 @@ export class FilterOperator implements Operator {
       return this.filterGroups.some(group =>
         group.every(f => {
           const v = row[f.column];
+          if (f.op === "is_null") return v === null || v === undefined;
+          if (f.op === "is_not_null") return v !== null && v !== undefined;
           return v !== null && matchesFilter(v, f);
         }),
       );
@@ -1329,6 +1335,8 @@ export class FilterOperator implements Operator {
         for (const f of this.filters) {
           const vals = batch.columns.get(f.column);
           const v = vals ? vals[idx] : null;
+          if (f.op === "is_null") { if (v !== null && v !== undefined) { andPass = false; break; } continue; }
+          if (f.op === "is_not_null") { if (v === null || v === undefined) { andPass = false; break; } continue; }
           if (v === null || v === undefined || !matchesFilter(v as Row[string], f)) {
             andPass = false;
             break;
@@ -1341,6 +1349,8 @@ export class FilterOperator implements Operator {
             group.every(f => {
               const vals = batch.columns.get(f.column);
               const v = vals ? vals[idx] : null;
+              if (f.op === "is_null") return v === null || v === undefined;
+              if (f.op === "is_not_null") return v !== null && v !== undefined;
               return v !== null && v !== undefined && matchesFilter(v as Row[string], f);
             }),
           );

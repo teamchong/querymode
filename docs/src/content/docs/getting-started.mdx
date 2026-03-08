@@ -78,7 +78,7 @@ const csv = `id,name,amount
 2,Bob,80
 3,Carol,200`
 
-const qm = QueryMode.fromCSV(csv, "orders")
+const qm = await QueryMode.fromCSV(csv, "orders")
 const result = await qm.filter("amount", "gt", 100).collect()
 ```
 

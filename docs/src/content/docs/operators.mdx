@@ -18,11 +18,13 @@ Pull-based: call `next()` to get the next batch of rows. Returns `null` when don
 
 | Category | Operator | Description |
 |----------|----------|-------------|
-| **Filter** | `FilterOperator` | eq, neq, gt, gte, lt, lte, in |
+| **Scan** | `ScanOperator` | Page reads with prefetch, coalesced I/O, WASM SIMD filter |
+| **Filter** | `FilterOperator` | eq, neq, gt, gte, lt, lte, in, not_in, between, not_between, like, not_like, is_null, is_not_null |
 | **Filter** | `SubqueryInOperator` | Semi-join filter against a value set |
 | **Project** | `ProjectOperator` | Column selection |
 | **Transform** | `ComputedColumnOperator` | Arbitrary `(row) => value` per row |
 | **Aggregate** | `AggregateOperator` | sum, avg, min, max, count, count_distinct, stddev, variance, median, percentile |
+| **Aggregate** | `WasmAggregateOperator` | SIMD-accelerated numeric aggregates (int64, float64) |
 | **Sort** | `ExternalSortOperator` | Disk-spilling merge sort with R2 spill |
 | **Sort** | `InMemorySortOperator` | In-memory sort for small datasets |
 | **Sort** | `TopKOperator` | Heap-based top-K without full sort |

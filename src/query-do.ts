@@ -463,8 +463,8 @@ export class QueryDO extends DurableObject<Env> {
       result.sort((a, b) => {
         const va = a[sc], vb = b[sc];
         if (va == null && vb == null) return 0;
-        if (va == null) return dir;
-        if (vb == null) return -dir;
+        if (va == null) return 1;
+        if (vb == null) return -1;
         return va < vb ? -dir : va > vb ? dir : 0;
       });
     }
@@ -722,8 +722,8 @@ export class QueryDO extends DurableObject<Env> {
         ?? (await this.loadTableFromR2(query.table)) ?? undefined;
       if (meta) return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
     }
-    query.aggregates = [{ fn: "count", column: "*" }];
-    const result = await this.executeQuery(query);
+    const countQuery = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
+    const result = await this.executeQuery(countQuery);
     return (result.rows[0]?.["count_*"] as number) ?? 0;
   }
 
@@ -1737,24 +1737,23 @@ export class QueryDO extends DurableObject<Env> {
     const hasLimit = query.limit !== undefined;
     const hasAgg = query.aggregates && query.aggregates.length > 0;
     if ((!hasLimit || hasAgg) && !query.vectorSearch) {
-      // Build a pipeline per fragment using executeWithPipeline, then merge
-      const partials: QueryResult[] = [];
-      for (const meta of fragments) {
-        partials.push(await this.executeWithPipeline(query, meta, t0));
-      }
+      // Build a pipeline per fragment in parallel, then merge
+      const partials = await Promise.all(
+        fragments.map(meta => this.executeWithPipeline(query, meta, t0)),
+      );
       return mergeQueryResults(partials, query);
     }
 
-    // Bounded queries: safe to materialize per-fragment
-    const partials: QueryResult[] = [];
-    for (const meta of fragments) {
-      const hasPages = meta.columns.some(c => c.pages.length > 0);
-      if (!hasPages && meta.format === "lance" && meta.r2Key) {
-        partials.push(await this.executeLanceWholeFile(query, meta, t0));
-      } else {
-        partials.push(await this.scanPages(query, meta, t0));
-      }
-    }
+    // Bounded queries: safe to materialize per-fragment in parallel
+    const partials = await Promise.all(
+      fragments.map(meta => {
+        const hasPages = meta.columns.some(c => c.pages.length > 0);
+        if (!hasPages && meta.format === "lance" && meta.r2Key) {
+          return this.executeLanceWholeFile(query, meta, t0);
+        }
+        return this.scanPages(query, meta, t0);
+      }),
+    );
     return mergeQueryResults(partials, query);
   }
 

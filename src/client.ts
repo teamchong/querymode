@@ -933,8 +933,8 @@ export class MaterializedExecutor implements QueryExecutor {
             switch (agg.fn) {
               case "sum": out[alias] = vals.reduce((a, b) => a + b, 0); break;
               case "avg": out[alias] = vals.reduce((a, b) => a + b, 0) / vals.length; break;
-              case "min": out[alias] = Math.min(...vals); break;
-              case "max": out[alias] = Math.max(...vals); break;
+              case "min": out[alias] = vals.reduce((a, b) => a < b ? a : b); break;
+              case "max": out[alias] = vals.reduce((a, b) => a > b ? a : b); break;
               default: out[alias] = null;
             }
           }

@@ -103,12 +103,19 @@ Same `SpillBackend` interface for R2 (edge) and filesystem (local).
 
 R2 has per-bucket rate limits. At PB scale, a single bucket becomes a bottleneck. QueryMode distributes data across up to 4 R2 buckets (`DATA_BUCKET` + `DATA_BUCKET_1/2/3`) using FNV-1a hash routing on the R2 key prefix. All DOs (Master, Query, Fragment) and the Worker use the shared `resolveBucket()` utility — reads and writes are automatically routed to the correct shard.
 
-```typescript
-// wrangler.toml — bind extra buckets
-[durable_objects]
-DATA_BUCKET_1 = { bucket_name = "data-shard-1" }
-DATA_BUCKET_2 = { bucket_name = "data-shard-2" }
-DATA_BUCKET_3 = { bucket_name = "data-shard-3" }
+```toml
+# wrangler.toml — bind extra buckets
+[[r2_buckets]]
+binding = "DATA_BUCKET_1"
+bucket_name = "data-shard-1"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET_2"
+bucket_name = "data-shard-2"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET_3"
+bucket_name = "data-shard-3"
 ```
 
 ### Partition catalog
@@ -170,7 +177,7 @@ Tests run in two runtimes:
 
 | Runtime | What | Count |
 |---------|------|-------|
-| **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | 132 tests |
-| **Node** | DuckDB conformance (1M-5M rows), fixture files | 107+ tests |
+| **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | 150+ tests |
+| **Node** | DuckDB conformance (1M-5M rows), fixture files, SQL, infra | 380+ tests |
 
 Conformance tests validate every operator against DuckDB at scale. CI benchmarks compare QueryMode vs DuckDB on every push.

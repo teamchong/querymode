@@ -31,6 +31,8 @@ export class PartitionCatalog {
   private index = new Map<string, number[]>();
   /** All fragment IDs in the catalog (for filters that can't use the index). */
   private allFragmentIds: number[] = [];
+  /** O(1) dedup during construction/registration. */
+  private allFragmentIdSet = new Set<number>();
 
   constructor(column: string) {
     this.column = column;
@@ -39,14 +41,14 @@ export class PartitionCatalog {
   /** Build catalog from fragment metadata by extracting min/max per fragment. */
   static fromFragments(column: string, fragments: Map<number, TableMeta>): PartitionCatalog {
     const catalog = new PartitionCatalog(column);
-    const allIds: number[] = [];
+    // Use Sets during construction for O(1) dedup
+    const indexSets = new Map<string, Set<number>>();
 
     for (const [fragId, meta] of fragments) {
-      allIds.push(fragId);
+      catalog.allFragmentIdSet.add(fragId);
       const col = meta.columns.find(c => c.name === column);
       if (!col) continue;
 
-      // Collect all distinct values from page-level min/max stats
       const values = new Set<string>();
       for (const page of col.pages) {
         if (page.minValue !== undefined) values.add(String(page.minValue));
@@ -54,19 +56,23 @@ export class PartitionCatalog {
       }
 
       for (const v of values) {
-        let entry = catalog.index.get(v);
-        if (!entry) { entry = []; catalog.index.set(v, entry); }
-        if (!entry.includes(fragId)) entry.push(fragId);
+        let entry = indexSets.get(v);
+        if (!entry) { entry = new Set(); indexSets.set(v, entry); }
+        entry.add(fragId);
       }
     }
 
-    catalog.allFragmentIds = allIds;
+    catalog.allFragmentIds = [...catalog.allFragmentIdSet];
+    for (const [key, set] of indexSets) {
+      catalog.index.set(key, [...set]);
+    }
     return catalog;
   }
 
   /** Register a fragment's partition values (used during ingest). */
   register(fragmentId: number, values: (string | number | bigint)[]): void {
-    if (!this.allFragmentIds.includes(fragmentId)) {
+    if (!this.allFragmentIdSet.has(fragmentId)) {
+      this.allFragmentIdSet.add(fragmentId);
       this.allFragmentIds.push(fragmentId);
     }
     for (const v of values) {

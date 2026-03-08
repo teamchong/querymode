@@ -141,6 +141,10 @@ These execute the query and return results:
 | `toJSON(opts?)` | `string` | Export as JSON string |
 | `toCSV(opts?)` | `string` | Export as CSV string |
 | `show(n?)` | `void` | Print first N rows to console |
+| `lazy()` | `LazyResultHandle` | Page-at-a-time iteration without full materialization |
+| `stream(batchSize)` | `AsyncGenerator<Row[]>` | Async generator over result batches |
+| `cursor({ batchSize })` | `AsyncIterable<Row[]>` | Async iterable over batches |
+| `materialize()` | `DataFrame` | Execute and re-wrap as in-memory DataFrame |
 | `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
 | `dropTable()` | `DropResult` | Delete table and all fragments |
 
