@@ -54,6 +54,27 @@ globs = ["**/*.wasm"]
 fallthrough = false
 ```
 
+### Multi-bucket sharding (PB scale)
+
+At PB scale, a single R2 bucket hits rate limits. Add shard buckets for 2-4x throughput:
+
+```toml
+# wrangler.toml — add alongside the primary DATA_BUCKET
+[[r2_buckets]]
+binding = "DATA_BUCKET_1"
+bucket_name = "querymode-data-shard-1"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET_2"
+bucket_name = "querymode-data-shard-2"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET_3"
+bucket_name = "querymode-data-shard-3"
+```
+
+QueryMode automatically distributes tables across buckets using FNV-1a hash routing on the table name. All DOs (Master, Query, Fragment) and the Worker use the same deterministic routing — no configuration needed beyond binding the extra buckets.
+
 ### Deploy
 
 ```bash

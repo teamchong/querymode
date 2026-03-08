@@ -48,6 +48,22 @@ await qm.table("enriched_orders").append(rows, {
 
 Metadata is stored in DO storage alongside the table entry. The catalog layer can read it via `listTablesRpc()` or direct DO storage queries to decide what to keep, what to garbage-collect, and what depends on what.
 
+## Partitioned writes
+
+Split rows by a partition column during ingest. Each unique value gets its own fragment, enabling O(1) fragment lookup at query time via the partition catalog:
+
+```typescript
+await qm.table("events").append(rows, {
+  partitionBy: "region",
+})
+```
+
+With 1M fragments and `WHERE region = 'us'`, the partition catalog returns only the 3 fragments containing US data — no scanning of metadata for the other 999,997 fragments.
+
+The partition catalog is built automatically during ingest (when `partitionBy` is specified) and persisted in DO durable storage. It survives DO restarts and cold starts.
+
+For tables ingested without `partitionBy`, QueryMode auto-detects the best partition column from page-level min/max stats on the first multi-fragment query. Auto-detection uses ratio-based scoring to pick columns with good cardinality (e.g., `region` with 50 values) over near-unique columns (e.g., `timestamp` with 10K values).
+
 ## Drop tables
 
 Delete a table — removes all Lance fragments from R2 and clears DO metadata:
