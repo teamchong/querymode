@@ -1,5 +1,6 @@
 import type { Env, QueryDORpc, MasterDORpc } from "./types.js";
 import { bigIntReplacer } from "./decode.js";
+import { resolveBucket } from "./bucket.js";
 import { MasterDO } from "./master-do.js";
 import { QueryDO } from "./query-do.js";
 import { FragmentDO } from "./fragment-do.js";
@@ -81,7 +82,7 @@ export default {
       if (url.pathname === "/upload" && request.method === "POST") {
         const key = url.searchParams.get("key");
         if (!key) return new Response("Missing ?key=", { status: 400 });
-        await env.DATA_BUCKET.put(key, request.body);
+        await resolveBucket(env, key).put(key, request.body);
         return json({ uploaded: key });
       }
 

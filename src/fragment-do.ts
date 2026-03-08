@@ -9,6 +9,7 @@ import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline,
 } from "./operators.js";
+import { resolveBucket } from "./bucket.js";
 import wasmModule from "./wasm-module.js";
 
 const R2_TIMEOUT_MS = 10_000;
@@ -123,7 +124,7 @@ export class FragmentDO extends DurableObject<Env> {
             withRetry(() =>
               withTimeout(
                 (async () => {
-                  const obj = await this.env.DATA_BUCKET.get(r2Key, {
+                  const obj = await resolveBucket(this.env, r2Key).get(r2Key, {
                     range: { offset: c.offset, length: c.length },
                   });
                   return obj ? { ...c, data: await obj.arrayBuffer() } : null;
@@ -179,7 +180,8 @@ export class FragmentDO extends DurableObject<Env> {
     let spillBytesRead: number | undefined;
 
     if (needsPipeline && allRows.length > 0) {
-      const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+      const spillBucket = fragments.length > 0 ? resolveBucket(this.env, fragments[0].r2Key) : resolveBucket(this.env, "");
+      const spill = new R2SpillBackend(spillBucket, `__spill/${crypto.randomUUID()}`);
       try {
         // Yield allRows in bounded batches to avoid holding 2x copies
         const BATCH_SIZE = 4096;

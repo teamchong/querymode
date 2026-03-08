@@ -21,6 +21,8 @@ import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
 import { parseLanceV2Columns } from "./lance-v2.js";
 import { parseAndValidateQuery } from "./query-schema.js";
+import { resolveBucket } from "./bucket.js";
+import { PartitionCatalog } from "./partition-catalog.js";
 import wasmModule from "./wasm-module.js";
 
 const FRAGMENT_POOL_MAX = 20; // Max Fragment DO slots per datacenter (idle slots cost nothing)
@@ -387,6 +389,7 @@ class EdgeScanOperator implements Operator {
 export class QueryDO extends DurableObject<Env> {
   private footerCache = new VipCache<string, TableMeta>(FOOTER_CACHE_MAX, VIP_THRESHOLD);
   private datasetCache = new Map<string, DatasetMeta>();
+  private partitionCatalogs = new Map<string, PartitionCatalog>();
   private resultCache = new VipCache<string, QueryResult>(RESULT_CACHE_MAX, RESULT_VIP_THRESHOLD);
   private wasmEngine!: WasmEngine;
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
@@ -397,27 +400,9 @@ export class QueryDO extends DurableObject<Env> {
     super(ctx, env);
   }
 
-  /** Resolve R2 bucket for a given key. Supports multi-bucket sharding for PB-scale.
-   *  Routes by consistent hash of the R2 key prefix (table name). */
-  private resolveBucket(r2Key: string): R2Bucket {
-    const shardBuckets = [
-      this.env.DATA_BUCKET_1,
-      this.env.DATA_BUCKET_2,
-      this.env.DATA_BUCKET_3,
-    ].filter((b): b is R2Bucket => !!b);
-
-    if (shardBuckets.length === 0) return this.env.DATA_BUCKET;
-
-    // Include primary bucket in the shard set
-    const allBuckets = [this.env.DATA_BUCKET, ...shardBuckets];
-    // FNV-1a hash on the table prefix (first path segment)
-    const prefix = r2Key.split("/")[0] ?? r2Key;
-    let h = 0x811c9dc5;
-    for (let i = 0; i < prefix.length; i++) {
-      h ^= prefix.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return allBuckets[(h >>> 0) % allBuckets.length];
+  /** Shorthand for multi-bucket resolution. */
+  private r2(r2Key: string): R2Bucket {
+    return resolveBucket(this.env, r2Key);
   }
 
   private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
@@ -491,6 +476,42 @@ export class QueryDO extends DurableObject<Env> {
   }
 
   /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
+  /** Auto-detect best partition column and build catalog from fragment metadata. */
+  private buildPartitionCatalog(tableName: string, fragmentMetas: Map<number, TableMeta>): void {
+    if (fragmentMetas.size < 2) return; // no point for single-fragment tables
+
+    // Find column with the most distinct min/max values across fragments (best partition key)
+    const firstMeta = fragmentMetas.values().next().value;
+    if (!firstMeta) return;
+
+    let bestColumn = "";
+    let bestDistinct = 0;
+
+    for (const col of firstMeta.columns) {
+      if (col.pages.length === 0) continue;
+      const values = new Set<string>();
+      for (const [, meta] of fragmentMetas) {
+        const c = meta.columns.find(mc => mc.name === col.name);
+        if (!c) continue;
+        for (const page of c.pages) {
+          if (page.minValue !== undefined) values.add(String(page.minValue));
+          if (page.maxValue !== undefined) values.add(String(page.maxValue));
+        }
+      }
+      // Good partition key: many distinct values but not too many (< 10K)
+      if (values.size > bestDistinct && values.size < 10_000) {
+        bestDistinct = values.size;
+        bestColumn = col.name;
+      }
+    }
+
+    if (bestColumn) {
+      const catalog = PartitionCatalog.fromFragments(bestColumn, fragmentMetas);
+      this.partitionCatalogs.set(tableName, catalog);
+      this.log("info", "partition_catalog_built", catalog.stats());
+    }
+  }
+
   private evictDatasetCache(): void {
     if (this.datasetCache.size <= DATASET_CACHE_MAX) return;
     let oldestKey: string | null = null;
@@ -550,12 +571,12 @@ export class QueryDO extends DurableObject<Env> {
       if (cached && cached.updatedAt >= updatedAt) continue;
 
       // Stale or missing — re-read footer from R2
-      const head = await this.env.DATA_BUCKET.head(r2Key);
+      const head = await this.r2(r2Key).head(r2Key);
       if (!head) continue;
 
       const fileSize = BigInt(head.size);
       const tailSize = Math.min(Number(fileSize), 40);
-      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
+      const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
       if (!obj) continue;
 
       const tailBuf = await obj.arrayBuffer();
@@ -565,7 +586,7 @@ export class QueryDO extends DurableObject<Env> {
       if (fmt === "parquet") {
         const footerLen = getParquetFooterLength(tailBuf);
         if (!footerLen) continue;
-        const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+        const footerObj = await this.r2(r2Key).get(r2Key, {
           range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
         });
         if (!footerObj) continue;
@@ -834,7 +855,7 @@ export class QueryDO extends DurableObject<Env> {
     let cacheHit = !!fileData;
 
     if (!fileData) {
-      const obj = await this.env.DATA_BUCKET.get(meta.r2Key);
+      const obj = await this.r2(meta.r2Key).get(meta.r2Key);
       if (!obj) throw new Error(`Failed to read Lance file: ${meta.r2Key}`);
       fileData = await obj.arrayBuffer();
       bytesRead = fileData.byteLength;
@@ -1009,7 +1030,7 @@ export class QueryDO extends DurableObject<Env> {
           withRetry(() =>
             withTimeout(
               (async () => {
-                const obj = await this.env.DATA_BUCKET.get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
+                const obj = await this.r2(meta.r2Key).get(meta.r2Key, { range: { offset: c.offset, length: c.length } });
                 return obj ? { ...c, data: await obj.arrayBuffer() } : null;
               })(),
               R2_TIMEOUT_MS,
@@ -1090,7 +1111,7 @@ export class QueryDO extends DurableObject<Env> {
               const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
               let dictBuf = this.wasmEngine.cacheGet(dictKey);
               if (!dictBuf) {
-                const dictObj = await this.env.DATA_BUCKET.get(meta.r2Key, {
+                const dictObj = await this.r2(meta.r2Key).get(meta.r2Key, {
                   range: { offset: dictOffset, length: encoding.dictionaryPageLength },
                 });
                 if (dictObj) {
@@ -1188,10 +1209,10 @@ export class QueryDO extends DurableObject<Env> {
    * Handles ORDER BY without LIMIT, large GROUP BY, etc. on edge.
    */
   private async executeWithPipeline(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
-    const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+    const spill = new R2SpillBackend(this.r2(meta.r2Key), `__spill/${crypto.randomUUID()}`);
     try {
       const scan = new EdgeScanOperator(
-        this.env.DATA_BUCKET, this.wasmEngine, meta, query, this.footerCache,
+        this.r2(meta.r2Key), this.wasmEngine, meta, query, this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
         (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
       );
@@ -1224,7 +1245,8 @@ export class QueryDO extends DurableObject<Env> {
   /** Execute a join query on edge using operator pipeline with R2 spill. */
   private async executeJoin(query: QueryDescriptor, t0: number): Promise<QueryResult> {
     const join = query.join!;
-    const spill = new R2SpillBackend(this.env.DATA_BUCKET, `__spill/${crypto.randomUUID()}`);
+    const leftR2Key = query.table; // for bucket resolution before meta loads
+    const spill = new R2SpillBackend(this.r2(leftR2Key), `__spill/${crypto.randomUUID()}`);
 
     try {
       // Load left table meta
@@ -1236,7 +1258,7 @@ export class QueryDO extends DurableObject<Env> {
 
       // Build left scan (no sort/limit/agg — those apply after join)
       const leftScan = new EdgeScanOperator(
-        this.env.DATA_BUCKET, this.wasmEngine, leftMeta,
+        this.r2(leftMeta.r2Key), this.wasmEngine, leftMeta,
         { ...query, sortColumn: undefined, limit: undefined, offset: undefined, aggregates: undefined, join: undefined },
         this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
@@ -1256,7 +1278,7 @@ export class QueryDO extends DurableObject<Env> {
 
       // Build right scan
       const rightScan = new EdgeScanOperator(
-        this.env.DATA_BUCKET, this.wasmEngine, rightMeta, join.right,
+        this.r2(rightMeta.r2Key), this.wasmEngine, rightMeta, join.right,
         this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
         (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
@@ -1328,7 +1350,7 @@ export class QueryDO extends DurableObject<Env> {
 
     if (!indexData) {
       // Try loading from R2
-      const indexObj = await this.env.DATA_BUCKET.get(indexPath);
+      const indexObj = await this.r2(indexPath).get(indexPath);
       if (!indexObj) return null; // No index → fall through to flat search
 
       indexData = await indexObj.arrayBuffer();
@@ -1379,7 +1401,7 @@ export class QueryDO extends DurableObject<Env> {
   private async readColumnMeta(r2Key: string, footer: Footer): Promise<ColumnMeta[]> {
     const len = Number(footer.columnMetaOffsetsStart) - Number(footer.columnMetaStart);
     if (len <= 0) return [];
-    const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(footer.columnMetaStart), length: len } });
+    const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(footer.columnMetaStart), length: len } });
     if (!obj) return [];
     return parseColumnMetaFromProtobuf(await obj.arrayBuffer(), footer.numColumns);
   }
@@ -1390,12 +1412,12 @@ export class QueryDO extends DurableObject<Env> {
       `data/${tableName}.lance`, `data/${tableName}.parquet`, `data/${tableName}`,
     ];
     for (const r2Key of candidates) {
-      const head = await this.env.DATA_BUCKET.head(r2Key);
+      const head = await this.r2(r2Key).head(r2Key);
       if (!head) continue;
 
       const fileSize = BigInt(head.size);
       const tailSize = Math.min(Number(fileSize), 40);
-      const obj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
+      const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
       if (!obj) continue;
 
       const tailBuf = await obj.arrayBuffer();
@@ -1406,7 +1428,7 @@ export class QueryDO extends DurableObject<Env> {
         if (!footerLen) continue;
 
         const footerOffset = Number(fileSize) - footerLen - 8;
-        const footerObj = await this.env.DATA_BUCKET.get(r2Key, { range: { offset: footerOffset, length: footerLen } });
+        const footerObj = await this.r2(r2Key).get(r2Key, { range: { offset: footerOffset, length: footerLen } });
         if (!footerObj) continue;
 
         const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
@@ -1449,7 +1471,7 @@ export class QueryDO extends DurableObject<Env> {
   /** Discover a multi-fragment Lance dataset in R2 by listing _versions/ manifests. */
   private async loadDatasetFromR2(tableName: string): Promise<DatasetMeta | null> {
     for (const prefix of [`${tableName}.lance/`, `${tableName}/`, `data/${tableName}.lance/`, `data/${tableName}/`]) {
-      const listed = await this.env.DATA_BUCKET.list({ prefix: `${prefix}_versions/`, limit: 100 });
+      const listed = await this.r2(prefix).list({ prefix: `${prefix}_versions/`, limit: 100 });
       const manifestKeys = listed.objects
         .filter(o => o.key.endsWith(".manifest"))
         .sort((a, b) => a.key.localeCompare(b.key));
@@ -1457,7 +1479,7 @@ export class QueryDO extends DurableObject<Env> {
 
       // Read latest manifest
       const latestKey = manifestKeys[manifestKeys.length - 1].key;
-      const manifestObj = await this.env.DATA_BUCKET.get(latestKey);
+      const manifestObj = await this.r2(latestKey).get(latestKey);
       if (!manifestObj) continue;
 
       const manifest = parseManifest(await manifestObj.arrayBuffer());
@@ -1474,13 +1496,13 @@ export class QueryDO extends DurableObject<Env> {
         let head: { size: number } | null = null;
         let fragKey = candidates[0];
         for (const candidate of candidates) {
-          head = await this.env.DATA_BUCKET.head(candidate);
+          head = await this.r2(candidate).head(candidate);
           if (head) { fragKey = candidate; break; }
         }
         if (!head) continue;
 
         const fileSize = BigInt(head.size);
-        const footerObj = await this.env.DATA_BUCKET.get(fragKey, { range: { offset: Number(fileSize) - 40, length: 40 } });
+        const footerObj = await this.r2(fragKey).get(fragKey, { range: { offset: Number(fileSize) - 40, length: 40 } });
         if (!footerObj) continue;
 
         const footer = parseFooter(await footerObj.arrayBuffer());
@@ -1510,6 +1532,7 @@ export class QueryDO extends DurableObject<Env> {
         fragmentMetas, totalRows: manifest.totalRows, updatedAt: Date.now(),
       };
       this.datasetCache.set(tableName, dataset);
+      this.buildPartitionCatalog(tableName, fragmentMetas);
       this.evictDatasetCache();
       return dataset;
     }
@@ -1518,16 +1541,16 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Load Parquet file metadata from R2 (head → tail → footer → TableMeta). Returns null if file not found or invalid. */
   private async loadParquetR2Meta(r2Key: string): Promise<TableMeta | null> {
-    const head = await this.env.DATA_BUCKET.head(r2Key);
+    const head = await this.r2(r2Key).head(r2Key);
     if (!head) return null;
     const fileSize = BigInt(head.size);
-    const tailObj = await this.env.DATA_BUCKET.get(r2Key, {
+    const tailObj = await this.r2(r2Key).get(r2Key, {
       range: { offset: Math.max(0, Number(fileSize) - 8), length: Math.min(8, Number(fileSize)) },
     });
     if (!tailObj) return null;
     const footerLen = getParquetFooterLength(await tailObj.arrayBuffer());
     if (!footerLen) return null;
-    const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+    const footerObj = await this.r2(r2Key).get(r2Key, {
       range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
     });
     if (!footerObj) return null;
@@ -1566,13 +1589,14 @@ export class QueryDO extends DurableObject<Env> {
       manifest: { version: 0, fragments: parquetPaths.map((p, idx) => ({ id: idx, filePath: p, physicalRows: 0 })), totalRows, schema: [] },
       fragmentMetas, totalRows, updatedAt: Date.now(),
     });
+    this.buildPartitionCatalog(tableName, fragmentMetas);
     this.evictDatasetCache();
     return dataset;
   }
 
   /** Load an Iceberg table from an explicit metadata.json key (no R2 list() needed). */
   private async loadIcebergByKey(tableName: string, metadataKey: string): Promise<IcebergDatasetMeta | null> {
-    const metaObj = await this.env.DATA_BUCKET.get(metadataKey);
+    const metaObj = await this.r2(metadataKey).get(metadataKey);
     if (!metaObj) return null;
 
     const metaJson = await metaObj.text();
@@ -1583,7 +1607,7 @@ export class QueryDO extends DurableObject<Env> {
     const prefix = metadataKey.replace(/metadata\/.*$/, "");
 
     const manifestListKey = `${prefix}${icebergMeta.manifestListPath}`;
-    const manifestListObj = await this.env.DATA_BUCKET.get(manifestListKey);
+    const manifestListObj = await this.r2(manifestListKey).get(manifestListKey);
     if (!manifestListObj) return null;
 
     const manifestListBytes = await manifestListObj.arrayBuffer();
@@ -1599,21 +1623,21 @@ export class QueryDO extends DurableObject<Env> {
   /** Discover an Iceberg table in R2 by listing metadata/ for .metadata.json files. */
   private async loadIcebergFromR2(tableName: string): Promise<IcebergDatasetMeta | null> {
     for (const prefix of [`${tableName}/`, `data/${tableName}/`]) {
-      const listed = await this.env.DATA_BUCKET.list({ prefix: `${prefix}metadata/`, limit: 100 });
+      const listed = await this.r2(prefix).list({ prefix: `${prefix}metadata/`, limit: 100 });
       const metadataKeys = listed.objects
         .filter(o => o.key.endsWith(".metadata.json"))
         .sort((a, b) => a.key.localeCompare(b.key));
       if (metadataKeys.length === 0) continue;
 
       const latestKey = metadataKeys[metadataKeys.length - 1].key;
-      const metaObj = await this.env.DATA_BUCKET.get(latestKey);
+      const metaObj = await this.r2(latestKey).get(latestKey);
       if (!metaObj) continue;
 
       const icebergMeta = parseIcebergMetadata(await metaObj.text());
       if (!icebergMeta) continue;
 
       const manifestListKey = `${prefix}${icebergMeta.manifestListPath}`;
-      const manifestListObj = await this.env.DATA_BUCKET.get(manifestListKey);
+      const manifestListObj = await this.r2(manifestListKey).get(manifestListKey);
       if (!manifestListObj) continue;
 
       const parquetPaths = extractParquetPathsFromManifest(await manifestListObj.arrayBuffer());
@@ -1629,12 +1653,37 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Execute a query across multiple fragments of a dataset. */
   private async executeMultiFragment(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
-    // Fragment-level pruning: skip entire files based on column min/max stats
-    const allFragments = [...dataset.fragmentMetas.values()];
+    // Phase 1: Partition catalog pruning (O(1) lookup by partition key)
+    let candidateFragmentIds: Set<number> | null = null;
+    if (query.filters.length > 0) {
+      // Try each known partition catalog for this dataset
+      const catalog = this.partitionCatalogs.get(dataset.name);
+      if (catalog) {
+        const pruned = catalog.prune(query.filters);
+        if (pruned !== null) {
+          candidateFragmentIds = new Set(pruned);
+          this.log("info", "partition_catalog_prune", {
+            column: catalog.column,
+            total: dataset.fragmentMetas.size,
+            afterCatalog: candidateFragmentIds.size,
+          });
+        }
+      }
+    }
+
+    // Phase 2: Fragment-level min/max pruning on remaining candidates
+    const allFragments = candidateFragmentIds
+      ? [...dataset.fragmentMetas.entries()]
+          .filter(([id]) => candidateFragmentIds!.has(id))
+          .map(([, meta]) => meta)
+      : [...dataset.fragmentMetas.values()];
+
     const fragments = allFragments.filter(meta =>
       !canSkipFragment(meta, query.filters, query.filterGroups),
     );
-    const fragmentsSkipped = allFragments.length - fragments.length;
+    const fragmentsSkipped = (candidateFragmentIds
+      ? dataset.fragmentMetas.size
+      : allFragments.length) - fragments.length;
     if (fragmentsSkipped > 0) {
       this.log("info", "fragment_prune", {
         total: allFragments.length, skipped: fragmentsSkipped, remaining: fragments.length,
@@ -1863,6 +1912,9 @@ export class QueryDO extends DurableObject<Env> {
         memoryMB: Math.round(this.wasmEngine.exports.memory.buffer.byteLength / (1024 * 1024)),
       },
       activeFragmentSlots: this.activeFragmentSlots.size,
+      partitionCatalogs: [...this.partitionCatalogs.entries()].map(([name, cat]) => ({
+        table: name, ...cat.stats(),
+      })),
     };
   }
 

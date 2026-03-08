@@ -2,6 +2,7 @@ import type {
   AggregateOp,
   AppendOptions,
   AppendResult,
+  DataType,
   DropResult,
   ExplainResult,
   FilterOp,
@@ -764,6 +765,14 @@ export class DataFrame<T extends Row = Row> {
           durationMs: 0,
         };
       },
+      async explain(_query: QueryDescriptor): Promise<ExplainResult> {
+        return {
+          table: "__from_operator__", format: "lance", totalRows: 0,
+          columns: [], pagesTotal: 0, pagesSkipped: 0, pagesScanned: 0,
+          estimatedBytes: 0, estimatedR2Reads: 0, fragments: 0,
+          filters: [], metaCached: false, estimatedRows: 0,
+        };
+      },
     };
     return new DataFrame<R>("__from_operator__", drainExecutor);
   }
@@ -898,7 +907,8 @@ export class MaterializedExecutor implements QueryExecutor {
     }
 
     // Apply aggregation
-    if (query.aggregates && query.aggregates.length > 0) {
+    const aggregates: AggregateOp[] | undefined = query.aggregates;
+    if (aggregates && aggregates.length > 0) {
       const groups = query.groupBy && query.groupBy.length > 0 ? query.groupBy : undefined;
       const buckets = new Map<string, Row[]>();
       for (const row of rows) {
@@ -911,7 +921,7 @@ export class MaterializedExecutor implements QueryExecutor {
       for (const [, bucket] of buckets) {
         const out: Row = {};
         if (groups) for (const g of groups) out[g] = bucket[0][g];
-        for (const agg of query.aggregates) {
+        for (const agg of aggregates) {
           const alias = agg.alias ?? `${agg.fn}_${agg.column}`;
           if (agg.fn === "count") {
             out[alias] = agg.column === "*" ? bucket.length : bucket.filter(r => r[agg.column] != null).length;

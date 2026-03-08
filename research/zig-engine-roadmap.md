@@ -146,11 +146,25 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - `executeExplain()` reports `fragmentsSkipped` in explain output
 - `executeWithFragmentDOs()` accepts pruned fragment list (no wasted DO slots)
 
-### Multi-Bucket Sharding — FOUNDATION
+### Multi-Bucket Sharding — DONE
 - `Env` supports `DATA_BUCKET_1`, `DATA_BUCKET_2`, `DATA_BUCKET_3` (optional)
-- `resolveBucket(r2Key)` routes by FNV-1a hash of table prefix across all available buckets
-- Bypasses R2 per-bucket rate limits by distributing data across buckets
-- Remaining: wire `resolveBucket` into R2 read paths, add shard-aware ingest
+- `resolveBucket(env, r2Key)` in `src/bucket.ts` — shared utility, FNV-1a hash routing
+- Cached shard bucket array (computed once per DO lifetime)
+- **All 32 R2 call sites wired**: query-do.ts (23), fragment-do.ts (2), master-do.ts (12), worker.ts (1)
+- Reads, writes, list, head, delete all route through `resolveBucket()`
+- 2-4x R2 rate limit increase (10K→40K reads/s with 4 buckets)
+
+### Partition Catalog — DONE
+- `PartitionCatalog` in `src/partition-catalog.ts` — O(1) lookup by partition key values
+- Maps partition values → fragment IDs (no min/max evaluation needed)
+- Auto-built when datasets load: picks best column (most distinct values < 10K)
+- Supports `eq`, `in`, `neq`, `not_in` filters for instant fragment pruning
+- Two-phase pruning in `executeMultiFragment()`: catalog → min/max → scan
+- Stats exposed via diagnostics endpoint
+
+**Remaining:**
+- Partition-aware ingest (write data to correct shard bucket by partition key)
+- User-specified partition column (currently auto-detected)
 
 ## P3: Host Import Pattern for R2 I/O (from gitmode)
 

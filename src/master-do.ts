@@ -5,6 +5,7 @@ import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import type { QueryDORpc } from "./types.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+import { resolveBucket } from "./bucket.js";
 import wasmModule from "./wasm-module.js";
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
@@ -63,14 +64,14 @@ export class MasterDO extends DurableObject<Env> {
     const tableName = r2Prefix.replace(/\/$/, "").replace(/\.lance$/, "").split("/").pop() ?? r2Prefix;
 
     // Find latest manifest
-    const listed = await this.env.DATA_BUCKET.list({ prefix: `${r2Prefix}_versions/`, limit: 100 });
+    const listed = await resolveBucket(this.env, r2Prefix).list({ prefix: `${r2Prefix}_versions/`, limit: 100 });
     const manifestKeys = listed.objects
       .filter(o => o.key.endsWith(".manifest"))
       .sort((a, b) => a.key.localeCompare(b.key));
     if (manifestKeys.length === 0) throw new Error("No manifests found");
 
     const latestKey = manifestKeys[manifestKeys.length - 1].key;
-    const manifestObj = await this.env.DATA_BUCKET.get(latestKey);
+    const manifestObj = await resolveBucket(this.env, latestKey).get(latestKey);
     if (!manifestObj) throw new Error("Failed to read manifest");
 
     const manifest = parseManifest(await manifestObj.arrayBuffer());
@@ -172,7 +173,7 @@ export class MasterDO extends DurableObject<Env> {
     const dataR2Key = `${r2Prefix}${dataFilePath}`;
 
     // PUT data file to R2 (unique name = no conflict)
-    await this.env.DATA_BUCKET.put(dataR2Key, fragmentBytes);
+    await resolveBucket(this.env, dataR2Key).put(dataR2Key, fragmentBytes);
 
     // CAS loop for manifest update
     const MAX_RETRIES = 10;
@@ -180,7 +181,7 @@ export class MasterDO extends DurableObject<Env> {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       // Read current _latest with ETag
-      const latestObj = await this.env.DATA_BUCKET.get(latestKey);
+      const latestObj = await resolveBucket(this.env, latestKey).get(latestKey);
       let currentVersion = 0;
       let etag: string | undefined;
 
@@ -198,7 +199,7 @@ export class MasterDO extends DurableObject<Env> {
       let existingFragments: { id: number; filePath: string; physicalRows: number }[] = [];
       if (currentVersion > 0) {
         const manifestKey = `${r2Prefix}_versions/${currentVersion}.manifest`;
-        const manifestObj = await this.env.DATA_BUCKET.get(manifestKey);
+        const manifestObj = await resolveBucket(this.env, manifestKey).get(manifestKey);
         if (manifestObj) {
           const manifest = parseManifest(await manifestObj.arrayBuffer());
           if (manifest) existingFragments = manifest.fragments;
@@ -214,12 +215,12 @@ export class MasterDO extends DurableObject<Env> {
       // Write new manifest (protobuf-compatible binary)
       const manifestPayload = this.buildManifestBinary(newVersion, newFragments);
       const newManifestKey = `${r2Prefix}_versions/${newVersion}.manifest`;
-      await this.env.DATA_BUCKET.put(newManifestKey, manifestPayload);
+      await resolveBucket(this.env, newManifestKey).put(newManifestKey, manifestPayload);
 
       // CAS: write _latest with ETag condition
       try {
         const putOptions: R2PutOptions = etag ? { onlyIf: { etagMatches: etag } } : {};
-        const result = await this.env.DATA_BUCKET.put(latestKey, newVersionStr, putOptions);
+        const result = await resolveBucket(this.env, latestKey).put(latestKey, newVersionStr, putOptions);
 
         if (result === null && etag) {
           // 412 Precondition Failed — retry
@@ -346,13 +347,13 @@ export class MasterDO extends DurableObject<Env> {
     parsed?: Footer; raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[];
     format: "lance" | "parquet";
   } | null> {
-    const head = await this.env.DATA_BUCKET.head(r2Key);
+    const head = await resolveBucket(this.env, r2Key).head(r2Key);
     if (!head) return null;
 
     const fileSize = BigInt(head.size);
     // Read last 40 bytes — enough for Lance footer or Parquet tail detection
     const tailSize = Math.min(Number(fileSize), FOOTER_SIZE);
-    const obj = await this.env.DATA_BUCKET.get(r2Key, {
+    const obj = await resolveBucket(this.env, r2Key).get(r2Key, {
       range: { offset: Number(fileSize) - tailSize, length: tailSize },
     });
     if (!obj) return null;
@@ -366,7 +367,7 @@ export class MasterDO extends DurableObject<Env> {
 
       // Fetch full Parquet Thrift footer
       const footerOffset = Number(fileSize) - footerLen - 8;
-      const footerObj = await this.env.DATA_BUCKET.get(r2Key, {
+      const footerObj = await resolveBucket(this.env, r2Key).get(r2Key, {
         range: { offset: footerOffset, length: footerLen },
       });
       if (!footerObj) return null;
@@ -386,7 +387,7 @@ export class MasterDO extends DurableObject<Env> {
     let columns: ColumnMeta[] = [];
     const metaLen = Number(parsed.columnMetaOffsetsStart) - Number(parsed.columnMetaStart);
     if (metaLen > 0) {
-      const metaObj = await this.env.DATA_BUCKET.get(r2Key, {
+      const metaObj = await resolveBucket(this.env, r2Key).get(r2Key, {
         range: { offset: Number(parsed.columnMetaStart), length: metaLen },
       });
       if (metaObj) columns = parseColumnMetaFromProtobuf(await metaObj.arrayBuffer(), parsed.numColumns);
@@ -456,7 +457,7 @@ export class MasterDO extends DurableObject<Env> {
       // List and delete all R2 objects under this prefix
       let cursor: string | undefined;
       do {
-        const listed = await this.env.DATA_BUCKET.list({
+        const listed = await resolveBucket(this.env, r2Prefix).list({
           prefix: r2Prefix,
           cursor,
           limit: 1000,
@@ -467,7 +468,7 @@ export class MasterDO extends DurableObject<Env> {
           bytesFreed += listed.objects.reduce((s, o) => s + o.size, 0);
           fragmentsDeleted += keys.length;
           // R2 delete supports up to 1000 keys per call
-          await this.env.DATA_BUCKET.delete(keys);
+          await resolveBucket(this.env, r2Prefix).delete(keys);
         }
 
         cursor = listed.truncated ? listed.cursor : undefined;
