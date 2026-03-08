@@ -480,12 +480,12 @@ export function matchesFilter(
     case "in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      return set.has(typeof val === "bigint" ? Number(val) : val);
+      return set.has(val);
     }
     case "not_in": {
       if (!Array.isArray(t)) return false;
       const set = getInSet(t);
-      return !set.has(typeof val === "bigint" ? Number(val) : val);
+      return !set.has(val);
     }
     case "between": {
       if (!Array.isArray(t) || t.length !== 2) return false;
@@ -514,15 +514,12 @@ export function matchesFilter(
 }
 
 /** Cache IN/NOT_IN value sets — O(1) lookup instead of O(m) per row. */
-const inSetCache = new WeakMap<readonly (number | bigint | string)[], Set<number | string>>();
+const inSetCache = new WeakMap<readonly (number | bigint | string)[], Set<number | bigint | string>>();
 
-function getInSet(values: readonly (number | bigint | string)[]): Set<number | string> {
+function getInSet(values: readonly (number | bigint | string)[]): Set<number | bigint | string> {
   let cached = inSetCache.get(values);
   if (cached) return cached;
-  const set = new Set<number | string>();
-  for (const v of values) {
-    set.add(typeof v === "bigint" ? Number(v) : v);
-  }
+  const set = new Set<number | bigint | string>(values);
   inSetCache.set(values, set);
   return set;
 }

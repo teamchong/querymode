@@ -83,4 +83,4 @@ const results = await qm
   .collect()
 ```
 
-Filters are applied before vector search — only matching rows are scanned for similarity.
+Vector search runs across all matching fragments. When combined with filters, both are applied during the scan phase — the query engine evaluates filter predicates and vector distances together to return filtered nearest neighbors.

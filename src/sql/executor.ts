@@ -202,8 +202,8 @@ function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | b
   switch (agg.fn) {
     case "sum": return values.reduce((a, b) => a + b, 0);
     case "avg": return values.reduce((a, b) => a + b, 0) / values.length;
-    case "min": return Math.min(...values);
-    case "max": return Math.max(...values);
+    case "min": return values.reduce((a, b) => a < b ? a : b);
+    case "max": return values.reduce((a, b) => a > b ? a : b);
     case "stddev": {
       const mean = values.reduce((a, b) => a + b, 0) / values.length;
       const sq = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;

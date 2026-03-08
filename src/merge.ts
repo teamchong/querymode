@@ -121,7 +121,7 @@ export function mergeQueryResults(
 ): QueryResult {
   const totalBytesRead = partials.reduce((s, p) => s + p.bytesRead, 0);
   const totalPagesSkipped = partials.reduce((s, p) => s + p.pagesSkipped, 0);
-  const maxDuration = Math.max(...partials.map((p) => p.durationMs));
+  const maxDuration = partials.length > 0 ? partials.reduce((m, p) => p.durationMs > m ? p.durationMs : m, 0) : 0;
   const columns =
     partials.length > 0 ? partials[0].columns : query.projections;
 
