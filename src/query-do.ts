@@ -484,6 +484,7 @@ export class QueryDO extends DurableObject<Env> {
     if (partitionBy) {
       const catalog = PartitionCatalog.fromFragments(partitionBy, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
+      this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
       this.log("info", "partition_catalog_built", { ...catalog.stats(), source: "explicit" });
       return;
     }
@@ -516,6 +517,7 @@ export class QueryDO extends DurableObject<Env> {
     if (bestColumn) {
       const catalog = PartitionCatalog.fromFragments(bestColumn, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
+      this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
       this.log("info", "partition_catalog_built", catalog.stats());
     }
   }
@@ -539,6 +541,13 @@ export class QueryDO extends DurableObject<Env> {
 
     const stored = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
+
+    // Restore persisted partition catalogs
+    const catalogs = await this.ctx.storage.list<ReturnType<PartitionCatalog["serialize"]>>({ prefix: "pcatalog:" });
+    for (const [key, data] of catalogs) {
+      const tableName = key.replace("pcatalog:", "");
+      this.partitionCatalogs.set(tableName, PartitionCatalog.deserialize(data));
+    }
 
     this.wasmEngine = await instantiateWasm(wasmModule);
 
@@ -773,6 +782,9 @@ export class QueryDO extends DurableObject<Env> {
       estimatedRows: meta.totalRows,
       fragments: totalFragments,
       fragmentsSkipped,
+      partitionCatalog: this.partitionCatalogs.has(query.table)
+        ? { column: this.partitionCatalogs.get(query.table)!.column, partitionValues: this.partitionCatalogs.get(query.table)!.stats().partitionValues }
+        : undefined,
       filters: [
         ...query.filters.map(f => ({
           column: f.column,

@@ -142,6 +142,23 @@ export class PartitionCatalog {
     }
   }
 
+  /** Serialize to a plain object for DO durable storage. */
+  serialize(): { column: string; index: Record<string, number[]>; allFragmentIds: number[] } {
+    const index: Record<string, number[]> = {};
+    for (const [key, ids] of this.index) index[key] = ids;
+    return { column: this.column, index, allFragmentIds: this.allFragmentIds };
+  }
+
+  /** Restore from serialized form. */
+  static deserialize(data: { column: string; index: Record<string, number[]>; allFragmentIds: number[] }): PartitionCatalog {
+    const catalog = new PartitionCatalog(data.column);
+    for (const [key, ids] of Object.entries(data.index)) {
+      catalog.index.set(key, ids);
+    }
+    catalog.allFragmentIds = data.allFragmentIds;
+    return catalog;
+  }
+
   /** Stats for diagnostics. */
   stats(): { column: string; partitionValues: number; fragments: number; indexSizeBytes: number } {
     let indexSizeBytes = 0;

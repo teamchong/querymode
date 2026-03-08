@@ -309,6 +309,8 @@ export interface ExplainResult {
   fragments: number;
   /** Fragments skipped by fragment-level min/max pruning */
   fragmentsSkipped?: number;
+  /** Partition catalog info (present when catalog exists for this table) */
+  partitionCatalog?: { column: string; partitionValues: number };
   filters: { column: string; op: string; pushable: boolean }[];
   metaCached: boolean;
   /** Estimated number of rows after filter pushdown */
