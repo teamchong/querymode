@@ -23,6 +23,8 @@ export default defineConfig({
       "src/sql/compiler.test.ts",
       "src/sql/evaluator.test.ts",
       "src/sql/integration.test.ts",
+      "src/convenience.test.ts",
+      "src/pipe.test.ts",
     ],
     hookTimeout: 300_000,
     testTimeout: 300_000,

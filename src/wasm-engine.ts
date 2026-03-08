@@ -73,6 +73,7 @@ export interface WasmExports {
   filterFloat64NotRange(dataPtr: number, len: number, low: number, high: number, outPtr: number, maxOut: number): number;
   filterInt32NotRange(dataPtr: number, len: number, low: number, high: number, outPtr: number, maxOut: number): number;
   filterInt64NotRange(dataPtr: number, len: number, low: bigint, high: bigint, outPtr: number, maxOut: number): number;
+  filterStringLike(dataPtr: number, offsetsPtr: number, count: number, patternPtr: number, patternLen: number, negated: number, outPtr: number, maxOut: number): number;
   intersectIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
   unionIndices(aPtr: number, aLen: number, bPtr: number, bLen: number, outPtr: number, maxOut: number): number;
 

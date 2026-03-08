@@ -9,7 +9,7 @@ import { z } from "zod/v4";
 
 const filterOpSchema = z.object({
   column: z.string().min(1, "Filter column name cannot be empty"),
-  op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in", "is_null", "is_not_null"]),
+  op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "in", "not_in", "between", "not_between", "like", "not_like", "is_null", "is_not_null"]),
   value: z.union([
     z.number(),
     z.string(),
@@ -45,6 +45,7 @@ export const queryDescriptorSchema = z.object({
   offset: z.number().int().nonnegative().optional(),
   vectorSearch: vectorSearchSchema.optional(),
   aggregates: z.array(aggregateOpSchema).optional(),
+  filterGroups: z.array(z.array(filterOpSchema)).optional(),
   groupBy: z.array(z.string()).optional(),
   cacheTTL: z.number().int().positive().optional(),
 });
@@ -57,7 +58,7 @@ export type ValidatedQuery = z.infer<typeof queryDescriptorSchema>;
  */
 export function parseAndValidateQuery(body: unknown): {
   table: string;
-  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is_null" | "is_not_null"; value: number | string | (number | string)[] }[];
+  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "between" | "not_between" | "like" | "not_like" | "is_null" | "is_not_null"; value: number | string | (number | string)[] }[];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";
@@ -65,6 +66,7 @@ export function parseAndValidateQuery(body: unknown): {
   offset?: number;
   vectorSearch?: { column: string; queryVector: number[] | Float32Array; topK: number };
   aggregates?: { fn: "sum" | "avg" | "min" | "max" | "count" | "count_distinct" | "stddev" | "variance" | "median" | "percentile"; column: string; alias?: string; percentileTarget?: number }[];
+  filterGroups?: { column: string; op: string; value: number | string | (number | string)[] }[][];
   groupBy?: string[];
   cacheTTL?: number;
 } {
@@ -97,6 +99,7 @@ export function parseAndValidateQuery(body: unknown): {
     vectorSearch: data.vectorSearch,
     aggregates: data.aggregates,
     groupBy: data.groupBy,
+    filterGroups: data.filterGroups,
     cacheTTL: data.cacheTTL,
   };
 }

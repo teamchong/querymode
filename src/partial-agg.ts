@@ -1,5 +1,6 @@
 import type { Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
+import type { ColumnarBatch, DecodedValue } from "./operators.js";
 
 export interface PartialAgg {
   states: PartialAggState[];
@@ -156,6 +157,74 @@ export function computePartialAgg(
         states[i].count++;
       } else {
         const val = row[col];
+        if (typeof val === "number") {
+          updatePartialAgg(states[i], val, val);
+        } else if (typeof val === "bigint") {
+          updatePartialAgg(states[i], Number(val), val);
+        } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
+          updatePartialAgg(states[i], 0, val);
+        }
+      }
+    }
+  }
+
+  return { states: [], groups };
+}
+
+export function computePartialAggColumnar(
+  batch: ColumnarBatch,
+  query: QueryDescriptor,
+): PartialAgg {
+  const aggregates = query.aggregates ?? [];
+  const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+
+  if (!query.groupBy || query.groupBy.length === 0) {
+    const states = aggregates.map((agg) =>
+      initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
+    );
+    for (const idx of indices) {
+      for (let i = 0; i < aggregates.length; i++) {
+        const col = aggregates[i].column;
+        if (col === "*") {
+          states[i].count++;
+        } else {
+          const vals = batch.columns.get(col);
+          const val = vals ? vals[idx] : null;
+          if (typeof val === "number") {
+            updatePartialAgg(states[i], val, val);
+          } else if (typeof val === "bigint") {
+            updatePartialAgg(states[i], Number(val), val);
+          } else if (aggregates[i].fn === "count_distinct" && val !== null && val !== undefined) {
+            updatePartialAgg(states[i], 0, val);
+          }
+        }
+      }
+    }
+    return { states };
+  }
+
+  const groups = new Map<string, PartialAggState[]>();
+  const groupCols = query.groupBy;
+
+  for (const idx of indices) {
+    const key = groupCols.map((c) => {
+      const vals = batch.columns.get(c);
+      return String(vals ? (vals[idx] ?? "") : "");
+    }).join("\x00");
+    let states = groups.get(key);
+    if (!states) {
+      states = aggregates.map((agg) =>
+        initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
+      );
+      groups.set(key, states);
+    }
+    for (let i = 0; i < aggregates.length; i++) {
+      const col = aggregates[i].column;
+      if (col === "*") {
+        states[i].count++;
+      } else {
+        const vals = batch.columns.get(col);
+        const val = vals ? vals[idx] : null;
         if (typeof val === "number") {
           updatePartialAgg(states[i], val, val);
         } else if (typeof val === "bigint") {

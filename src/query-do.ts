@@ -1,11 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
-import type { ColumnMeta, DataType, Env, ExplainResult, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
+import type { ColumnMeta, DataType, Env, ExplainResult, FilterOp, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage } from "./decode.js";
+import { canSkipPage, canSkipFragment, matchesFilter } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -15,7 +15,7 @@ import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline, estimateRowSize,
   FilterOperator, HashJoinOperator, ProjectOperator,
-  DEFAULT_MEMORY_BUDGET,
+  canSkipPageMultiCol, DEFAULT_MEMORY_BUDGET,
 } from "./operators.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
@@ -397,6 +397,29 @@ export class QueryDO extends DurableObject<Env> {
     super(ctx, env);
   }
 
+  /** Resolve R2 bucket for a given key. Supports multi-bucket sharding for PB-scale.
+   *  Routes by consistent hash of the R2 key prefix (table name). */
+  private resolveBucket(r2Key: string): R2Bucket {
+    const shardBuckets = [
+      this.env.DATA_BUCKET_1,
+      this.env.DATA_BUCKET_2,
+      this.env.DATA_BUCKET_3,
+    ].filter((b): b is R2Bucket => !!b);
+
+    if (shardBuckets.length === 0) return this.env.DATA_BUCKET;
+
+    // Include primary bucket in the shard set
+    const allBuckets = [this.env.DATA_BUCKET, ...shardBuckets];
+    // FNV-1a hash on the table prefix (first path segment)
+    const prefix = r2Key.split("/")[0] ?? r2Key;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < prefix.length; i++) {
+      h ^= prefix.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return allBuckets[(h >>> 0) % allBuckets.length];
+  }
+
   private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
     console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
       JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
@@ -426,33 +449,28 @@ export class QueryDO extends DurableObject<Env> {
   private applyJsPostProcessing(rows: Row[], query: QueryDescriptor): Row[] {
     let result = rows;
     if (query.filters.length > 0) {
-      result = result.filter(row => {
-        for (const f of query.filters) {
-          const val = row[f.column];
-          if (val == null) return false;
-          if (f.op === "in") {
-            const arr = f.value as (number | bigint | string)[];
-            if (!arr.some(v => {
-              if (typeof val === "bigint" && typeof v === "number") return val === BigInt(Math.trunc(v));
-              if (typeof val === "number" && typeof v === "bigint") return BigInt(Math.trunc(val)) === v;
-              return val === v;
-            })) return false;
-            continue;
-          }
-          let cv = val, cf = f.value;
-          if (typeof cv === "bigint" && typeof cf === "number") cf = BigInt(Math.trunc(cf));
-          else if (typeof cv === "number" && typeof cf === "bigint") cv = BigInt(Math.trunc(cv));
-          switch (f.op) {
-            case "eq": if (cv !== cf) return false; break;
-            case "neq": if (cv === cf) return false; break;
-            case "gt": if (!(cv > (cf as number | bigint | string))) return false; break;
-            case "gte": if (!(cv >= (cf as number | bigint | string))) return false; break;
-            case "lt": if (!(cv < (cf as number | bigint | string))) return false; break;
-            case "lte": if (!(cv <= (cf as number | bigint | string))) return false; break;
-          }
-        }
-        return true;
-      });
+      result = result.filter(row =>
+        query.filters.every(f => {
+          const v = row[f.column];
+          if (f.op === "is_null") return v === null || v === undefined;
+          if (f.op === "is_not_null") return v !== null && v !== undefined;
+          if (v === null || v === undefined) return false;
+          return matchesFilter(v as number | bigint | string | boolean, f);
+        }),
+      );
+    }
+    if (query.filterGroups && query.filterGroups.length > 0) {
+      result = result.filter(row =>
+        query.filterGroups!.some(group =>
+          group.every(f => {
+            const v = row[f.column];
+            if (f.op === "is_null") return v === null || v === undefined;
+            if (f.op === "is_not_null") return v !== null && v !== undefined;
+            if (v === null || v === undefined) return false;
+            return matchesFilter(v as number | bigint | string | boolean, f);
+          }),
+        ),
+      );
     }
     if (query.sortColumn) {
       const dir = query.sortDirection === "desc" ? -1 : 1;
@@ -632,6 +650,14 @@ export class QueryDO extends DurableObject<Env> {
     for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
       feed(f.column); feed(f.op); feed(String(f.value));
     }
+    if (query.filterGroups) {
+      for (const group of query.filterGroups) {
+        feed("|"); // group separator
+        for (const f of [...group].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+          feed(f.column); feed(f.op); feed(String(f.value));
+        }
+      }
+    }
     for (const p of [...query.projections].sort()) feed(p);
     if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
     if (query.limit !== undefined) feed(String(query.limit));
@@ -695,7 +721,15 @@ export class QueryDO extends DurableObject<Env> {
     const coalesced = coalesceRanges(ranges, autoCoalesceGap(ranges));
     const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
     const dataset = this.datasetCache.get(query.table);
-    const fragments = dataset ? dataset.fragmentMetas.size : 1;
+    const totalFragments = dataset ? dataset.fragmentMetas.size : 1;
+    let fragmentsSkipped = 0;
+    if (dataset) {
+      for (const fragMeta of dataset.fragmentMetas.values()) {
+        if (canSkipFragment(fragMeta, query.filters, query.filterGroups)) {
+          fragmentsSkipped++;
+        }
+      }
+    }
 
     return {
       table: query.table,
@@ -708,12 +742,22 @@ export class QueryDO extends DurableObject<Env> {
       estimatedBytes,
       estimatedR2Reads: coalesced.length,
       estimatedRows: meta.totalRows,
-      fragments,
-      filters: query.filters.map(f => ({
-        column: f.column,
-        op: f.op,
-        pushable: f.op !== "in" && f.op !== "neq",
-      })),
+      fragments: totalFragments,
+      fragmentsSkipped,
+      filters: [
+        ...query.filters.map(f => ({
+          column: f.column,
+          op: f.op,
+          pushable: f.op !== "in" && f.op !== "neq",
+        })),
+        ...(query.filterGroups ?? []).flatMap(group =>
+          group.map(f => ({
+            column: f.column,
+            op: f.op,
+            pushable: f.op !== "in" && f.op !== "neq",
+          })),
+        ),
+      ],
       metaCached,
     };
   }
@@ -1199,8 +1243,8 @@ export class QueryDO extends DurableObject<Env> {
         (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
       );
       let leftPipeline: Operator = leftScan;
-      if (query.filters.length > 0) {
-        leftPipeline = new FilterOperator(leftPipeline, query.filters);
+      if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
+        leftPipeline = new FilterOperator(leftPipeline, query.filters, query.filterGroups);
       }
 
       // Load right table meta
@@ -1218,8 +1262,8 @@ export class QueryDO extends DurableObject<Env> {
         (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
       );
       let rightPipeline: Operator = rightScan;
-      if (join.right.filters.length > 0) {
-        rightPipeline = new FilterOperator(rightPipeline, join.right.filters);
+      if (join.right.filters.length > 0 || (join.right.filterGroups && join.right.filterGroups.length > 0)) {
+        rightPipeline = new FilterOperator(rightPipeline, join.right.filters, join.right.filterGroups);
       }
 
       // Hash join: right is build side, left is probe side
@@ -1237,7 +1281,7 @@ export class QueryDO extends DurableObject<Env> {
           ])];
 
       pipeline = buildEdgePipeline(pipeline, {
-        ...query, filters: [], join: undefined,
+        ...query, filters: [], filterGroups: undefined, join: undefined,
       }, outputColumns, { memoryBudgetBytes: EDGE_MEMORY_BUDGET, spill });
 
       // The buildEdgePipeline already applies sort/limit/agg/project — but we passed
@@ -1585,10 +1629,31 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Execute a query across multiple fragments of a dataset. */
   private async executeMultiFragment(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
-    const fragments = [...dataset.fragmentMetas.values()];
+    // Fragment-level pruning: skip entire files based on column min/max stats
+    const allFragments = [...dataset.fragmentMetas.values()];
+    const fragments = allFragments.filter(meta =>
+      !canSkipFragment(meta, query.filters, query.filterGroups),
+    );
+    const fragmentsSkipped = allFragments.length - fragments.length;
+    if (fragmentsSkipped > 0) {
+      this.log("info", "fragment_prune", {
+        total: allFragments.length, skipped: fragmentsSkipped, remaining: fragments.length,
+      });
+    }
+
+    if (fragments.length === 0) {
+      // All fragments pruned — return empty result
+      return {
+        rows: [], rowCount: 0, columns: [],
+        bytesRead: 0, pagesSkipped: 0, durationMs: Date.now() - t0,
+        r2ReadMs: 0, wasmExecMs: 0, cacheHits: 0, cacheMisses: 0,
+        edgeCacheHits: 0, edgeCacheMisses: 0,
+      };
+    }
+
     // Large datasets (>4 fragments): fan out to Fragment DOs
     if (fragments.length > 4) {
-      return this.executeWithFragmentDOs(query, dataset, t0);
+      return this.executeWithFragmentDOs(query, fragments, t0);
     }
 
     // For unbounded queries or aggregation, use per-fragment pipeline with spill.
@@ -1638,8 +1703,8 @@ export class QueryDO extends DurableObject<Env> {
   /** Fan-out query to pooled Fragment DOs for parallel scanning.
    *  Uses Promise.allSettled for partial failure tolerance.
    *  Pool is per-datacenter (frag-{region}-slot-{N}), max FRAGMENT_POOL_MAX slots. */
-  private async executeWithFragmentDOs(query: QueryDescriptor, dataset: DatasetMeta, t0: number): Promise<QueryResult> {
-    const fragments = [...dataset.fragmentMetas.entries()];
+  private async executeWithFragmentDOs(query: QueryDescriptor, prunedFragments: TableMeta[], t0: number): Promise<QueryResult> {
+    const fragments = prunedFragments.map((meta, i) => [i, meta] as const);
     const slotsNeeded = Math.min(fragments.length, FRAGMENT_POOL_MAX - this.activeFragmentSlots.size);
 
     if (slotsNeeded <= 0) {

@@ -49,6 +49,65 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
   return false;
 }
 
+/** Check if an entire fragment can be skipped based on fragment-level min/max stats.
+ *  Computes per-column min/max across all pages, then checks if any AND filter
+ *  eliminates the entire range. For OR groups, skips only if ALL groups eliminate it. */
+export function canSkipFragment(
+  meta: { columns: ColumnMeta[] },
+  filters: QueryDescriptor["filters"],
+  filterGroups?: import("./types.js").FilterOp[][],
+): boolean {
+  if (filters.length === 0 && (!filterGroups || filterGroups.length === 0)) return false;
+
+  // Compute per-column min/max across all pages
+  const colStats = new Map<string, { min: number | bigint | string; max: number | bigint | string }>();
+  for (const col of meta.columns) {
+    let colMin: number | bigint | string | undefined;
+    let colMax: number | bigint | string | undefined;
+    for (const page of col.pages) {
+      if (page.minValue === undefined || page.maxValue === undefined) {
+        colMin = undefined;
+        break;
+      }
+      if (colMin === undefined || page.minValue < colMin) colMin = page.minValue;
+      if (colMax === undefined || page.maxValue > colMax) colMax = page.maxValue;
+    }
+    if (colMin !== undefined && colMax !== undefined) {
+      colStats.set(col.name, { min: colMin, max: colMax });
+    }
+  }
+
+  // Build a synthetic "fragment page" with the aggregated stats and reuse canSkipPage
+  for (const f of filters) {
+    const stats = colStats.get(f.column);
+    if (!stats) continue;
+    const syntheticPage: PageInfo = {
+      byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0,
+      minValue: stats.min, maxValue: stats.max,
+    };
+    if (canSkipPage(syntheticPage, [f], f.column)) return true;
+  }
+
+  // OR groups: skip only if ALL groups eliminate the fragment
+  if (filterGroups && filterGroups.length > 0) {
+    const allGroupsSkip = filterGroups.every(group => {
+      for (const f of group) {
+        const stats = colStats.get(f.column);
+        if (!stats) continue;
+        const syntheticPage: PageInfo = {
+          byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0,
+          minValue: stats.min, maxValue: stats.max,
+        };
+        if (canSkipPage(syntheticPage, [f], f.column)) return true;
+      }
+      return false;
+    });
+    if (allGroupsSkip) return true;
+  }
+
+  return false;
+}
+
 /** Assemble rows from column page buffers. WASM required. */
 export function assembleRows(
   columnData: Map<string, ArrayBuffer[]>,

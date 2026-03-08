@@ -12,8 +12,11 @@ import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, decodePage } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
+
+export type DecodedValue = number | bigint | string | boolean | Float32Array | null;
 import {
   computePartialAgg,
+  computePartialAggColumnar,
   mergePartialAggs,
   finalizePartialAgg,
   type PartialAgg,
@@ -22,12 +25,42 @@ import {
 /** A batch of rows flowing through the pipeline. */
 export type RowBatch = Row[];
 
+/** Columnar batch — column-oriented data flowing through the pipeline.
+ *  Each column maps to an array of decoded values (typed arrays for numerics, string[] for strings).
+ *  Selection vector (optional) identifies active row indices (post-filter).
+ *  When selection is present, only those indices are valid; columns still hold the full page data. */
+export interface ColumnarBatch {
+  /** Column data keyed by name. */
+  columns: Map<string, DecodedValue[]>;
+  /** Number of logical rows (length of columns, not selection). */
+  rowCount: number;
+  /** Active row indices — if set, only these rows are "alive" (post-filter). */
+  selection?: Uint32Array;
+}
+
 /** Pull-based operator interface. */
 export interface Operator {
   /** Pull the next batch of rows. Returns null when exhausted. */
   next(): Promise<RowBatch | null>;
+  /** Pull the next columnar batch. Returns null when exhausted.
+   *  Operators that support columnar mode implement this; callers check before using. */
+  nextColumnar?(): Promise<ColumnarBatch | null>;
   /** Release resources. */
   close(): Promise<void>;
+}
+
+/** Materialize a ColumnarBatch into Row[] — used at pipeline boundaries. */
+export function materializeRows(batch: ColumnarBatch): Row[] {
+  const rows: Row[] = [];
+  const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+  for (const idx of indices) {
+    const row: Row = {};
+    for (const [name, vals] of batch.columns) {
+      row[name] = vals[idx] as Row[string] ?? null;
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,7 +76,7 @@ export interface FragmentSource {
 
 /** Check if a page can be skipped by checking ALL filter columns' min/max stats.
  *  Returns true if ANY AND filter proves zero matches, or if ALL OR groups prove zero matches. */
-function canSkipPageMultiCol(
+export function canSkipPageMultiCol(
   columns: ColumnMeta[], pageIdx: number, filters: QueryDescriptor["filters"],
   filterGroups?: FilterOp[][],
 ): boolean {
@@ -190,7 +223,7 @@ export class ScanOperator implements Operator {
     this.prefetch = null;
   }
 
-  async next(): Promise<RowBatch | null> {
+  async nextColumnar(): Promise<ColumnarBatch | null> {
     while (this.fragIdx < this.fragments.length) {
       const frag = this.fragments[this.fragIdx];
       const firstCol = frag.columns[0];
@@ -275,22 +308,15 @@ export class ScanOperator implements Operator {
           }
 
           const allDecoded = new Map([...filterDecoded, ...projDecoded]);
-
-          const rows: Row[] = [];
-          for (const idx of matchingIndices) {
-            const row: Row = {};
-            for (const col of frag.columns) {
-              const vals = allDecoded.get(col.name);
-              row[col.name] = vals ? (vals[idx] as Row[string]) : null;
-            }
-            rows.push(row);
-          }
           this.scanMs += Date.now() - scanStart;
-          if (rows.length > 0) return rows;
+
+          if (matchingIndices.length > 0) {
+            return { columns: allDecoded, rowCount, selection: matchingIndices };
+          }
           continue;
         }
 
-        // No filters — fetch + decode all columns, assemble all rows
+        // No filters — fetch + decode all columns
         if (!hasPrefetch) {
           const { promise, skipped } = this.fetchPage(frag, pi);
           this.pagesSkipped += skipped;
@@ -301,17 +327,8 @@ export class ScanOperator implements Operator {
         if (!firstDecoded || firstDecoded.length === 0) continue;
         const rowCount = firstDecoded.length;
 
-        const rows: Row[] = [];
-        for (let i = 0; i < rowCount; i++) {
-          const row: Row = {};
-          for (const col of frag.columns) {
-            const vals = decoded.get(col.name);
-            row[col.name] = vals ? (vals[i] as Row[string]) : null;
-          }
-          rows.push(row);
-        }
         this.scanMs += Date.now() - scanStart;
-        if (rows.length > 0) return rows;
+        if (rowCount > 0) return { columns: decoded, rowCount };
         continue;
       }
 
@@ -321,6 +338,12 @@ export class ScanOperator implements Operator {
     }
 
     return null;
+  }
+
+  async next(): Promise<RowBatch | null> {
+    const batch = await this.nextColumnar();
+    if (!batch) return null;
+    return materializeRows(batch);
   }
 
   async close(): Promise<void> { /* no-op */ }
@@ -419,6 +442,20 @@ function applyAndFilters(
       const filterFn = filter.op === "between" ? wasmFilterRange : wasmFilterNotRange;
       const filterResult = filterFn(
         values, dtype, filter.value[0], filter.value[1], rowCount, wasm,
+      );
+      if (filterResult) {
+        indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
+        if (indices.length === 0) return indices;
+        continue;
+      }
+    }
+
+    // Try WASM LIKE/NOT LIKE path for string columns
+    if ((filter.op === "like" || filter.op === "not_like") &&
+        typeof filter.value === "string" &&
+        (dtype === "string" || dtype === "utf8" || dtype === "binary")) {
+      const filterResult = wasmFilterLike(
+        values, filter.value, filter.op === "not_like", rowCount, wasm,
       );
       if (filterResult) {
         indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
@@ -615,6 +652,65 @@ function wasmFilterNotRange(
   }
 }
 
+/** Filter string column with SQL LIKE pattern using WASM. */
+function wasmFilterLike(
+  values: DecodedValue[],
+  pattern: string,
+  negated: boolean,
+  rowCount: number,
+  wasm: WasmEngine,
+): Uint32Array | null {
+  try {
+    wasm.exports.resetHeap();
+    const encoder = new TextEncoder();
+
+    // Build offsets array and packed string data
+    const offsets = new Uint32Array(rowCount + 1);
+    let totalBytes = 0;
+    const encodedStrings: Uint8Array[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      offsets[i] = totalBytes;
+      const v = values[i];
+      const encoded = typeof v === "string" ? encoder.encode(v) : new Uint8Array(0);
+      encodedStrings.push(encoded);
+      totalBytes += encoded.length;
+    }
+    offsets[rowCount] = totalBytes;
+
+    // Allocate WASM memory: offsets + string data + pattern + output
+    const offsetsPtr = wasm.exports.alloc(offsets.byteLength);
+    if (!offsetsPtr) return null;
+    new Uint32Array(wasm.exports.memory.buffer, offsetsPtr, offsets.length).set(offsets);
+
+    const dataPtr = wasm.exports.alloc(totalBytes || 1);
+    if (!dataPtr) return null;
+    const dataDst = new Uint8Array(wasm.exports.memory.buffer, dataPtr, totalBytes);
+    let offset = 0;
+    for (const encoded of encodedStrings) {
+      dataDst.set(encoded, offset);
+      offset += encoded.length;
+    }
+
+    const patternBytes = encoder.encode(pattern);
+    const patternPtr = wasm.exports.alloc(patternBytes.length || 1);
+    if (!patternPtr) return null;
+    new Uint8Array(wasm.exports.memory.buffer, patternPtr, patternBytes.length).set(patternBytes);
+
+    const outPtr = wasm.exports.alloc(rowCount * 4);
+    if (!outPtr) return null;
+
+    const count = wasm.exports.filterStringLike(
+      dataPtr, offsetsPtr, rowCount,
+      patternPtr, patternBytes.length,
+      negated ? 1 : 0,
+      outPtr, rowCount,
+    );
+    return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
+  } catch {
+    return null;
+  }
+}
+
 /** Intersect two sorted index arrays using WASM. */
 function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Array {
   try {
@@ -668,8 +764,6 @@ function wasmUnion(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Arra
 // ---------------------------------------------------------------------------
 // Shared page decode helper
 // ---------------------------------------------------------------------------
-
-type DecodedValue = number | bigint | string | boolean | Float32Array | null;
 
 /** Decode one page per column given page buffer + metadata. */
 function decodePageBatch(
@@ -974,6 +1068,41 @@ export class DistinctOperator implements Operator {
     this.columns = columns;
   }
 
+  async nextColumnar(): Promise<ColumnarBatch | null> {
+    if (!this.upstream.nextColumnar) {
+      const rows = await this.next();
+      if (!rows || rows.length === 0) return null;
+      const columns = new Map<string, DecodedValue[]>();
+      for (const name of Object.keys(rows[0])) {
+        columns.set(name, rows.map(r => (r[name] ?? null) as DecodedValue));
+      }
+      return { columns, rowCount: rows.length };
+    }
+
+    while (true) {
+      const batch = await this.upstream.nextColumnar();
+      if (!batch) return null;
+
+      const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+      const kept: number[] = [];
+      const cols = this.columns.length > 0 ? this.columns : Array.from(batch.columns.keys());
+
+      for (const idx of indices) {
+        const key = cols.map(c => {
+          const vals = batch.columns.get(c);
+          return String(vals ? (vals[idx] ?? "") : "");
+        }).join("\x00");
+        if (!this.seen.has(key)) {
+          this.seen.add(key);
+          kept.push(idx);
+        }
+      }
+      if (kept.length > 0) {
+        return { columns: batch.columns, rowCount: batch.rowCount, selection: new Uint32Array(kept) };
+      }
+    }
+  }
+
   async next(): Promise<RowBatch | null> {
     while (true) {
       const batch = await this.upstream.next();
@@ -1174,6 +1303,60 @@ export class FilterOperator implements Operator {
     return true;
   }
 
+  async nextColumnar(): Promise<ColumnarBatch | null> {
+    if (!this.upstream.nextColumnar) {
+      // Upstream doesn't support columnar — fall back to row-based and re-columnize
+      const rows = await this.next();
+      if (!rows || rows.length === 0) return null;
+      const columns = new Map<string, DecodedValue[]>();
+      const colNames = Object.keys(rows[0]);
+      for (const name of colNames) {
+        columns.set(name, rows.map(r => (r[name] ?? null) as DecodedValue));
+      }
+      return { columns, rowCount: rows.length };
+    }
+
+    while (true) {
+      const batch = await this.upstream.nextColumnar();
+      if (!batch) return null;
+
+      // Apply filters on the columnar batch — narrow the selection vector
+      const srcIndices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+      const kept: number[] = [];
+
+      for (const idx of srcIndices) {
+        let andPass = true;
+        for (const f of this.filters) {
+          const vals = batch.columns.get(f.column);
+          const v = vals ? vals[idx] : null;
+          if (v === null || v === undefined || !matchesFilter(v as Row[string], f)) {
+            andPass = false;
+            break;
+          }
+        }
+        if (!andPass) continue;
+
+        if (this.filterGroups && this.filterGroups.length > 0) {
+          const orPass = this.filterGroups.some(group =>
+            group.every(f => {
+              const vals = batch.columns.get(f.column);
+              const v = vals ? vals[idx] : null;
+              return v !== null && v !== undefined && matchesFilter(v as Row[string], f);
+            }),
+          );
+          if (!orPass) continue;
+        }
+
+        kept.push(idx);
+      }
+
+      if (kept.length > 0) {
+        return { columns: batch.columns, rowCount: batch.rowCount, selection: new Uint32Array(kept) };
+      }
+      // Empty batch after filtering — pull next
+    }
+  }
+
   async next(): Promise<RowBatch | null> {
     while (true) {
       const batch = await this.upstream.next();
@@ -1207,6 +1390,50 @@ export class LimitOperator implements Operator {
     this.upstream = upstream;
     this.remaining = limit;
     this.offset = offset;
+  }
+
+  async nextColumnar(): Promise<ColumnarBatch | null> {
+    if (this.remaining <= 0) return null;
+    if (!this.upstream.nextColumnar) {
+      const rows = await this.next();
+      if (!rows || rows.length === 0) return null;
+      const columns = new Map<string, DecodedValue[]>();
+      for (const name of Object.keys(rows[0])) {
+        columns.set(name, rows.map(r => (r[name] ?? null) as DecodedValue));
+      }
+      return { columns, rowCount: rows.length };
+    }
+
+    while (true) {
+      const batch = await this.upstream.nextColumnar();
+      if (!batch) return null;
+
+      let indices = batch.selection
+        ? Array.from(batch.selection)
+        : Array.from({ length: batch.rowCount }, (_, i) => i);
+
+      // Handle offset: skip rows
+      if (this.skipped < this.offset) {
+        const toSkip = this.offset - this.skipped;
+        if (toSkip >= indices.length) {
+          this.skipped += indices.length;
+          continue;
+        }
+        indices = indices.slice(toSkip);
+        this.skipped = this.offset;
+      }
+
+      // Apply limit
+      if (indices.length > this.remaining) {
+        indices = indices.slice(0, this.remaining);
+      }
+      this.remaining -= indices.length;
+
+      if (indices.length > 0) {
+        return { columns: batch.columns, rowCount: batch.rowCount, selection: new Uint32Array(indices) };
+      }
+      return null;
+    }
   }
 
   async next(): Promise<RowBatch | null> {
@@ -1256,6 +1483,26 @@ export class ProjectOperator implements Operator {
     this.keep = new Set(columns);
   }
 
+  async nextColumnar(): Promise<ColumnarBatch | null> {
+    if (this.upstream.nextColumnar) {
+      const batch = await this.upstream.nextColumnar();
+      if (!batch) return null;
+      const projected = new Map<string, DecodedValue[]>();
+      for (const [name, vals] of batch.columns) {
+        if (this.keep.has(name)) projected.set(name, vals);
+      }
+      return { columns: projected, rowCount: batch.rowCount, selection: batch.selection };
+    }
+    // Fall back to row-based
+    const rows = await this.next();
+    if (!rows || rows.length === 0) return null;
+    const columns = new Map<string, DecodedValue[]>();
+    for (const name of this.keep) {
+      columns.set(name, rows.map(r => (r[name] ?? null) as DecodedValue));
+    }
+    return { columns, rowCount: rows.length };
+  }
+
   async next(): Promise<RowBatch | null> {
     const batch = await this.upstream.next();
     if (!batch) return null;
@@ -1291,7 +1538,20 @@ export class AggregateOperator implements Operator {
     if (this.consumed) return null;
     this.consumed = true;
 
-    // Incrementally merge partials — O(groups) memory, not O(batches × groups)
+    // Use columnar path if upstream supports it — avoids Row[] materialization during aggregation
+    if (this.upstream.nextColumnar) {
+      let merged: PartialAgg | null = null;
+      while (true) {
+        const batch = await this.upstream.nextColumnar();
+        if (!batch) break;
+        const partial = computePartialAggColumnar(batch, this.query);
+        merged = merged ? mergePartialAggs([merged, partial]) : partial;
+      }
+      if (!merged) return finalizePartialAgg({ states: [] }, this.query);
+      return finalizePartialAgg(merged, this.query);
+    }
+
+    // Row-based fallback
     let merged: PartialAgg | null = null;
     while (true) {
       const batch = await this.upstream.next();
@@ -1331,10 +1591,8 @@ export class TopKOperator implements Operator {
     this.offset = offset;
   }
 
-  async next(): Promise<RowBatch | null> {
-    if (this.consumed) return null;
-    this.consumed = true;
-
+  /** Drain all upstream batches into the heap, using columnar path if available. */
+  private async drainIntoHeap(): Promise<Row[]> {
     const heap: Row[] = [];
     const col = this.col;
     const desc = this.desc;
@@ -1376,13 +1634,31 @@ export class TopKOperator implements Operator {
       }
     };
 
-    // Stream all batches through the heap
-    while (true) {
-      const batch = await this.upstream.next();
-      if (!batch) break;
-      for (const row of batch) {
-        if (heap.length < k) { heap.push(row); siftUp(heap.length - 1); }
-        else if (heap.length > 0 && shouldReplace(row)) { heap[0] = row; siftDown(heap, 0); }
+    const pushRow = (row: Row) => {
+      if (heap.length < k) { heap.push(row); siftUp(heap.length - 1); }
+      else if (heap.length > 0 && shouldReplace(row)) { heap[0] = row; siftDown(heap, 0); }
+    };
+
+    // Use columnar path if available — materialize only the rows that enter the heap
+    if (this.upstream.nextColumnar) {
+      while (true) {
+        const batch = await this.upstream.nextColumnar();
+        if (!batch) break;
+        const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
+        const colNames = Array.from(batch.columns.keys());
+        for (const idx of indices) {
+          const row: Row = {};
+          for (const name of colNames) {
+            row[name] = (batch.columns.get(name)![idx] as Row[string]) ?? null;
+          }
+          pushRow(row);
+        }
+      }
+    } else {
+      while (true) {
+        const batch = await this.upstream.next();
+        if (!batch) break;
+        for (const row of batch) pushRow(row);
       }
     }
 
@@ -1396,8 +1672,13 @@ export class TopKOperator implements Operator {
       if (copy.length > 0) siftDown(copy, 0);
     }
     result.reverse();
+    return result;
+  }
 
-    // Apply offset
+  async next(): Promise<RowBatch | null> {
+    if (this.consumed) return null;
+    this.consumed = true;
+    const result = await this.drainIntoHeap();
     return result.slice(this.offset);
   }
 
@@ -1428,12 +1709,20 @@ export class InMemorySortOperator implements Operator {
     if (this.consumed) return null;
     this.consumed = true;
 
-    // Collect all rows (required for full sort without limit)
+    // Collect all rows — use columnar path if available
     const allRows: Row[] = [];
-    while (true) {
-      const batch = await this.upstream.next();
-      if (!batch) break;
-      for (const row of batch) allRows.push(row);
+    if (this.upstream.nextColumnar) {
+      while (true) {
+        const batch = await this.upstream.nextColumnar();
+        if (!batch) break;
+        for (const row of materializeRows(batch)) allRows.push(row);
+      }
+    } else {
+      while (true) {
+        const batch = await this.upstream.next();
+        if (!batch) break;
+        for (const row of batch) allRows.push(row);
+      }
     }
 
     const col = this.col;
@@ -2336,16 +2625,27 @@ export class ExternalSortOperator implements Operator {
       currentRunBytes = 0;
     };
 
-    while (true) {
-      const batch = await this.upstream.next();
-      if (!batch) break;
-      for (const row of batch) {
-        const rowSize = estimateRowSize(row);
-        if (currentRunBytes + rowSize > this.memoryBudget && currentRun.length > 0) {
-          await flushRun();
-        }
-        currentRun.push(row);
-        currentRunBytes += rowSize;
+    const consumeRow = async (row: Row) => {
+      const rowSize = estimateRowSize(row);
+      if (currentRunBytes + rowSize > this.memoryBudget && currentRun.length > 0) {
+        await flushRun();
+      }
+      currentRun.push(row);
+      currentRunBytes += rowSize;
+    };
+
+    // Use columnar path if available
+    if (this.upstream.nextColumnar) {
+      while (true) {
+        const batch = await this.upstream.nextColumnar();
+        if (!batch) break;
+        for (const row of materializeRows(batch)) await consumeRow(row);
+      }
+    } else {
+      while (true) {
+        const batch = await this.upstream.next();
+        if (!batch) break;
+        for (const row of batch) await consumeRow(row);
       }
     }
 
@@ -2694,6 +2994,19 @@ export function buildEdgePipeline(
  * Drain all rows from an operator pipeline.
  */
 export async function drainPipeline(pipeline: Operator): Promise<Row[]> {
+  // Use columnar path if the pipeline supports it — avoids Row[] materialization in intermediate operators
+  if (pipeline.nextColumnar) {
+    const rows: Row[] = [];
+    while (true) {
+      const batch = await pipeline.nextColumnar();
+      if (!batch) break;
+      // Materialize only at the pipeline exit
+      for (const row of materializeRows(batch)) rows.push(row);
+    }
+    await pipeline.close();
+    return rows;
+  }
+
   const rows: Row[] = [];
   while (true) {
     const batch = await pipeline.next();

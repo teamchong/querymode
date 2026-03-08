@@ -133,3 +133,115 @@ describe("error messages", () => {
     expect(err.message).toContain(".json");
   });
 });
+
+describe("DataFrame Pandas-like methods", () => {
+  const data = [
+    { id: 1, name: "Alice", age: 30 },
+    { id: 2, name: "Bob", age: 25 },
+    { id: 3, name: "Charlie", age: 35 },
+  ];
+
+  it("shape() returns rows and columns count", async () => {
+    const df = createFromJSON(data);
+    const s = await df.shape();
+    expect(s.rows).toBe(3);
+    expect(s.columns).toBe(3);
+  });
+
+  it("dtypes() returns column type map", async () => {
+    const df = createFromJSON(data);
+    const dt = await df.dtypes();
+    expect(dt).toHaveProperty("id");
+    expect(dt).toHaveProperty("name");
+    expect(dt).toHaveProperty("age");
+  });
+
+  it("fillNull() replaces null values", async () => {
+    const df = createFromJSON([
+      { id: 1, score: null },
+      { id: 2, score: 90 },
+      { id: 3, score: null },
+    ]);
+    const result = await df.fillNull("score", 0).collect();
+    expect(result.rows[0].score).toBe(0);
+    expect(result.rows[1].score).toBe(90);
+    expect(result.rows[2].score).toBe(0);
+  });
+
+  it("cast() converts column types", async () => {
+    const df = createFromJSON(data);
+    const result = await df.cast("age", "string").collect();
+    expect(result.rows[0].age).toBe("30");
+    expect(result.rows[1].age).toBe("25");
+  });
+
+  it("sample() returns requested number of rows", async () => {
+    const bigData = Array.from({ length: 100 }, (_, i) => ({ id: i }));
+    const df = createFromJSON(bigData);
+    const s = await df.sample(5);
+    expect(s.length).toBe(5);
+  });
+
+  it("sample() returns all rows when n > length", async () => {
+    const df = createFromJSON(data);
+    const s = await df.sample(100);
+    expect(s.length).toBe(3);
+  });
+
+  it("valueCounts() returns frequency counts sorted desc", async () => {
+    const df = createFromJSON([
+      { color: "red" },
+      { color: "blue" },
+      { color: "red" },
+      { color: "red" },
+      { color: "blue" },
+    ]);
+    const vc = await df.valueCounts("color");
+    expect(vc[0]).toEqual({ value: "red", count: 3 });
+    expect(vc[1]).toEqual({ value: "blue", count: 2 });
+  });
+
+  it("toJSON() returns valid JSON string", async () => {
+    const df = createFromJSON(data);
+    const json = await df.toJSON();
+    const parsed = JSON.parse(json);
+    expect(parsed.length).toBe(3);
+    expect(parsed[0].name).toBe("Alice");
+  });
+
+  it("toJSON({ pretty: true }) returns indented JSON", async () => {
+    const df = createFromJSON([{ x: 1 }]);
+    const json = await df.toJSON({ pretty: true });
+    expect(json).toContain("\n");
+    expect(json).toContain("  ");
+  });
+
+  it("toCSV() returns valid CSV string", async () => {
+    const df = createFromJSON(data);
+    const csv = await df.toCSV();
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe("id,name,age");
+    expect(lines.length).toBe(4); // header + 3 rows
+  });
+
+  it("toCSV() handles values with commas and quotes", async () => {
+    const df = createFromJSON([
+      { name: 'O"Brien', city: "New York, NY" },
+    ]);
+    const csv = await df.toCSV();
+    expect(csv).toContain('"O""Brien"');
+    expect(csv).toContain('"New York, NY"');
+  });
+
+  it("toCSV() with custom delimiter", async () => {
+    const df = createFromJSON(data);
+    const tsv = await df.toCSV({ delimiter: "\t" });
+    expect(tsv.split("\n")[0]).toBe("id\tname\tage");
+  });
+
+  it("toCSV() returns empty string for empty data", async () => {
+    const df = createFromJSON([]);
+    const csv = await df.toCSV();
+    expect(csv).toBe("");
+  });
+});

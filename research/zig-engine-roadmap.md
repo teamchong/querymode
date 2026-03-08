@@ -70,6 +70,9 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - `assembleRows()` in decode.ts handles filterGroups
 - Client API: `.whereOr(...groups: FilterOp[][])`
 - `canUseWasmAggregate` rejects queries with filterGroups (not optimized for OR yet)
+- `query-do.ts` fully supports filterGroups: cache key, applyJsPostProcessing, join path FilterOperator, explain output
+- `query-schema.ts` validates filterGroups and new filter ops (not_in, between, not_between, like, not_like)
+- `applyJsPostProcessing` uses shared `matchesFilter()` (was duplicated inline logic missing new ops)
 
 ### NOT BETWEEN WASM Filter — DONE
 - `filterFloat64NotRange`, `filterInt32NotRange`, `filterInt64NotRange` Zig exports
@@ -78,9 +81,33 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - `scanFilterIndices`, `WasmAggregateOperator.evalAndFilters` dispatch BETWEEN/NOT BETWEEN to range/not-range exports
 - `canUseWasmAggregate` allows NOT BETWEEN filters
 
+### WASM String LIKE Filter — DONE
+- `filterStringLike` Zig export: SQL LIKE pattern matching (%, _) on packed string data
+- Case-insensitive matching via `sqlLikeMatchCI` (ASCII toLower)
+- Data format: offsets[0..count+1] + packed UTF-8 data buffer
+- `wasmFilterLike()` TS helper packs JS strings into WASM memory, calls Zig filter
+- `scanFilterIndices` dispatches LIKE/NOT LIKE to WASM for string/utf8/binary columns
+- Negated flag supports both LIKE and NOT LIKE in single export
+
+### Columnar Pipeline — DONE (core operators)
+- `ColumnarBatch` type: `{ columns: Map<string, DecodedValue[]>, rowCount, selection?: Uint32Array }`
+- `Operator.nextColumnar?()` optional method — operators upgraded incrementally
+- `materializeRows(batch)` — Row[] materialization only at pipeline exit
+- `ScanOperator.nextColumnar()` — returns decoded columns directly, no Row[] creation
+- `FilterOperator.nextColumnar()` — narrows selection vector on columnar data
+- `LimitOperator.nextColumnar()` — slices selection vector
+- `ProjectOperator.nextColumnar()` — drops columns from Map
+- `DistinctOperator.nextColumnar()` — dedup via selection vector
+- `AggregateOperator` — consumes upstream via `nextColumnar()`, uses `computePartialAggColumnar()`
+- `TopKOperator` — consumes upstream via `nextColumnar()`, materializes only heap entries
+- `InMemorySortOperator` — consumes upstream via `nextColumnar()`
+- `ExternalSortOperator` — consumes upstream via `nextColumnar()`
+- `drainPipeline()` prefers columnar path when available
+- Pipeline: Scan→Filter→Distinct→Limit→Project all stay columnar; consuming operators (Agg/Sort/TopK) consume columnar and produce Row[]
+
 **Remaining:**
-- Full columnar pipeline: connect TS pipeline to Zig SelectionVector/DataChunk types (removes Row[] batch format)
-- WASM SIMD LIKE filter (comptime string pattern matching in Zig)
+- HashJoinOperator columnar consumption (complex, lower ROI)
+- Connect to Zig SelectionVector/DataChunk types (share selection vectors in WASM memory — zero-copy)
 
 ### BETWEEN Support — DONE
 - `filterFloat64Range`, `filterInt32Range`, `filterInt64Range` Zig exports
@@ -107,6 +134,23 @@ Learnings from sibling Zig repos, prioritized by impact on QueryMode's WASM engi
 - `stats()` includes `lockedCount` (entries with refCount > 0)
 
 **Files modified:** `src/vip-cache.ts`
+
+## P1: PB-Scale Infrastructure — IN PROGRESS
+
+### Fragment-Level Pruning — DONE
+- `canSkipFragment()` in decode.ts: computes per-column min/max across all pages, checks if any filter eliminates the entire fragment
+- Reuses `canSkipPage()` on synthetic "fragment page" with aggregated stats
+- Supports AND filters and OR filterGroups (skip only if ALL groups eliminate)
+- `executeMultiFragment()` prunes fragments before any R2 I/O or DO dispatch
+- Logs `fragment_prune` with total/skipped/remaining counts
+- `executeExplain()` reports `fragmentsSkipped` in explain output
+- `executeWithFragmentDOs()` accepts pruned fragment list (no wasted DO slots)
+
+### Multi-Bucket Sharding — FOUNDATION
+- `Env` supports `DATA_BUCKET_1`, `DATA_BUCKET_2`, `DATA_BUCKET_3` (optional)
+- `resolveBucket(r2Key)` routes by FNV-1a hash of table prefix across all available buckets
+- Bypasses R2 per-bucket rate limits by distributing data across buckets
+- Remaining: wire `resolveBucket` into R2 read paths, add shard-aware ingest
 
 ## P3: Host Import Pattern for R2 I/O (from gitmode)
 

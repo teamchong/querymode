@@ -558,9 +558,6 @@ export class DataFrame<T extends Row = Row> {
 
   /** Inspect the query plan without executing. No data I/O is performed. */
   async explain(): Promise<ExplainResult> {
-    if (!this._executor.explain) {
-      throw new Error("explain() requires an executor with plan inspection support");
-    }
     return this._executor.explain(this.toDescriptor());
   }
 
@@ -570,18 +567,10 @@ export class DataFrame<T extends Row = Row> {
    * Falls back to a limit-1 query if explain() is not available.
    */
   async describe(): Promise<{ columns: { name: string; dtype: string }[]; totalRows: number }> {
-    if (this._executor.explain) {
-      const plan = await this._executor.explain(this.toDescriptor());
-      return {
-        columns: plan.columns.map(c => ({ name: c.name, dtype: c.dtype })),
-        totalRows: plan.totalRows,
-      };
-    }
-    // Fallback: execute a limit-1 query to infer column names
-    const result = await this._executor.execute({ ...this.toDescriptor(), limit: 1 });
+    const plan = await this._executor.explain(this.toDescriptor());
     return {
-      columns: result.columns.map(name => ({ name, dtype: "unknown" })),
-      totalRows: result.rowCount,
+      columns: plan.columns.map(c => ({ name: c.name, dtype: c.dtype })),
+      totalRows: plan.totalRows,
     };
   }
 
@@ -591,6 +580,96 @@ export class DataFrame<T extends Row = Row> {
     desc.limit = n;
     const result = await this._executor.execute(desc);
     return result.rows as T[];
+  }
+
+  /** Return {rows, columns} — quick shape introspection without collecting all data. */
+  async shape(): Promise<{ rows: number; columns: number }> {
+    const info = await this.describe();
+    return { rows: info.totalRows, columns: info.columns.length };
+  }
+
+  /** Column names and inferred types. */
+  async dtypes(): Promise<Record<string, string>> {
+    const info = await this.describe();
+    const result: Record<string, string> = {};
+    for (const col of info.columns) result[col.name] = col.dtype;
+    return result;
+  }
+
+  /** Replace null values in a column with a default. */
+  fillNull(column: string, value: number | string | boolean): DataFrame {
+    return this.computed(column, (row: Row) => {
+      const v = row[column];
+      return v === null || v === undefined ? value : v;
+    }) as DataFrame;
+  }
+
+  /** Cast a column to a target type. */
+  cast(column: string, dtype: "number" | "string" | "boolean"): DataFrame {
+    return this.computed(column, (row: Row) => {
+      const v = row[column];
+      if (v === null || v === undefined) return null;
+      switch (dtype) {
+        case "number": return typeof v === "number" ? v : Number(v);
+        case "string": return String(v);
+        case "boolean": return Boolean(v);
+      }
+    }) as DataFrame;
+  }
+
+  /** Random sample of N rows. */
+  async sample(n: number): Promise<T[]> {
+    const result = await this.collect();
+    const rows = result.rows as T[];
+    if (rows.length <= n) return rows;
+    // Fisher-Yates shuffle on first n elements
+    const shuffled = [...rows];
+    for (let i = 0; i < n; i++) {
+      const j = i + Math.floor(Math.random() * (shuffled.length - i));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled.slice(0, n);
+  }
+
+  /** Frequency count per unique value in a column. Returns [{value, count}] sorted by count desc. */
+  async valueCounts(column: string): Promise<{ value: unknown; count: number }[]> {
+    const result = await this.groupBy(column)
+      .aggregate("count", "*", "count")
+      .sort("count", "desc")
+      .collect();
+    return result.rows.map(r => ({ value: r[column], count: r["count"] as number }));
+  }
+
+  /** Export collected rows as JSON string. */
+  async toJSON(opts?: { pretty?: boolean }): Promise<string> {
+    const result = await this.collect();
+    return JSON.stringify(result.rows, null, opts?.pretty ? 2 : undefined);
+  }
+
+  /** Export collected rows as CSV string. */
+  async toCSV(opts?: { delimiter?: string }): Promise<string> {
+    const result = await this.collect();
+    if (result.rows.length === 0) return "";
+    const delim = opts?.delimiter ?? ",";
+    const cols = result.columns.length > 0 ? result.columns : Object.keys(result.rows[0]);
+    const header = cols.join(delim);
+    const lines = result.rows.map(row =>
+      cols.map(c => {
+        const v = row[c];
+        if (v === null || v === undefined) return "";
+        const s = String(v);
+        return s.includes(delim) || s.includes('"') || s.includes("\n")
+          ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(delim),
+    );
+    return [header, ...lines].join("\n");
+  }
+
+  /** Print a formatted table of the first N rows to console. */
+  async show(n = 10): Promise<void> {
+    const rows = await this.head(n);
+    if (rows.length === 0) { console.log("(empty)"); return; }
+    console.table(rows);
   }
 
   /** Streaming iteration over results in batches. */
@@ -779,6 +858,17 @@ export class MaterializedExecutor implements QueryExecutor {
   async execute(query: QueryDescriptor): Promise<QueryResult> {
     let rows = [...this.result.rows];
 
+    // Apply computed columns
+    if (query.computedColumns && query.computedColumns.length > 0) {
+      rows = rows.map(row => {
+        const out = { ...row };
+        for (const comp of query.computedColumns!) {
+          out[comp.alias] = comp.fn(out) as Row[string];
+        }
+        return out;
+      });
+    }
+
     // Apply AND filters
     if (query.filters.length > 0) {
       rows = rows.filter(row =>
@@ -805,6 +895,41 @@ export class MaterializedExecutor implements QueryExecutor {
           }),
         ),
       );
+    }
+
+    // Apply aggregation
+    if (query.aggregates && query.aggregates.length > 0) {
+      const groups = query.groupBy && query.groupBy.length > 0 ? query.groupBy : undefined;
+      const buckets = new Map<string, Row[]>();
+      for (const row of rows) {
+        const key = groups ? groups.map(g => String(row[g] ?? "")).join("\0") : "";
+        let bucket = buckets.get(key);
+        if (!bucket) { bucket = []; buckets.set(key, bucket); }
+        bucket.push(row);
+      }
+      const aggRows: Row[] = [];
+      for (const [, bucket] of buckets) {
+        const out: Row = {};
+        if (groups) for (const g of groups) out[g] = bucket[0][g];
+        for (const agg of query.aggregates) {
+          const alias = agg.alias ?? `${agg.fn}_${agg.column}`;
+          if (agg.fn === "count") {
+            out[alias] = agg.column === "*" ? bucket.length : bucket.filter(r => r[agg.column] != null).length;
+          } else {
+            const vals = bucket.map(r => r[agg.column]).filter(v => v != null && typeof v === "number") as number[];
+            if (vals.length === 0) { out[alias] = null; continue; }
+            switch (agg.fn) {
+              case "sum": out[alias] = vals.reduce((a, b) => a + b, 0); break;
+              case "avg": out[alias] = vals.reduce((a, b) => a + b, 0) / vals.length; break;
+              case "min": out[alias] = Math.min(...vals); break;
+              case "max": out[alias] = Math.max(...vals); break;
+              default: out[alias] = null;
+            }
+          }
+        }
+        aggRows.push(out);
+      }
+      rows = aggRows;
     }
 
     // Apply projections
@@ -837,11 +962,32 @@ export class MaterializedExecutor implements QueryExecutor {
     return {
       rows,
       rowCount: rows.length,
-      columns: query.projections.length > 0 ? query.projections : this.result.columns,
+      columns: query.projections.length > 0 ? query.projections : (rows.length > 0 ? Object.keys(rows[0]) : this.result.columns),
       bytesRead: 0,
       pagesSkipped: 0,
       durationMs: 0,
       cacheHit: true,
+    };
+  }
+
+  async explain(): Promise<ExplainResult> {
+    const cols = this.result.columns.length > 0
+      ? this.result.columns
+      : this.result.rows.length > 0 ? Object.keys(this.result.rows[0]) : [];
+    return {
+      table: "(materialized)",
+      format: "lance",
+      totalRows: this.result.rowCount,
+      columns: cols.map(name => ({ name, dtype: "unknown" as DataType, pages: 0, bytes: 0 })),
+      pagesTotal: 0,
+      pagesSkipped: 0,
+      pagesScanned: 0,
+      estimatedBytes: 0,
+      estimatedR2Reads: 0,
+      fragments: 1,
+      filters: [],
+      metaCached: true,
+      estimatedRows: this.result.rowCount,
     };
   }
 }
@@ -923,8 +1069,8 @@ export interface QueryExecutor {
   exists?(query: QueryDescriptor): Promise<boolean>;
   /** Optional: return first matching row */
   first?(query: QueryDescriptor): Promise<Row | null>;
-  /** Optional: plan inspection without execution */
-  explain?(query: QueryDescriptor): Promise<ExplainResult>;
+  /** Plan inspection without execution */
+  explain(query: QueryDescriptor): Promise<ExplainResult>;
   /** Optional: lazy batch iteration */
   cursor?(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]>;
   /** Optional: return the raw Operator pipeline for escape-hatch composition */

@@ -910,6 +910,119 @@ export fn filterInt64NotRange(
     return out_count;
 }
 
+// ============================================================================
+// String LIKE Filter
+// Data format: offsets[0..count+1] where string i = data[offsets[i]..offsets[i+1]]
+// Pattern: SQL LIKE with % (any sequence) and _ (single char)
+// negated: 0 = LIKE, 1 = NOT LIKE
+// ============================================================================
+
+fn sqlLikeMatch(str: []const u8, pattern: []const u8) bool {
+    var si: usize = 0;
+    var pi: usize = 0;
+    var star_pi: usize = pattern.len; // sentinel = no star
+    var star_si: usize = 0;
+
+    while (si < str.len or pi < pattern.len) {
+        if (pi < pattern.len) {
+            if (pattern[pi] == '%') {
+                // % — record star position and advance pattern
+                star_pi = pi;
+                star_si = si;
+                pi += 1;
+                continue;
+            }
+            if (si < str.len) {
+                if (pattern[pi] == '_' or pattern[pi] == str[si]) {
+                    si += 1;
+                    pi += 1;
+                    continue;
+                }
+            }
+        }
+        // Mismatch — backtrack to last % if any
+        if (star_pi < pattern.len) {
+            pi = star_pi + 1;
+            star_si += 1;
+            si = star_si;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+/// Case-insensitive SQL LIKE match
+fn sqlLikeMatchCI(str: []const u8, pattern: []const u8) bool {
+    var si: usize = 0;
+    var pi: usize = 0;
+    var star_pi: usize = pattern.len;
+    var star_si: usize = 0;
+
+    while (si < str.len or pi < pattern.len) {
+        if (pi < pattern.len) {
+            if (pattern[pi] == '%') {
+                star_pi = pi;
+                star_si = si;
+                pi += 1;
+                continue;
+            }
+            if (si < str.len) {
+                const sc = toLowerASCII(str[si]);
+                const pc = toLowerASCII(pattern[pi]);
+                if (pc == '_' or sc == pc) {
+                    si += 1;
+                    pi += 1;
+                    continue;
+                }
+            }
+        }
+        if (star_pi < pattern.len) {
+            pi = star_pi + 1;
+            star_si += 1;
+            si = star_si;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+inline fn toLowerASCII(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+/// Filter string column with SQL LIKE pattern, returns matching indices.
+/// offsets_ptr[i] = byte offset of string i in data, offsets_ptr[count] = total data length.
+/// negated: 0 = LIKE, 1 = NOT LIKE
+export fn filterStringLike(
+    data_ptr: [*]const u8,
+    offsets_ptr: [*]const u32,
+    count: usize,
+    pattern_ptr: [*]const u8,
+    pattern_len: usize,
+    negated: u32,
+    out_indices: [*]u32,
+    max_out: usize,
+) usize {
+    var out_count: usize = 0;
+    const pattern = pattern_ptr[0..pattern_len];
+    const negate = negated != 0;
+
+    for (0..count) |i| {
+        if (out_count >= max_out) break;
+        const start = offsets_ptr[i];
+        const end = offsets_ptr[i + 1];
+        const str = data_ptr[start..end];
+        const matches = sqlLikeMatchCI(str, pattern);
+        if (matches != negate) {
+            out_indices[out_count] = @intCast(i);
+            out_count += 1;
+        }
+    }
+    return out_count;
+}
+
 /// AND two index arrays (intersection)
 /// Uses O(n+m) sorted merge since filter outputs are always in ascending order
 export fn intersectIndices(

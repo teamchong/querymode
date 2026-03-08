@@ -340,7 +340,7 @@ pub const Executor = struct {
         }
 
         var gen_result = try codegen.generateWithLayoutTypesAndNullability(&plan, &type_map, &nullable_map);
-        const needs_string_arena = codegen.needsStringArena();
+        _ = codegen.needsStringArena();
 
         // Hash the generated source to use as cache key
         const query_hash = std.hash.Wyhash.hash(0, gen_result.source);
@@ -353,7 +353,7 @@ pub const Executor = struct {
             // Cache hit - free the gen_result layout since we'll use cached layout
             gen_result.layout.deinit();
             break :blk cached.compiled_ptr orelse return error.CompiledFunctionNull;
-        } else blk: {
+        } else {
             // Cache miss - JIT compilation not available
             gen_result.layout.deinit();
             return error.NotImplemented;

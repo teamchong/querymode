@@ -11,8 +11,14 @@ The `DataFrame` is a lazy query builder. All methods return a new DataFrame (imm
 df.filter("age", "gt", 25)
 df.filter("status", "eq", "active")
 df.filter("id", "in", [1, 2, 3])
+df.filter("name", "like", "%alice%")
+df.filter("amount", "between", [100, 500])
 df.whereNotNull("email")
 df.whereNull("deleted_at")
+df.whereOr(
+  [{ column: "region", op: "eq", value: "us" }],
+  [{ column: "region", op: "eq", value: "eu" }],
+)
 ```
 
 | Operator | Description |
@@ -24,6 +30,11 @@ df.whereNull("deleted_at")
 | `lt` | Less than |
 | `lte` | Less than or equal |
 | `in` | Membership in array |
+| `not_in` | Not in array |
+| `between` | Within range `[low, high]` |
+| `not_between` | Outside range |
+| `like` | SQL LIKE pattern (`%` = any, `_` = single char) |
+| `not_like` | Negated LIKE |
 | `is_null` | Value is null |
 | `is_not_null` | Value is not null |
 
@@ -123,8 +134,42 @@ These execute the query and return results:
 | `explain()` | `ExplainResult` | Show execution plan without running |
 | `describe()` | Table schema | Column names, types, row counts |
 | `head(n)` | `Row[]` | First N rows (shorthand for limit + collect) |
+| `shape()` | `{ rows, columns }` | Row and column count |
+| `dtypes()` | `Record<string, string>` | Column name → type map |
+| `sample(n)` | `Row[]` | Random sample of N rows |
+| `valueCounts(col)` | `{ value, count }[]` | Frequency counts sorted desc |
+| `toJSON(opts?)` | `string` | Export as JSON string |
+| `toCSV(opts?)` | `string` | Export as CSV string |
+| `show(n?)` | `void` | Print first N rows to console |
 | `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
 | `dropTable()` | `DropResult` | Delete table and all fragments |
+
+## Data exploration
+
+Familiar methods for interactive data work:
+
+```typescript
+// Shape and schema
+const { rows, columns } = await df.shape()     // { rows: 50000, columns: 8 }
+const types = await df.dtypes()                  // { id: "int64", name: "utf8", ... }
+
+// Preview
+await df.show(10)                                // console.table() first 10 rows
+const sample = await df.sample(5)                // random 5 rows
+
+// Frequency analysis
+const counts = await df.valueCounts("region")    // [{ value: "us", count: 12000 }, ...]
+
+// Clean and transform
+df.fillNull("score", 0)                          // replace nulls
+df.cast("amount", "number")                      // type conversion
+
+// Export
+const json = await df.toJSON({ pretty: true })
+const csv = await df.toCSV({ delimiter: "\t" })
+```
+
+These are all sugar over existing methods — `shape()` calls `explain()`, `valueCounts()` uses `groupBy().aggregate()`, `fillNull()` and `cast()` use `computed()`.
 
 ## Progress tracking
 

@@ -140,6 +140,10 @@ export class SqlWrappingExecutor implements QueryExecutor {
 
     return { ...result, rows, rowCount: rows.length };
   }
+
+  async explain(query: QueryDescriptor): Promise<import("../types.js").ExplainResult> {
+    return this.inner.explain(query);
+  }
 }
 
 /** Manual aggregation for when WHERE couldn't be fully pushed down */

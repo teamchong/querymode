@@ -302,6 +302,8 @@ export interface ExplainResult {
   estimatedBytes: number;
   estimatedR2Reads: number;
   fragments: number;
+  /** Fragments skipped by fragment-level min/max pruning */
+  fragmentsSkipped?: number;
   filters: { column: string; op: string; pushable: boolean }[];
   metaCached: boolean;
   /** Estimated number of rows after filter pushdown */
@@ -311,6 +313,11 @@ export interface ExplainResult {
 /** Environment bindings for Cloudflare Workers */
 export interface Env {
   DATA_BUCKET: R2Bucket;
+  /** Additional R2 buckets for PB-scale sharding (DATA_BUCKET_1, DATA_BUCKET_2, ...).
+   *  When present, data is distributed across buckets by partition key hash. */
+  DATA_BUCKET_1?: R2Bucket;
+  DATA_BUCKET_2?: R2Bucket;
+  DATA_BUCKET_3?: R2Bucket;
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
   FRAGMENT_DO: DurableObjectNamespace;
