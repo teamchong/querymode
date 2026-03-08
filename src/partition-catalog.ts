@@ -141,10 +141,12 @@ export class PartitionCatalog {
         return [...ids];
       }
       case "neq": {
+        if (!this.exactPartition) return null;
         const excluded = new Set(this.index.get(String(filter.value)) ?? []);
         return this.allFragmentIds.filter(id => !excluded.has(id));
       }
       case "not_in": {
+        if (!this.exactPartition) return null;
         if (!Array.isArray(filter.value)) return null;
         const excluded = new Set<number>();
         for (const v of filter.value) {

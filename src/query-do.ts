@@ -1438,9 +1438,16 @@ export class QueryDO extends DurableObject<Env> {
       `${tableName}.lance`, `${tableName}.parquet`, tableName,
       `data/${tableName}.lance`, `data/${tableName}.parquet`, `data/${tableName}`,
     ];
-    for (const r2Key of candidates) {
-      const head = await this.r2(r2Key).head(r2Key);
-      if (!head) continue;
+    // Probe all candidates in parallel — first hit wins
+    const heads = await Promise.all(
+      candidates.map(async r2Key => {
+        const head = await this.r2(r2Key).head(r2Key);
+        return head ? { r2Key, head } : null;
+      }),
+    );
+    for (const hit of heads) {
+      if (!hit) continue;
+      const { r2Key, head } = hit;
 
       const fileSize = BigInt(head.size);
       const tailSize = Math.min(Number(fileSize), 40);

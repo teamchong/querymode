@@ -1,0 +1,86 @@
+---
+title: Vector Search
+description: Similarity search with SIMD acceleration, IVF-PQ indexes, and text-to-vector encoding.
+---
+
+QueryMode supports vector similarity search on embedding columns stored in Lance format. Searches use WASM SIMD for acceleration and IVF-PQ indexes when available.
+
+## DataFrame API
+
+```typescript
+// Search with a raw vector
+const similar = await qm
+  .table("images")
+  .vector("embedding", queryVector, 10)
+  .select("id", "title")
+  .collect()
+
+// Search with text (requires encoder)
+const similar = await qm
+  .table("articles")
+  .vector("embedding", "climate change solutions", 10, {
+    encoder: async (text) => myModel.encode(text),
+    metric: "cosine",
+  })
+  .collect()
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `column` | `string` | Column containing `Float32Array` embeddings |
+| `queryVector` | `Float32Array \| string` | Query vector or text (text requires `encoder`) |
+| `topK` | `number` | Number of nearest neighbors to return |
+| `opts.metric` | `"cosine" \| "l2" \| "dot"` | Distance metric (default: `"cosine"`) |
+| `opts.encoder` | `(text: string) => Promise<Float32Array>` | Text-to-vector encoder for string queries |
+| `opts.nprobe` | `number` | IVF-PQ tuning: number of partitions to probe |
+| `opts.efSearch` | `number` | HNSW tuning: search beam width |
+
+## SQL
+
+```sql
+SELECT id, title FROM articles
+WHERE embedding NEAR [0.1, 0.2, 0.3, ...] TOPK 10
+```
+
+The `NEAR` operator performs vector similarity search. `TOPK` limits results to the K nearest neighbors.
+
+## Distance metrics
+
+| Metric | Description | Best for |
+|--------|-------------|----------|
+| `cosine` | Cosine similarity (default) | Text embeddings, normalized vectors |
+| `l2` | Euclidean distance | Spatial data, unnormalized vectors |
+| `dot` | Dot product | When vectors are pre-normalized |
+
+## Index types
+
+### Flat (no index)
+
+Without an index, QueryMode performs brute-force SIMD-accelerated distance computation across all vectors. Fast for datasets under ~100K vectors.
+
+### IVF-PQ
+
+For larger datasets, create an IVF-PQ (Inverted File with Product Quantization) index:
+
+- **IVF** partitions vectors into clusters. At query time, only `nprobe` clusters are searched.
+- **PQ** compresses vectors into compact codes, reducing memory and I/O.
+
+IVF-PQ indexes are stored alongside data in R2 and loaded on first query.
+
+## Combining with filters
+
+Vector search composes with all other DataFrame operations:
+
+```typescript
+const results = await qm
+  .table("products")
+  .filter("category", "eq", "electronics")
+  .filter("price", "lt", 1000)
+  .vector("embedding", queryVec, 20, { metric: "l2" })
+  .select("id", "name", "price")
+  .collect()
+```
+
+Filters are applied before vector search — only matching rows are scanned for similarity.

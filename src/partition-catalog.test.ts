@@ -184,15 +184,25 @@ describe("PartitionCatalog", () => {
       expect(result).toBeNull();
     });
 
-    it("neq still works on range data (conservative — includes all non-excluded)", () => {
+    it("neq returns null on range data (prevents false exclusion)", () => {
       const fragments = new Map<number, TableMeta>([
         makeFragmentMeta(1, "id", 1, 100),
         makeFragmentMeta(2, "id", 101, 200),
       ]);
       const catalog = PartitionCatalog.fromFragments("id", fragments);
-      // neq is safe even for range data — worst case is slightly over-inclusive
+      // neq on range data could falsely exclude fragments containing matching rows
       const result = catalog.prune([{ column: "id", op: "neq", value: 1 }]);
-      expect(result).not.toBeNull();
+      expect(result).toBeNull();
+    });
+
+    it("not_in returns null on range data", () => {
+      const fragments = new Map<number, TableMeta>([
+        makeFragmentMeta(1, "id", 1, 100),
+        makeFragmentMeta(2, "id", 101, 200),
+      ]);
+      const catalog = PartitionCatalog.fromFragments("id", fragments);
+      const result = catalog.prune([{ column: "id", op: "not_in", value: [1, 101] }]);
+      expect(result).toBeNull();
     });
   });
 

@@ -1651,14 +1651,22 @@ export class TopKOperator implements Operator {
       else if (heap.length > 0 && shouldReplace(row)) { heap[0] = row; siftDown(heap, 0); }
     };
 
-    // Use columnar path if available — materialize only the rows that enter the heap
+    // Use columnar path if available — only materialize rows that would enter the heap
     if (this.upstream.nextColumnar) {
       while (true) {
         const batch = await this.upstream.nextColumnar();
         if (!batch) break;
         const indices = batch.selection ?? Uint32Array.from({ length: batch.rowCount }, (_, i) => i);
         const colNames = Array.from(batch.columns.keys());
+        const sortVals = batch.columns.get(col);
         for (const idx of indices) {
+          // Fast reject: if heap is full and this value can't beat the root, skip materialization
+          if (sortVals && heap.length >= k) {
+            const nv = sortVals[idx] as Row[string];
+            const rv = heap[0][col];
+            if (nv === null) continue;
+            if (rv !== null && (desc ? nv <= rv : nv >= rv)) continue;
+          }
           const row: Row = {};
           for (const name of colNames) {
             row[name] = (batch.columns.get(name)![idx] as Row[string]) ?? null;

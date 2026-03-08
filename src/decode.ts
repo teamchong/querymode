@@ -477,8 +477,16 @@ export function matchesFilter(
     case "gte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) >= (b as number | bigint | string); }
     case "lt":  { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) < (b as number | bigint | string); }
     case "lte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) <= (b as number | bigint | string); }
-    case "in":  return Array.isArray(t) && t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
-    case "not_in": return Array.isArray(t) && !t.some(v => { const [a, b] = coerceCompare(val, v); return a === b; });
+    case "in": {
+      if (!Array.isArray(t)) return false;
+      const set = getInSet(t);
+      return set.has(typeof val === "bigint" ? Number(val) : val);
+    }
+    case "not_in": {
+      if (!Array.isArray(t)) return false;
+      const set = getInSet(t);
+      return !set.has(typeof val === "bigint" ? Number(val) : val);
+    }
     case "between": {
       if (!Array.isArray(t) || t.length !== 2) return false;
       const [, lo] = coerceCompare(val, t[0]);
@@ -503,6 +511,20 @@ export function matchesFilter(
     }
     default:    return true;
   }
+}
+
+/** Cache IN/NOT_IN value sets — O(1) lookup instead of O(m) per row. */
+const inSetCache = new WeakMap<readonly (number | bigint | string)[], Set<number | string>>();
+
+function getInSet(values: readonly (number | bigint | string)[]): Set<number | string> {
+  let cached = inSetCache.get(values);
+  if (cached) return cached;
+  const set = new Set<number | string>();
+  for (const v of values) {
+    set.add(typeof v === "bigint" ? Number(v) : v);
+  }
+  inSetCache.set(values, set);
+  return set;
 }
 
 /** Cache compiled LIKE regexes — avoids re-compilation per row. */
