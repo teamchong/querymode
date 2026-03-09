@@ -11,7 +11,7 @@ import type { ColumnMeta, FilterOp, PageInfo, Row } from "./types.js";
 import { NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
-import { canSkipPage, matchesFilter, decodePage } from "./decode.js";
+import { canSkipPage, matchesFilter, rowPassesFilters, decodePage } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 
 const _textEncoder = new TextEncoder();
@@ -1053,8 +1053,8 @@ export class WindowOperator implements Operator {
           if (n > runMax) runMax = n;
         }
         switch (fn) {
-          case "sum": rows[indices[i]][alias] = runSum; break;
-          case "avg": rows[indices[i]][alias] = runCount === 0 ? 0 : runSum / runCount; break;
+          case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
+          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : runSum / runCount; break;
           case "min": rows[indices[i]][alias] = runMin === Infinity ? null : runMin; break;
           case "max": rows[indices[i]][alias] = runMax === -Infinity ? null : runMax; break;
           case "count": rows[indices[i]][alias] = runCount; break;
@@ -1087,8 +1087,8 @@ export class WindowOperator implements Operator {
       }
 
       switch (fn) {
-        case "sum": rows[indices[i]][alias] = sum; break;
-        case "avg": rows[indices[i]][alias] = count === 0 ? 0 : sum / count; break;
+        case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
+        case "avg": rows[indices[i]][alias] = count === 0 ? null : sum / count; break;
         case "min": rows[indices[i]][alias] = min === Infinity ? null : min; break;
         case "max": rows[indices[i]][alias] = max === -Infinity ? null : max; break;
         case "count": rows[indices[i]][alias] = count; break;
@@ -1354,28 +1354,7 @@ export class FilterOperator implements Operator {
   }
 
   private matchesRow(row: Row): boolean {
-    // AND filters must all pass
-    const andPass = this.filters.every(f => {
-      const v = row[f.column];
-      if (f.op === "is_null") return v === null || v === undefined;
-      if (f.op === "is_not_null") return v !== null && v !== undefined;
-      return v !== null && matchesFilter(v, f);
-    });
-    if (!andPass) return false;
-
-    // OR groups: at least one group must pass (each group is AND-connected)
-    if (this.filterGroups && this.filterGroups.length > 0) {
-      return this.filterGroups.some(group =>
-        group.every(f => {
-          const v = row[f.column];
-          if (f.op === "is_null") return v === null || v === undefined;
-          if (f.op === "is_not_null") return v !== null && v !== undefined;
-          return v !== null && matchesFilter(v, f);
-        }),
-      );
-    }
-
-    return true;
+    return rowPassesFilters(row, this.filters, this.filterGroups);
   }
 
   async nextColumnar(): Promise<ColumnarBatch | null> {

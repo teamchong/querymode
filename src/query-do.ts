@@ -5,7 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage, canSkipFragment, matchesFilter } from "./decode.js";
+import { canSkipPage, canSkipFragment, rowPassesFilters } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -433,29 +433,8 @@ export class QueryDO extends DurableObject<Env> {
   /** Apply filters, sort, and limit in JS. Handles bigint↔number coercion for cross-type comparison. */
   private applyJsPostProcessing(rows: Row[], query: QueryDescriptor): Row[] {
     let result = rows;
-    if (query.filters.length > 0) {
-      result = result.filter(row =>
-        query.filters.every(f => {
-          const v = row[f.column];
-          if (f.op === "is_null") return v === null || v === undefined;
-          if (f.op === "is_not_null") return v !== null && v !== undefined;
-          if (v === null || v === undefined) return false;
-          return matchesFilter(v as number | bigint | string | boolean, f);
-        }),
-      );
-    }
-    if (query.filterGroups && query.filterGroups.length > 0) {
-      result = result.filter(row =>
-        query.filterGroups!.some(group =>
-          group.every(f => {
-            const v = row[f.column];
-            if (f.op === "is_null") return v === null || v === undefined;
-            if (f.op === "is_not_null") return v !== null && v !== undefined;
-            if (v === null || v === undefined) return false;
-            return matchesFilter(v as number | bigint | string | boolean, f);
-          }),
-        ),
-      );
+    if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
+      result = result.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
     }
     if (query.sortColumn) {
       const dir = query.sortDirection === "desc" ? -1 : 1;

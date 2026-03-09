@@ -16,7 +16,7 @@ import type {
   WindowSpec,
 } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
-import { matchesFilter } from "./decode.js";
+import { rowPassesFilters } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { descriptorToCode } from "./descriptor-to-code.js";
 
@@ -894,32 +894,9 @@ export class MaterializedExecutor implements QueryExecutor {
       });
     }
 
-    // Apply AND filters
-    if (query.filters.length > 0) {
-      rows = rows.filter(row =>
-        query.filters.every(f => {
-          const v = row[f.column];
-          if (f.op === "is_null") return v === null || v === undefined;
-          if (f.op === "is_not_null") return v !== null && v !== undefined;
-          if (v === null || v === undefined) return false;
-          return matchesFilter(v as Row[string], f);
-        }),
-      );
-    }
-
-    // Apply OR filter groups (each group is AND-connected, groups are OR'd)
-    if (query.filterGroups && query.filterGroups.length > 0) {
-      rows = rows.filter(row =>
-        query.filterGroups!.some(group =>
-          group.every(f => {
-            const v = row[f.column];
-            if (f.op === "is_null") return v === null || v === undefined;
-            if (f.op === "is_not_null") return v !== null && v !== undefined;
-            if (v === null || v === undefined) return false;
-            return matchesFilter(v as Row[string], f);
-          }),
-        ),
-      );
+    // Apply filters (AND + OR groups)
+    if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
+      rows = rows.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
     }
 
     // Apply aggregation

@@ -138,27 +138,7 @@ export function assembleRows(
       row[col.name] = values ? (values[i] as Row[string]) : null;
     }
 
-    // AND filters must all pass
-    const andPass = query.filters.every(f => {
-      const v = row[f.column];
-      if (f.op === "is_null") return v === null || v === undefined;
-      if (f.op === "is_not_null") return v !== null && v !== undefined;
-      return v !== null && matchesFilter(v, f);
-    });
-    if (!andPass) continue;
-
-    // OR groups: at least one group must pass
-    if (query.filterGroups && query.filterGroups.length > 0) {
-      const orPass = query.filterGroups.some(group =>
-        group.every(f => {
-          const v = row[f.column];
-          if (f.op === "is_null") return v === null || v === undefined;
-          if (f.op === "is_not_null") return v !== null && v !== undefined;
-          return v !== null && matchesFilter(v, f);
-        }),
-      );
-      if (!orPass) continue;
-    }
+    if (!rowPassesFilters(row, query.filters, query.filterGroups)) continue;
 
     rows.push(row);
   }
@@ -524,6 +504,29 @@ function getInSet(values: readonly (number | bigint | string)[]): Set<number | b
   const set = new Set<number | bigint | string>(values);
   inSetCache.set(values, set);
   return set;
+}
+
+/** Test whether a row passes AND filters + OR filter groups. */
+export function rowPassesFilters(row: Row, filters: FilterOp[], filterGroups?: FilterOp[][]): boolean {
+  for (const f of filters) {
+    const v = row[f.column];
+    if (f.op === "is_null") { if (v !== null && v !== undefined) return false; continue; }
+    if (f.op === "is_not_null") { if (v === null || v === undefined) return false; continue; }
+    if (v === null || v === undefined) return false;
+    if (!matchesFilter(v, f)) return false;
+  }
+  if (filterGroups && filterGroups.length > 0) {
+    return filterGroups.some(group =>
+      group.every(f => {
+        const v = row[f.column];
+        if (f.op === "is_null") return v === null || v === undefined;
+        if (f.op === "is_not_null") return v !== null && v !== undefined;
+        if (v === null || v === undefined) return false;
+        return matchesFilter(v, f);
+      }),
+    );
+  }
+  return true;
 }
 
 /** Cache compiled LIKE regexes — avoids re-compilation per row. */

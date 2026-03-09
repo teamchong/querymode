@@ -732,6 +732,7 @@ class Parser {
     // Frame clause
     if (this.check(TokenType.ROWS) || this.check(TokenType.RANGE)) {
       const frameType = this.match(TokenType.ROWS) ? "rows" as const : (this.advance(), "range" as const);
+      this.match(TokenType.BETWEEN); // consume optional BETWEEN keyword
       const start = this.parseFrameBound();
       let end: NonNullable<SqlWindowSpec["frame"]>["end"];
       if (this.match(TokenType.AND)) {
