@@ -253,8 +253,9 @@ describe("MaterializedExecutor", () => {
       const result = await createFromJSON([] as Record<string, unknown>[])
         .aggregate("sum", "amount", "total")
         .collect();
-      // Empty input → no groups → no rows
-      expect(result.rowCount).toBe(0);
+      // SQL standard: SELECT SUM(x) FROM empty_table returns 1 row with null
+      expect(result.rowCount).toBe(1);
+      expect(result.rows[0].total).toBe(null);
     });
   });
 

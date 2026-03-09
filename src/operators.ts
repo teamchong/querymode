@@ -2660,6 +2660,7 @@ export class ExternalSortOperator implements Operator {
   private mergeReaders: { iter: AsyncGenerator<Row>; current: Row | null }[] | null = null;
   private mergeHeap: number[] | null = null;
   private mergeCompareFn: ((a: Row, b: Row) => number) | null = null;
+  private mergeSiftDown: ((i: number) => void) | null = null;
   private skipped = 0;
 
   constructor(
@@ -2766,22 +2767,23 @@ export class ExternalSortOperator implements Operator {
     const heapCmp = (a: number, b: number): number =>
       compareFn(readers[a].current!, readers[b].current!);
 
-    const siftDown = (arr: number[], i: number): void => {
+    const siftDown = (i: number): void => {
       while (true) {
         let t = i;
         const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < arr.length && heapCmp(arr[l], arr[t]) < 0) t = l;
-        if (r < arr.length && heapCmp(arr[r], arr[t]) < 0) t = r;
+        if (l < heap.length && heapCmp(heap[l], heap[t]) < 0) t = l;
+        if (r < heap.length && heapCmp(heap[r], heap[t]) < 0) t = r;
         if (t === i) break;
-        [arr[i], arr[t]] = [arr[t], arr[i]];
+        [heap[i], heap[t]] = [heap[t], heap[i]];
         i = t;
       }
     };
 
-    for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) siftDown(heap, i);
+    for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) siftDown(i);
 
     this.mergeReaders = readers;
     this.mergeHeap = heap;
+    this.mergeSiftDown = siftDown;
   }
 
   async next(): Promise<RowBatch | null> {
@@ -2799,22 +2801,7 @@ export class ExternalSortOperator implements Operator {
 
     const readers = this.mergeReaders!;
     const heap = this.mergeHeap!;
-    const compareFn = this.getCompareFn();
-
-    const heapCmp = (a: number, b: number): number =>
-      compareFn(readers[a].current!, readers[b].current!);
-
-    const siftDown = (i: number): void => {
-      while (true) {
-        let t = i;
-        const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < heap.length && heapCmp(heap[l], heap[t]) < 0) t = l;
-        if (r < heap.length && heapCmp(heap[r], heap[t]) < 0) t = r;
-        if (t === i) break;
-        [heap[i], heap[t]] = [heap[t], heap[i]];
-        i = t;
-      }
-    };
+    const siftDown = this.mergeSiftDown!;
 
     if (heap.length === 0) {
       await this.spill.cleanup();

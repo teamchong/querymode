@@ -12,9 +12,9 @@
 
 import type { QueryDescriptor, QueryExecutor } from "../client.js";
 import type { AggregateOp, QueryResult, Row } from "../types.js";
-import { groupKey } from "../types.js";
 import type { SqlExpr, SqlOrderBy } from "./ast.js";
 import { evaluateExpr, isTruthy } from "./evaluator.js";
+import { computePartialAgg, finalizePartialAgg } from "../partial-agg.js";
 
 export interface SqlExecutorOpts {
   /** Full WHERE expression for row-level evaluation (when FilterOp[] is incomplete) */
@@ -150,104 +150,7 @@ export class SqlWrappingExecutor implements QueryExecutor {
 
 /** Manual aggregation for when WHERE couldn't be fully pushed down */
 function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): Row[] {
-  if (!groupBy || groupBy.length === 0) {
-    const result: Row = {};
-    for (const agg of aggregates) {
-      result[agg.alias ?? `${agg.fn}_${agg.column}`] = computeAgg(rows, agg);
-    }
-    return [result];
-  }
-
-  const groups = new Map<string, Row[]>();
-  for (const row of rows) {
-    const key = groupKey(row, groupBy);
-    let group = groups.get(key);
-    if (!group) {
-      group = [];
-      groups.set(key, group);
-    }
-    group.push(row);
-  }
-
-  const results: Row[] = [];
-  for (const group of groups.values()) {
-    const row: Row = {};
-    for (const col of groupBy) {
-      row[col] = group[0][col];
-    }
-    for (const agg of aggregates) {
-      row[agg.alias ?? `${agg.fn}_${agg.column}`] = computeAgg(group, agg);
-    }
-    results.push(row);
-  }
-  return results;
-}
-
-function computeAgg(rows: Row[], agg: AggregateOp): number | bigint | string | boolean | Float32Array | null {
-  if (agg.fn === "count") {
-    if (agg.column === "*") return rows.length;
-    let cnt = 0;
-    for (const r of rows) if (r[agg.column] != null) cnt++;
-    return cnt;
-  }
-
-  if (agg.fn === "count_distinct") {
-    const seen = new Set<string>();
-    for (const row of rows) {
-      const v = row[agg.column];
-      if (v !== null && v !== undefined) seen.add(String(v));
-    }
-    return seen.size;
-  }
-
-  const needValues = agg.fn === "median" || agg.fn === "percentile" || agg.fn === "stddev" || agg.fn === "variance";
-  const values: number[] = needValues ? [] : (undefined as unknown as number[]);
-  let sum = 0, count = 0, min = Infinity, max = -Infinity;
-
-  for (const row of rows) {
-    const v = row[agg.column];
-    if (v === null || v === undefined) continue;
-    const num = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : parseFloat(String(v));
-    if (isNaN(num)) continue;
-    sum += num; count++;
-    if (num < min) min = num;
-    if (num > max) max = num;
-    if (needValues) values.push(num);
-  }
-
-  if (count === 0) return null;
-
-  switch (agg.fn) {
-    case "sum": return sum;
-    case "avg": return sum / count;
-    case "min": return min;
-    case "max": return max;
-    case "stddev": {
-      const mean = sum / count;
-      let sq = 0;
-      for (const v of values) sq += (v - mean) ** 2;
-      return Math.sqrt(sq / count);
-    }
-    case "variance": {
-      const mean = sum / count;
-      let sq = 0;
-      for (const v of values) sq += (v - mean) ** 2;
-      return sq / count;
-    }
-    case "median": {
-      values.sort((a, b) => a - b);
-      const mid = Math.floor(count / 2);
-      return count % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
-    }
-    case "percentile": {
-      if (agg.percentileTarget === undefined) return null;
-      values.sort((a, b) => a - b);
-      const p = agg.percentileTarget;
-      const idx = p * (count - 1);
-      const lo = Math.floor(idx);
-      const hi = Math.ceil(idx);
-      return lo === hi ? values[lo] : values[lo] + (values[hi] - values[lo]) * (idx - lo);
-    }
-    default: return null;
-  }
+  const query = { table: "", filters: [], projections: [], aggregates, groupBy } as QueryDescriptor;
+  const partial = computePartialAgg(rows, query);
+  return finalizePartialAgg(partial, query);
 }

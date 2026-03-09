@@ -68,45 +68,32 @@ export function updatePartialAgg(
   }
 }
 
-function resolveValue(state: PartialAggState): number {
+function resolveValue(state: PartialAggState): number | null {
+  // count/count_distinct always return a number (0 for empty)
+  if (state.fn === "count") return state.count;
+  if (state.fn === "count_distinct") return state.distinctSet?.size ?? 0;
+  // All other aggregates return null when no non-null values were seen (SQL standard)
+  if (state.count === 0) return null;
   switch (state.fn) {
-    case "sum":
-      return state.sum;
-    case "avg":
-      return state.count === 0 ? 0 : state.sum / state.count;
-    case "min":
-      return state.count === 0 ? 0 : state.min;
-    case "max":
-      return state.count === 0 ? 0 : state.max;
-    case "count":
-      return state.count;
-    case "count_distinct":
-      return state.distinctSet?.size ?? 0;
-    case "stddev": {
-      if (state.count < 2) return 0;
-      return Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
-    }
-    case "variance": {
-      if (state.count < 2) return 0;
-      return (state.m2 ?? 0) / state.count;
-    }
+    case "sum": return state.sum;
+    case "avg": return state.sum / state.count;
+    case "min": return state.min;
+    case "max": return state.max;
+    case "stddev": return state.count < 2 ? 0 : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
+    case "variance": return state.count < 2 ? 0 : (state.m2 ?? 0) / state.count;
     case "median": {
       const vals = state.values ?? [];
-      if (vals.length === 0) return 0;
       vals.sort((a, b) => a - b);
       const mid = vals.length >> 1;
       return vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
     }
     case "percentile": {
       const vals = state.values ?? [];
-      if (vals.length === 0) return 0;
       vals.sort((a, b) => a - b);
       const p = state.percentileTarget ?? 0.5;
       const idx = p * (vals.length - 1);
-      const lo = Math.floor(idx);
-      const hi = Math.ceil(idx);
-      if (lo === hi) return vals[lo];
-      return vals[lo] + (vals[hi] - vals[lo]) * (idx - lo);
+      const lo = Math.floor(idx), hi = Math.ceil(idx);
+      return lo === hi ? vals[lo] : vals[lo] + (vals[hi] - vals[lo]) * (idx - lo);
     }
   }
 }
