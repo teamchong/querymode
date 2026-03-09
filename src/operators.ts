@@ -8,6 +8,7 @@
  */
 
 import type { ColumnMeta, FilterOp, PageInfo, Row } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, decodePage } from "./decode.js";
@@ -933,7 +934,7 @@ export class WindowOperator implements Operator {
         for (let p = 0; p < win.partitionBy.length; p++) {
           if (p > 0) key += "\x00";
           const v = rows[i][win.partitionBy[p]];
-          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+          key += v === null || v === undefined ? NULL_SENTINEL : String(v);
         }
       } else {
         key = "__all__";
@@ -1146,7 +1147,7 @@ export class DistinctOperator implements Operator {
           if (g > 0) key += "\x00";
           const vals = batch.columns.get(cols[g]);
           const v = vals ? vals[idx] : null;
-          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+          key += v === null || v === undefined ? NULL_SENTINEL : String(v);
         }
         if (!this.seen.has(key)) {
           this.seen.add(key);
@@ -1171,7 +1172,7 @@ export class DistinctOperator implements Operator {
         for (let g = 0; g < keyCols.length; g++) {
           if (g > 0) key += "\x00";
           const v = row[keyCols[g]];
-          key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+          key += v === null || v === undefined ? NULL_SENTINEL : String(v);
         }
         if (!this.seen.has(key)) {
           this.seen.add(key);
@@ -1219,7 +1220,7 @@ export class SetOperator implements Operator {
     for (let i = 0; i < keys.length; i++) {
       if (i > 0) result += "\x00";
       const v = row[keys[i]];
-      result += keys[i] + "=" + (v === null || v === undefined ? "\x01NULL\x01" : String(v));
+      result += keys[i] + "=" + (v === null || v === undefined ? NULL_SENTINEL : String(v));
     }
     return result;
   }

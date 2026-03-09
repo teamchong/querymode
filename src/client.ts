@@ -15,6 +15,7 @@ import type {
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
+import { groupKey } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
 import { matchesFilter } from "./decode.js";
 import { descriptorToCode } from "./descriptor-to-code.js";
@@ -927,14 +928,7 @@ export class MaterializedExecutor implements QueryExecutor {
       const groups = query.groupBy && query.groupBy.length > 0 ? query.groupBy : undefined;
       const buckets = new Map<string, Row[]>();
       for (const row of rows) {
-        let key = "";
-        if (groups) {
-          for (let g = 0; g < groups.length; g++) {
-            if (g > 0) key += "\0";
-            const v = row[groups[g]];
-            key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
-          }
-        }
+        const key = groups ? groupKey(row, groups) : "";
         let bucket = buckets.get(key);
         if (!bucket) { bucket = []; buckets.set(key, bucket); }
         bucket.push(row);

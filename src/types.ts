@@ -1,3 +1,17 @@
+/** Sentinel value used in GROUP BY / DISTINCT keys to distinguish null from empty string. */
+export const NULL_SENTINEL = "\x01NULL\x01";
+
+/** Build a GROUP BY key string from row values. Shared by partial-agg, executor, MaterializedExecutor, operators. */
+export function groupKey(row: Row, cols: string[]): string {
+  let key = "";
+  for (let g = 0; g < cols.length; g++) {
+    if (g > 0) key += "\0";
+    const v = row[cols[g]];
+    key += v === null || v === undefined ? NULL_SENTINEL : String(v);
+  }
+  return key;
+}
+
 /** Lance file footer metadata cached in DO memory */
 export interface Footer {
   /** Byte offset where column metadata starts */

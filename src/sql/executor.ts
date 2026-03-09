@@ -12,6 +12,7 @@
 
 import type { QueryDescriptor, QueryExecutor } from "../client.js";
 import type { AggregateOp, QueryResult, Row } from "../types.js";
+import { groupKey } from "../types.js";
 import type { SqlExpr, SqlOrderBy } from "./ast.js";
 import { evaluateExpr, isTruthy } from "./evaluator.js";
 
@@ -159,12 +160,7 @@ function aggregate(rows: Row[], aggregates: AggregateOp[], groupBy?: string[]): 
 
   const groups = new Map<string, Row[]>();
   for (const row of rows) {
-    let key = "";
-    for (let g = 0; g < groupBy.length; g++) {
-      if (g > 0) key += "\0";
-      const v = row[groupBy[g]];
-      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
-    }
+    const key = groupKey(row, groupBy);
     let group = groups.get(key);
     if (!group) {
       group = [];

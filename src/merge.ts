@@ -34,22 +34,6 @@ function siftDown(
   }
 }
 
-function siftUp(
-  heap: HeapEntry[],
-  i: number,
-  sortCol: string,
-  asc: boolean,
-): void {
-  while (i > 0) {
-    const parent = (i - 1) >> 1;
-    if (compare(heap[i], heap[parent], sortCol, asc) < 0) {
-      [heap[i], heap[parent]] = [heap[parent], heap[i]];
-      i = parent;
-    } else {
-      break;
-    }
-  }
-}
 
 function compare(
   a: HeapEntry,
@@ -99,7 +83,7 @@ export function kWayMerge(
 
     const ai = top.arrayIdx;
     if (indices[ai] < arrays[ai].length) {
-      heap[0] = { arrayIdx: ai, row: arrays[ai][indices[ai]] };
+      top.row = arrays[ai][indices[ai]];
       indices[ai]++;
       siftDown(heap, 0, sortCol, asc);
     } else {

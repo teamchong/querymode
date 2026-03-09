@@ -1,4 +1,5 @@
 import type { Row } from "./types.js";
+import { groupKey, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
 
@@ -163,12 +164,7 @@ export function computePartialAgg(
   const groupCols = query.groupBy;
 
   for (const row of rows) {
-    let key = "";
-    for (let g = 0; g < groupCols.length; g++) {
-      if (g > 0) key += "\x00";
-      const v = row[groupCols[g]];
-      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
-    }
+    const key = groupKey(row, groupCols);
     let states = groups.get(key);
     if (!states) {
       states = aggregates.map((agg) =>
@@ -245,7 +241,7 @@ export function computePartialAggColumnar(
     for (let g = 0; g < groupCols.length; g++) {
       if (g > 0) key += "\x00";
       const v = groupArrays[g] ? groupArrays[g]![idx] : null;
-      key += v === null || v === undefined ? "\x01NULL\x01" : String(v);
+      key += v === null || v === undefined ? NULL_SENTINEL : String(v);
     }
     let states = groups.get(key);
     if (!states) {
@@ -359,7 +355,7 @@ export function finalizePartialAgg(
     const keyParts = key.split("\x00");
     for (let i = 0; i < groupCols.length; i++) {
       const part = keyParts[i];
-      if (part === "\x01NULL\x01") {
+      if (part === NULL_SENTINEL) {
         row[groupCols[i]] = null;
       } else {
         // Attempt to restore numeric types

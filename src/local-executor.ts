@@ -259,7 +259,7 @@ export class LocalExecutor implements QueryExecutor {
       filters: query.filters.map(f => ({
         column: f.column,
         op: f.op,
-        pushable: f.op !== "in" && f.op !== "neq",
+        pushable: true,
       })),
       metaCached: this.metaCache.has(query.table),
     };
