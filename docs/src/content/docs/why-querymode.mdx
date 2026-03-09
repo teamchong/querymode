@@ -3,15 +3,11 @@ title: Why QueryMode
 description: Agents query like humans, but at machine pace. Data infrastructure needs to keep up.
 ---
 
-1. **Agents serve humans.** An agent asking "what's my retention this week?" is the same question a PM would ask in a dashboard. The query is identical. The difference is pace — one human asks once, a thousand agents ask at the same millisecond on behalf of a thousand humans.
+1. **Agents are becoming the majority of internet traffic.** They serve different owners across different parts of the world, but they all serve humans — and humans ask the same questions. When thousands of agents hit the same endpoints at the same millisecond with the same human query, the result is thundering herds that look like a DDoS — except every request is legitimate. That's not a DDoS attack. That's just Tuesday. Data must live at the edge to survive this.
 
-2. **That pace breaks traditional infrastructure.** A thousand identical queries hitting the same origin database at once looks like a DDoS, except every request is legitimate. Connection pools saturate. Cold caches stampede. The database that handles one dashboard user fine collapses under a thousand agents doing the same thing concurrently.
+2. **Agents need live data.** Decisions based on outdated training data lead to bad outcomes. Training data can't keep up with the speed the world produces information. Agents make API calls for live data — lots of them. That data needs to live at the edge, close to where agents run.
 
-3. **Every request pays a serialization tax.** Each agent builds a SQL string, sends it over the network, waits for JSON back, parses it, then builds the next query. An agent chaining three analyses pays that tax six times — three round-trips, three serialize/deserialize cycles. The queries are simple. The overhead is not.
-
-## Concurrency at the origin, serialization per request
-
-A thousand agents asking the same human question at the same millisecond. The infrastructure challenge is handling that concurrency without collapsing the origin, and eliminating the serialization overhead each request pays.
+3. **Every request pays a serialization tax.** Each agent builds a SQL string, sends it over the network, waits for JSON back, parses it, then builds the next query. An agent chaining three analyses pays that tax six times — three round-trips, three serialize/deserialize cycles. The queries are the same ones a human would ask. The overhead is not.
 
 | | Traditional | QueryMode |
 |---|---|---|
