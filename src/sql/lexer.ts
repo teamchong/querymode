@@ -135,11 +135,16 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Numbers
+    // Numbers (supports decimals and scientific notation: 1e10, 1.5e-3, 3E+5)
     if (/[0-9]/.test(ch)) {
       while (pos < len && /[0-9]/.test(sql[pos])) pos++;
       if (pos < len && sql[pos] === ".") {
         pos++;
+        while (pos < len && /[0-9]/.test(sql[pos])) pos++;
+      }
+      if (pos < len && (sql[pos] === "e" || sql[pos] === "E")) {
+        pos++;
+        if (pos < len && (sql[pos] === "+" || sql[pos] === "-")) pos++;
         while (pos < len && /[0-9]/.test(sql[pos])) pos++;
       }
       tokens.push({ type: TokenType.NUMBER, lexeme: sql.slice(start, pos), position: start });

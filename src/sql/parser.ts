@@ -734,7 +734,7 @@ class Parser {
       const frameType = this.match(TokenType.ROWS) ? "rows" as const : (this.advance(), "range" as const);
       this.match(TokenType.BETWEEN); // consume optional BETWEEN keyword
       const start = this.parseFrameBound();
-      let end: NonNullable<SqlWindowSpec["frame"]>["end"];
+      let end: NonNullable<SqlWindowSpec["frame"]>["end"] = { type: "current" as const };
       if (this.match(TokenType.AND)) {
         end = this.parseFrameBound();
       }
@@ -793,7 +793,11 @@ function isFunctionKeyword(type: TokenType): boolean {
   return type === TokenType.COUNT || type === TokenType.SUM ||
     type === TokenType.AVG || type === TokenType.MIN || type === TokenType.MAX ||
     type === TokenType.ROW_NUMBER || type === TokenType.RANK ||
-    type === TokenType.DENSE_RANK || type === TokenType.LAG || type === TokenType.LEAD;
+    type === TokenType.DENSE_RANK || type === TokenType.NTILE ||
+    type === TokenType.LAG || type === TokenType.LEAD ||
+    type === TokenType.FIRST_VALUE || type === TokenType.LAST_VALUE ||
+    type === TokenType.NTH_VALUE || type === TokenType.PERCENT_RANK ||
+    type === TokenType.CUME_DIST;
 }
 
 function isKeywordIdentifier(type: TokenType): boolean {
