@@ -126,6 +126,19 @@ export function tokenize(sql: string): Token[] {
     const start = pos;
     const ch = sql[pos];
 
+    // Line comments (--)
+    if (ch === "-" && pos + 1 < len && sql[pos + 1] === "-") {
+      while (pos < len && sql[pos] !== "\n") pos++;
+      continue;
+    }
+    // Block comments (/* */)
+    if (ch === "/" && pos + 1 < len && sql[pos + 1] === "*") {
+      pos += 2;
+      while (pos + 1 < len && !(sql[pos] === "*" && sql[pos + 1] === "/")) pos++;
+      pos += 2;
+      continue;
+    }
+
     // Identifiers and keywords
     if (/[a-zA-Z_]/.test(ch)) {
       while (pos < len && /[a-zA-Z0-9_]/.test(sql[pos])) pos++;
@@ -143,9 +156,14 @@ export function tokenize(sql: string): Token[] {
         while (pos < len && /[0-9]/.test(sql[pos])) pos++;
       }
       if (pos < len && (sql[pos] === "e" || sql[pos] === "E")) {
+        const ePos = pos;
         pos++;
         if (pos < len && (sql[pos] === "+" || sql[pos] === "-")) pos++;
-        while (pos < len && /[0-9]/.test(sql[pos])) pos++;
+        if (pos < len && /[0-9]/.test(sql[pos])) {
+          while (pos < len && /[0-9]/.test(sql[pos])) pos++;
+        } else {
+          pos = ePos; // rollback — 'e' is not part of this number
+        }
       }
       tokens.push({ type: TokenType.NUMBER, lexeme: sql.slice(start, pos), position: start });
       continue;

@@ -30,10 +30,15 @@ export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
       const val = evaluateExpr(expr.expr, row);
       if (val === null) return null;
       let found = false;
+      let hasNull = false;
       for (const v of expr.values) {
-        if (looseEqual(val, evaluateExpr(v, row))) { found = true; break; }
+        const ev = evaluateExpr(v, row);
+        if (ev === null) { hasNull = true; continue; }
+        if (looseEqual(val, ev)) { found = true; break; }
       }
-      return expr.negated ? !found : found;
+      if (found) return !expr.negated;
+      if (hasNull) return null; // SQL three-valued: NOT IN (..., NULL) → NULL when not found
+      return expr.negated;
     }
 
     case "between": {

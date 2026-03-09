@@ -2166,7 +2166,7 @@ export class HashJoinOperator implements Operator {
       while (true) {
         const batch = await this.right.next();
         if (!batch) break;
-        this.crossRightBuffer.push(...batch);
+        for (const row of batch) this.crossRightBuffer.push(row);
       }
       return;
     }

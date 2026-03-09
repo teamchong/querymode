@@ -295,7 +295,7 @@ export function finalizePartialAgg(
       } else {
         // Attempt to restore numeric types
         const num = Number(part);
-        row[groupCols[i]] = part !== "" && !isNaN(num) && String(num) === part ? num : part;
+        row[groupCols[i]] = part !== "" && !isNaN(num) && isFinite(num) && String(num) === part ? num : part;
       }
     }
     for (let i = 0; i < states.length; i++) {

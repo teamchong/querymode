@@ -17,9 +17,9 @@ export function rowComparator(col: string, desc: boolean): (a: Row, b: Row) => n
   const dir = desc ? -1 : 1;
   return (a: Row, b: Row): number => {
     const av = a[col], bv = b[col];
-    if (av === null && bv === null) return 0;
-    if (av === null) return 1;
-    if (bv === null) return -1;
+    if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
     return av < bv ? -dir : av > bv ? dir : 0;
   };
 }

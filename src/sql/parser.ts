@@ -8,6 +8,12 @@ import type {
   SqlStatement, ShowVersionsStmt, DiffStmt,
 } from "./ast.js";
 
+const COMPARISON_OPS: readonly [TokenType, BinaryOp][] = [
+  [TokenType.EQ, "eq"], [TokenType.NE, "ne"],
+  [TokenType.LT, "lt"], [TokenType.LE, "le"],
+  [TokenType.GT, "gt"], [TokenType.GE, "ge"],
+];
+
 export function parse(sql: string): SelectStmt {
   const tokens = tokenize(sql);
   const parser = new Parser(tokens, sql);
@@ -498,12 +504,7 @@ class Parser {
     }
 
     // Standard comparisons
-    const opMap: [TokenType, BinaryOp][] = [
-      [TokenType.EQ, "eq"], [TokenType.NE, "ne"],
-      [TokenType.LT, "lt"], [TokenType.LE, "le"],
-      [TokenType.GT, "gt"], [TokenType.GE, "ge"],
-    ];
-    for (const [tt, op] of opMap) {
+    for (const [tt, op] of COMPARISON_OPS) {
       if (this.match(tt)) {
         const right = this.parseAddSub();
         return { kind: "binary", op, left, right };
@@ -603,8 +604,9 @@ class Parser {
 
     // Number
     if (this.match(TokenType.NUMBER)) {
-      const num = tok.lexeme.includes(".") ? parseFloat(tok.lexeme) : parseInt(tok.lexeme, 10);
-      const valType = tok.lexeme.includes(".") ? "float" as const : "integer" as const;
+      const isFloat = tok.lexeme.includes(".") || tok.lexeme.includes("e") || tok.lexeme.includes("E");
+      const num = isFloat ? parseFloat(tok.lexeme) : parseInt(tok.lexeme, 10);
+      const valType = isFloat ? "float" as const : "integer" as const;
       return { kind: "value", value: { type: valType, value: num } };
     }
 
@@ -663,7 +665,6 @@ class Parser {
 
       // Check for table.column
       if (this.match(TokenType.DOT)) {
-        const colTok = this.current();
         if (this.match(TokenType.STAR)) {
           // table.* in expression context
           return { kind: "column", table: name, name: "*" };
@@ -734,7 +735,7 @@ class Parser {
       const frameType = this.match(TokenType.ROWS) ? "rows" as const : (this.advance(), "range" as const);
       this.match(TokenType.BETWEEN); // consume optional BETWEEN keyword
       const start = this.parseFrameBound();
-      let end: NonNullable<SqlWindowSpec["frame"]>["end"] = { type: "current" as const };
+      let end: NonNullable<SqlWindowSpec["frame"]>["end"] = { type: "current_row" as const };
       if (this.match(TokenType.AND)) {
         end = this.parseFrameBound();
       }
