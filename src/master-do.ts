@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult, AppendOptions, DropResult } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -114,7 +115,7 @@ export class MasterDO extends DurableObject<Env> {
       const partCol = options.partitionBy;
       const groups = new Map<string, Record<string, unknown>[]>();
       for (const row of rows) {
-        const key = String(row[partCol] ?? "__null__");
+        const key = row[partCol] === null || row[partCol] === undefined ? NULL_SENTINEL : String(row[partCol]);
         let group = groups.get(key);
         if (!group) { group = []; groups.set(key, group); }
         group.push(row);

@@ -755,7 +755,7 @@ export class DataFrame<T extends Row = Row> {
         const rows: Row[] = [];
         let batch: RowBatch | null;
         while ((batch = await op.next()) !== null) {
-          rows.push(...batch);
+          for (const row of batch) rows.push(row);
         }
         await op.close();
         return {

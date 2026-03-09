@@ -670,6 +670,7 @@ export class QueryDO extends DurableObject<Env> {
     for (const p of [...query.projections].sort()) feed(p);
     if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
     if (query.limit !== undefined) feed(String(query.limit));
+    if (query.offset !== undefined) feed(String(query.offset));
     if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
     if (query.groupBy) for (const g of query.groupBy) feed(g);
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
@@ -760,13 +761,13 @@ export class QueryDO extends DurableObject<Env> {
         ...query.filters.map(f => ({
           column: f.column,
           op: f.op,
-          pushable: f.op !== "in" && f.op !== "neq",
+          pushable: true,
         })),
         ...(query.filterGroups ?? []).flatMap(group =>
           group.map(f => ({
             column: f.column,
             op: f.op,
-            pushable: f.op !== "in" && f.op !== "neq",
+            pushable: true,
           })),
         ),
       ],

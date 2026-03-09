@@ -949,9 +949,21 @@ function queryToSql(query: QueryDescriptor): string {
 
   if (query.filters.length > 0) {
     const conditions = query.filters.map(f => {
+      if (f.op === "is_null") return `${quote(f.column)} IS NULL`;
+      if (f.op === "is_not_null") return `${quote(f.column)} IS NOT NULL`;
       if (f.op === "in" && Array.isArray(f.value)) {
         return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
       }
+      if (f.op === "not_in" && Array.isArray(f.value)) {
+        return `${quote(f.column)} NOT IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
+      }
+      if ((f.op === "between" || f.op === "not_between") && Array.isArray(f.value) && f.value.length === 2) {
+        const lo = typeof f.value[0] === "string" ? `'${escapeSql(f.value[0])}'` : String(f.value[0]);
+        const hi = typeof f.value[1] === "string" ? `'${escapeSql(f.value[1])}'` : String(f.value[1]);
+        return `${quote(f.column)} ${f.op === "not_between" ? "NOT " : ""}BETWEEN ${lo} AND ${hi}`;
+      }
+      if (f.op === "like") return `${quote(f.column)} LIKE '${escapeSql(f.value as string)}'`;
+      if (f.op === "not_like") return `${quote(f.column)} NOT LIKE '${escapeSql(f.value as string)}'`;
       const opMap: Record<string, string> = { eq: "=", neq: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=" };
       const val = typeof f.value === "string" ? `'${escapeSql(f.value)}'` : String(f.value);
       return `${quote(f.column)} ${opMap[f.op]} ${val}`;
@@ -968,6 +980,7 @@ function queryToSql(query: QueryDescriptor): string {
   if (query.groupBy?.length) parts.push(`GROUP BY ${query.groupBy.map(quote).join(", ")}`);
   if (query.sortColumn) parts.push(`ORDER BY ${quote(query.sortColumn)} ${query.sortDirection?.toUpperCase() ?? "ASC"}`);
   if (query.limit) parts.push(`LIMIT ${query.limit}`);
+  if (query.offset) parts.push(`OFFSET ${query.offset}`);
 
   return parts.join(" ");
 }

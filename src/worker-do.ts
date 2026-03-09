@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 import { decodeColumnarRun, encodeColumnarRun } from "./r2-spill.js";
 import type { Row } from "./types.js";
-import { rowComparator } from "./types.js";
+import { rowComparator, NULL_SENTINEL } from "./types.js";
 
 interface WorkerEnv {
   DATA_BUCKET: R2Bucket;
@@ -134,7 +134,9 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
     // Build hash map from right side
     const rightMap = new Map<string, Row[]>();
     for (const row of rightRows) {
-      const key = String(row[joinKey] ?? "__null__");
+      const val = row[joinKey];
+      if (val === null || val === undefined) continue; // NULL never matches in SQL joins
+      const key = String(val);
       const existing = rightMap.get(key);
       if (existing) existing.push(row);
       else rightMap.set(key, [row]);
@@ -143,7 +145,12 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
     // Probe with left side
     const result: Row[] = [];
     for (const leftRow of leftRows) {
-      const key = String(leftRow[joinKey] ?? "__null__");
+      const val = leftRow[joinKey];
+      if (val === null || val === undefined) {
+        if (joinType === "left" || joinType === "full") result.push({ ...leftRow });
+        continue;
+      }
+      const key = String(val);
       const matches = rightMap.get(key);
       if (matches) {
         for (const rightRow of matches) {
@@ -163,13 +170,19 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
     if (joinType === "full") {
       const matchedRightKeys = new Set<string>();
       for (const leftRow of leftRows) {
-        const key = String(leftRow[joinKey] ?? "__null__");
+        const val = leftRow[joinKey];
+        if (val === null || val === undefined) continue;
+        const key = String(val);
         if (rightMap.has(key)) matchedRightKeys.add(key);
       }
       for (const [key, rows] of rightMap) {
         if (!matchedRightKeys.has(key)) {
           for (const row of rows) result.push(row);
         }
+      }
+      // Emit null-keyed right rows (unmatched since NULL != NULL)
+      for (const row of rightRows) {
+        if (row[joinKey] === null || row[joinKey] === undefined) result.push(row);
       }
     }
 
@@ -206,8 +219,8 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
 
     for (const row of rows) {
       const key = columns
-        ? columns.map(c => String(row[c] ?? "")).join("\x00")
-        : Object.values(row).map(v => String(v ?? "")).join("\x00");
+        ? columns.map(c => { const v = row[c]; return v === null || v === undefined ? NULL_SENTINEL : String(v); }).join("\x00")
+        : Object.values(row).map(v => v === null || v === undefined ? NULL_SENTINEL : String(v)).join("\x00");
       if (!seen.has(key)) {
         seen.add(key);
         unique.push(row);

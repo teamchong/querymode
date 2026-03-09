@@ -194,23 +194,12 @@ export function readVarint(bytes: Uint8Array, offset: number): { value: number; 
 }
 
 /** Map Lance data type enum to string */
+const DATA_TYPE_MAP: Record<number, DataType> = {
+  0: "int8", 1: "int16", 2: "int32", 3: "int64",
+  4: "uint8", 5: "uint16", 6: "uint32", 7: "uint64",
+  8: "float16", 9: "float32", 10: "float64",
+  11: "utf8", 12: "binary", 13: "bool", 14: "fixed_size_list",
+};
 function dataTypeFromEnum(value: number): DataType {
-  const types: Record<number, DataType> = {
-    0: "int8",
-    1: "int16",
-    2: "int32",
-    3: "int64",
-    4: "uint8",
-    5: "uint16",
-    6: "uint32",
-    7: "uint64",
-    8: "float16",
-    9: "float32",
-    10: "float64",
-    11: "utf8",
-    12: "binary",
-    13: "bool",
-    14: "fixed_size_list",
-  };
-  return types[value] ?? "int64";
+  return DATA_TYPE_MAP[value] ?? "int64";
 }

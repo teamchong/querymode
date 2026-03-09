@@ -182,7 +182,7 @@ export class LocalExecutor implements QueryExecutor {
   /** Count matching rows. No-filter case uses metadata only (zero I/O). */
   async count(query: QueryDescriptor): Promise<number> {
     const meta = await this.getOrLoadMeta(query.table);
-    if (query.filters.length === 0) {
+    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct) {
       return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
     }
     // With filters: fall through to aggregate path
@@ -375,8 +375,17 @@ export class LocalExecutor implements QueryExecutor {
     if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
     if (query.limit !== undefined) feed(String(query.limit));
     if (query.offset !== undefined) feed(String(query.offset));
+    if (query.filterGroups) {
+      for (const group of query.filterGroups) {
+        feed("|");
+        for (const f of [...group].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+          feed(f.column); feed(f.op); feed(String(f.value));
+        }
+      }
+    }
     if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
     if (query.groupBy) for (const g of query.groupBy) feed(g);
+    if (query.distinct) feed("distinct");
     if (query.version !== undefined) feed(`v${query.version}`);
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
@@ -719,26 +728,26 @@ export class LocalExecutor implements QueryExecutor {
     const from = await loadManifestFragments(fromVersion);
     const to = await loadManifestFragments(toVersion);
 
-    const addedFragments: string[] = [];
-    const removedFragments: string[] = [];
+    const addedFragments: Set<string> = new Set();
+    const removedFragments: Set<string> = new Set();
 
     for (const frag of to.paths) {
-      if (!from.paths.has(frag)) addedFragments.push(frag);
+      if (!from.paths.has(frag)) addedFragments.add(frag);
     }
     for (const frag of from.paths) {
-      if (!to.paths.has(frag)) removedFragments.push(frag);
+      if (!to.paths.has(frag)) removedFragments.add(frag);
     }
 
     let added = 0;
     for (const frag of to.manifest.fragments) {
-      if (addedFragments.includes(frag.filePath)) added += frag.physicalRows;
+      if (addedFragments.has(frag.filePath)) added += frag.physicalRows;
     }
     let removed = 0;
     for (const frag of from.manifest.fragments) {
-      if (removedFragments.includes(frag.filePath)) removed += frag.physicalRows;
+      if (removedFragments.has(frag.filePath)) removed += frag.physicalRows;
     }
 
-    return { added, removed, addedFragments, removedFragments };
+    return { added, removed, addedFragments: [...addedFragments], removedFragments: [...removedFragments] };
   }
 
   /** Load or retrieve cached dataset metadata for a Lance directory. */

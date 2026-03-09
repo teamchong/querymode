@@ -453,27 +453,21 @@ function computePageStats(
   const numValues = dataOffsetInPage !== undefined ? rowCount : rowCount - nullCount;
   if (numValues <= 0) return null;
 
-  // Read null bitmap to skip null positions
-  let nullSet: Set<number> | null = null;
+  // Read null bitmap to skip null positions (bitwise O(1) lookup)
+  let nullBitmap: Uint8Array | null = null;
   if (nullCount > 0 && rowCount > 0) {
     const bitmapBytes = Math.ceil(rowCount / 8);
     if (buf.byteLength >= bitmapBytes) {
-      const bytes = new Uint8Array(buf, 0, bitmapBytes);
-      nullSet = new Set<number>();
-      let idx = 0;
-      for (let b = 0; b < bitmapBytes && idx < rowCount; b++) {
-        for (let bit = 0; bit < 8 && idx < rowCount; bit++, idx++) {
-          if (((bytes[b] >> bit) & 1) === 0) nullSet.add(idx);
-        }
-      }
+      nullBitmap = new Uint8Array(buf, 0, bitmapBytes);
     }
   }
+  const isNull = nullBitmap ? (i: number) => ((nullBitmap![i >> 3] >> (i & 7)) & 1) === 0 : () => false;
 
   switch (dtype) {
     case "float64": {
       let min = Infinity, max = -Infinity;
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getFloat64(i * 8, true);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -483,7 +477,7 @@ function computePageStats(
     case "float32": {
       let min = Infinity, max = -Infinity;
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getFloat32(i * 4, true);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -493,7 +487,7 @@ function computePageStats(
     case "int64": {
       let min = BigInt("9223372036854775807"), max = BigInt("-9223372036854775808");
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getBigInt64(i * 8, true);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -503,7 +497,7 @@ function computePageStats(
     case "int32": {
       let min = 2147483647, max = -2147483648;
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getInt32(i * 4, true);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -513,7 +507,7 @@ function computePageStats(
     case "int16": {
       let min = 32767, max = -32768;
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getInt16(i * 2, true);
         if (v < min) min = v;
         if (v > max) max = v;
@@ -523,7 +517,7 @@ function computePageStats(
     case "int8": {
       let min = 127, max = -128;
       for (let i = 0; i < numValues; i++) {
-        if (nullSet?.has(i)) continue;
+        if (isNull(i)) continue;
         const v = view.getInt8(i);
         if (v < min) min = v;
         if (v > max) max = v;
