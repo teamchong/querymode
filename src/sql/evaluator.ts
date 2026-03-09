@@ -159,9 +159,9 @@ function looseEqual(a: unknown, b: unknown): boolean {
   if (typeof a === "bigint" && typeof b === "bigint") return a === b;
   if (typeof a === "string" && typeof b === "string") return a === b;
   if (typeof a === "boolean" && typeof b === "boolean") return a === b;
-  // Cross-type numeric comparison
-  if (typeof a === "number" && typeof b === "bigint") return a === Number(b);
-  if (typeof a === "bigint" && typeof b === "number") return Number(a) === b;
+  // Cross-type numeric: prefer bigint when safe to avoid precision loss
+  if (typeof a === "number" && typeof b === "bigint") return Number.isSafeInteger(a) ? BigInt(a) === b : a === Number(b);
+  if (typeof a === "bigint" && typeof b === "number") return Number.isSafeInteger(b) ? a === BigInt(b) : Number(a) === b;
   return a === b;
 }
 
@@ -169,7 +169,9 @@ function compare(a: unknown, b: unknown): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
   if (typeof a === "string" && typeof b === "string") return a.localeCompare(b);
-  // Cross-type: coerce to number
+  // Cross-type bigint/number: prefer bigint when safe
+  if (typeof a === "bigint" && typeof b === "number" && Number.isSafeInteger(b)) { const bb = BigInt(b); return a < bb ? -1 : a > bb ? 1 : 0; }
+  if (typeof a === "number" && typeof b === "bigint" && Number.isSafeInteger(a)) { const ab = BigInt(a); return ab < b ? -1 : ab > b ? 1 : 0; }
   return toNumber(a) - toNumber(b);
 }
 
@@ -188,7 +190,8 @@ function matchLike(value: string, pattern: string): boolean {
 function castValue(val: unknown, targetType: string): unknown {
   if (val === null) return null;
   const t = targetType.toLowerCase();
-  if (t === "int" || t === "integer" || t === "bigint") return Math.trunc(toNumber(val));
+  if (t === "bigint") return BigInt(Math.trunc(toNumber(val)));
+  if (t === "int" || t === "integer") return Math.trunc(toNumber(val));
   if (t === "float" || t === "double" || t === "real" || t === "decimal" || t === "numeric") return toNumber(val);
   if (t === "text" || t === "varchar" || t === "string" || t === "char") return String(val);
   if (t === "bool" || t === "boolean") return isTruthy(val);
