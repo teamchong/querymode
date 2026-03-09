@@ -1,4 +1,5 @@
 import type { ColumnMeta, PageInfo, Row, DataType } from "./types.js";
+import { rowComparator } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { decodeParquetColumnChunk, decodePlainValues } from "./parquet-decode.js";
@@ -294,14 +295,7 @@ export function applySortAndLimit(rows: Row[], query: QueryDescriptor): Row[] {
     return sorted.slice(offset);
   }
 
-  const dir = desc ? -1 : 1;
-  rows.sort((a, b) => {
-    const av = a[col], bv = b[col];
-    if (av === null && bv === null) return 0;
-    if (av === null) return 1;
-    if (bv === null) return -1;
-    return av < bv ? -dir : av > bv ? dir : 0;
-  });
+  rows.sort(rowComparator(col, desc));
   const start = offset;
   const end = limit !== undefined ? offset + limit : undefined;
   return rows.slice(start, end);

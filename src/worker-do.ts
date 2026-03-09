@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 import { decodeColumnarRun, encodeColumnarRun } from "./r2-spill.js";
 import type { Row } from "./types.js";
+import { rowComparator } from "./types.js";
 
 interface WorkerEnv {
   DATA_BUCKET: R2Bucket;
@@ -186,14 +187,7 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
     const resultKey = `${resultKeyPrefix}/${crypto.randomUUID()}.bin`;
 
     const rows = await this.readPartition(partitionKey);
-    const dir = sortDesc ? -1 : 1;
-    rows.sort((a, b) => {
-      const av = a[sortColumn], bv = b[sortColumn];
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      return av < bv ? -dir : av > bv ? dir : 0;
-    });
+    rows.sort(rowComparator(sortColumn, sortDesc));
 
     return [await this.writePartition(resultKey, rows)];
   }

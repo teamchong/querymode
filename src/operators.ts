@@ -8,7 +8,7 @@
  */
 
 import type { ColumnMeta, FilterOp, PageInfo, Row } from "./types.js";
-import { NULL_SENTINEL } from "./types.js";
+import { NULL_SENTINEL, rowComparator, groupKey } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, rowPassesFilters, decodePage } from "./decode.js";
@@ -872,17 +872,7 @@ export class WindowOperator implements Operator {
     // Group by partitionBy keys
     const partitions = new Map<string, number[]>();
     for (let i = 0; i < rows.length; i++) {
-      let key: string;
-      if (win.partitionBy.length > 0) {
-        key = "";
-        for (let p = 0; p < win.partitionBy.length; p++) {
-          if (p > 0) key += "\x00";
-          const v = rows[i][win.partitionBy[p]];
-          key += v === null || v === undefined ? NULL_SENTINEL : String(v);
-        }
-      } else {
-        key = "__all__";
-      }
+      const key = win.partitionBy.length > 0 ? groupKey(rows[i], win.partitionBy) : "__all__";
       const indices = partitions.get(key);
       if (indices) indices.push(i);
       else partitions.set(key, [i]);
@@ -1112,13 +1102,8 @@ export class DistinctOperator implements Operator {
 
       const unique: Row[] = [];
       for (const row of batch) {
-        let key = "";
         const keyCols = this.columns.length > 0 ? this.columns : Object.keys(row);
-        for (let g = 0; g < keyCols.length; g++) {
-          if (g > 0) key += "\x00";
-          const v = row[keyCols[g]];
-          key += v === null || v === undefined ? NULL_SENTINEL : String(v);
-        }
+        const key = groupKey(row, keyCols);
         if (!this.seen.has(key)) {
           this.seen.add(key);
           unique.push(row);
@@ -1404,6 +1389,8 @@ export class LimitOperator implements Operator {
       return { columns, rowCount: rows.length };
     }
 
+    if (this.remaining <= 0) return null;
+
     while (true) {
       const batch = await this.upstream.nextColumnar();
       if (!batch) return null;
@@ -1430,7 +1417,7 @@ export class LimitOperator implements Operator {
       if (sel.length > 0) {
         return { columns: batch.columns, rowCount: batch.rowCount, selection: sel };
       }
-      return null;
+      // Empty batch — continue to next
     }
   }
 
@@ -1731,15 +1718,7 @@ export class InMemorySortOperator implements Operator {
       }
     }
 
-    const col = this.col;
-    const dir = this.desc ? -1 : 1;
-    allRows.sort((a, b) => {
-      const av = a[col], bv = b[col];
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      return av < bv ? -dir : av > bv ? dir : 0;
-    });
+    allRows.sort(rowComparator(this.col, this.desc));
 
     return this.offset > 0 ? allRows.slice(this.offset) : allRows;
   }
@@ -2602,15 +2581,7 @@ export class ExternalSortOperator implements Operator {
 
   private getCompareFn(): (a: Row, b: Row) => number {
     if (this.mergeCompareFn) return this.mergeCompareFn;
-    const col = this.col;
-    const dir = this.desc ? -1 : 1;
-    this.mergeCompareFn = (a: Row, b: Row): number => {
-      const av = a[col], bv = b[col];
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      return av < bv ? -dir : av > bv ? dir : 0;
-    };
+    this.mergeCompareFn = rowComparator(this.col, this.desc);
     return this.mergeCompareFn;
   }
 

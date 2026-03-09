@@ -12,6 +12,18 @@ export function groupKey(row: Row, cols: string[]): string {
   return key;
 }
 
+/** Nulls-last row comparator for a single sort column. */
+export function rowComparator(col: string, desc: boolean): (a: Row, b: Row) => number {
+  const dir = desc ? -1 : 1;
+  return (a: Row, b: Row): number => {
+    const av = a[col], bv = b[col];
+    if (av === null && bv === null) return 0;
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    return av < bv ? -dir : av > bv ? dir : 0;
+  };
+}
+
 /** Lance file footer metadata cached in DO memory */
 export interface Footer {
   /** Byte offset where column metadata starts */
