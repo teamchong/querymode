@@ -611,7 +611,7 @@ class Parser {
     // String literal
     if (this.match(TokenType.STRING)) {
       // Strip surrounding quotes
-      const raw = tok.lexeme.slice(1, -1).replace(/\\'/g, "'");
+      const raw = tok.lexeme.slice(1, -1).replace(/''/g, "'").replace(/\\'/g, "'");
       return { kind: "value", value: { type: "string", value: raw } };
     }
 

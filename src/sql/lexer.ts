@@ -146,11 +146,13 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // String literals (single-quoted)
+    // String literals (single-quoted, supports '' and \' escaping)
     if (ch === "'") {
       pos++;
-      while (pos < len && sql[pos] !== "'") {
-        if (sql[pos] === "\\" && pos + 1 < len) pos++; // skip escape
+      while (pos < len) {
+        if (sql[pos] === "'" && pos + 1 < len && sql[pos + 1] === "'") { pos += 2; continue; } // doubled quote
+        if (sql[pos] === "'") break;
+        if (sql[pos] === "\\" && pos + 1 < len) pos++; // backslash escape
         pos++;
       }
       if (pos >= len) throw new SqlLexerError(`Unterminated string literal starting at position ${start}`, start);

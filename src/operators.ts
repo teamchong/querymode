@@ -1157,10 +1157,8 @@ export class SetOperator implements Operator {
     if (mode !== "union_all") this.seen = new Set();
   }
 
-  private _sortedKeys: string[] | null = null;
   private rowKey(row: Row): string {
-    if (!this._sortedKeys) this._sortedKeys = Object.keys(row).sort();
-    const keys = this._sortedKeys;
+    const keys = Object.keys(row).sort();
     let result = "";
     for (let i = 0; i < keys.length; i++) {
       if (i > 0) result += "\x00";
