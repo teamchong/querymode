@@ -9,9 +9,9 @@ description: Agents query like humans, but at machine pace. Data infrastructure 
 
 3. **Every request pays a serialization tax.** Each agent builds a SQL string, sends it over the network, waits for JSON back, parses it, then builds the next query. An agent chaining three analyses pays that tax six times — three round-trips, three serialize/deserialize cycles. The queries are simple. The overhead is not.
 
-## The real problem isn't what agents ask — it's how many ask at once
+## Concurrency at the origin, serialization per request
 
-Agents don't ask mysterious questions. They ask the same questions humans ask: funnel analysis, retention, attribution, top-N queries. The infrastructure challenge isn't unpredictability — it's concurrency at the origin and serialization overhead per request.
+A thousand agents asking the same human question at the same millisecond. The infrastructure challenge is handling that concurrency without collapsing the origin, and eliminating the serialization overhead each request pays.
 
 | | Traditional | QueryMode |
 |---|---|---|
