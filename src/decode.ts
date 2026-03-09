@@ -241,10 +241,10 @@ export function decodePage(
           return v2Strings as (string | null)[];
         }
         // Parquet-style: packed non-null values, interleave with nulls
-        const withNulls: (string | null)[] = [];
+        const withNulls = new Array<string | null>(rowCount);
         let vi = 0;
         for (let i = 0; i < rowCount; i++) {
-          withNulls.push(nulls.has(i) ? null : (vi < v2Strings.length ? v2Strings[vi++] : null));
+          withNulls[i] = nulls.has(i) ? null : (vi < v2Strings.length ? v2Strings[vi++] : null);
         }
         return withNulls;
       }
@@ -261,10 +261,10 @@ export function decodePage(
       return values;
     }
     // Parquet-style: packed non-null values, interleave with nulls
-    const withNulls: (number | bigint | string | null)[] = [];
+    const withNulls = new Array<number | bigint | string | null>(rowCount);
     let vi = 0;
     for (let i = 0; i < rowCount; i++) {
-      withNulls.push(nulls.has(i) ? null : (vi < values.length ? values[vi++] : null));
+      withNulls[i] = nulls.has(i) ? null : (vi < values.length ? values[vi++] : null);
     }
     return withNulls;
   }
