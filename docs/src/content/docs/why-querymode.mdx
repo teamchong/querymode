@@ -74,9 +74,9 @@ These do real query optimization work:
 
 The difference: you can see every stage, swap implementations, inject custom logic between operators, and control the memory budget. The plan isn't a black box.
 
-## Composable — even if Cloudflare ships native OLAP
+## Composable by design
 
-Cloudflare may eventually ship a native analytics engine. That would be a fixed engine with a fixed query language. QueryMode is composable: operators are building blocks your code assembles. You can put an [ML scoring function between pipeline stages](/querymode/operators/#compose-operators-directly), swap the sort algorithm, or inject a rate limiter between scan and filter. A black-box engine can't do that — no matter how fast it is.
+Fixed query engines give you a query language and a black box. QueryMode gives you building blocks. You can put an [ML scoring function between pipeline stages](/querymode/operators/#compose-operators-directly), swap the sort algorithm, or inject a rate limiter between scan and filter. The pipeline is your code — not a planner you can't see inside.
 
 ## Governance
 
