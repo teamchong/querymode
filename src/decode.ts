@@ -273,7 +273,7 @@ export function decodePage(
 
 // --- Sort / Top-K ---
 
-function applySortAndLimit(rows: Row[], query: QueryDescriptor): Row[] {
+export function applySortAndLimit(rows: Row[], query: QueryDescriptor): Row[] {
   const offset = query.offset ?? 0;
   const limit = query.limit;
 

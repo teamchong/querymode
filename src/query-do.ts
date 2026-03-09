@@ -5,7 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage, canSkipFragment, rowPassesFilters } from "./decode.js";
+import { canSkipPage, canSkipFragment, rowPassesFilters, applySortAndLimit } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -436,22 +436,7 @@ export class QueryDO extends DurableObject<Env> {
     if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
       result = result.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
     }
-    if (query.sortColumn) {
-      const dir = query.sortDirection === "desc" ? -1 : 1;
-      const sc = query.sortColumn;
-      result.sort((a, b) => {
-        const va = a[sc], vb = b[sc];
-        if (va == null && vb == null) return 0;
-        if (va == null) return 1;
-        if (vb == null) return -1;
-        return va < vb ? -dir : va > vb ? dir : 0;
-      });
-    }
-    const offset = query.offset ?? 0;
-    if (offset > 0 || (query.limit && query.limit > 0)) {
-      result = result.slice(offset, query.limit ? offset + query.limit : undefined);
-    }
-    return result;
+    return applySortAndLimit(result, query);
   }
 
   /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
