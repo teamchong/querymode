@@ -458,9 +458,8 @@ function applyAndFilters(
         Array.isArray(filter.value) && filter.value.length === 2 &&
         typeof filter.value[0] === "number" && typeof filter.value[1] === "number" &&
         (dtype === "float64" || dtype === "float32" || dtype === "int32" || dtype === "int64")) {
-      const filterFn = filter.op === "between" ? wasmFilterRange : wasmFilterNotRange;
-      const filterResult = filterFn(
-        values, dtype, filter.value[0], filter.value[1], rowCount, wasm,
+      const filterResult = wasmFilterRange(
+        values, dtype, filter.value[0], filter.value[1], rowCount, wasm, filter.op === "not_between",
       );
       if (filterResult) {
         indices = indices ? wasmIntersect(indices, filterResult, wasm) : filterResult;
@@ -567,12 +566,8 @@ function wasmFilterNumeric(
 
 /** Run WASM BETWEEN (range) filter on decoded numeric values. */
 function wasmFilterRange(
-  values: DecodedValue[],
-  dtype: string,
-  low: number,
-  high: number,
-  rowCount: number,
-  wasm: WasmEngine,
+  values: DecodedValue[], dtype: string, low: number, high: number,
+  rowCount: number, wasm: WasmEngine, negate = false,
 ): Uint32Array | null {
   try {
     wasm.exports.resetHeap();
@@ -584,7 +579,8 @@ function wasmFilterRange(
       for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
-      const count = wasm.exports.filterFloat64Range(dataPtr, rowCount, low, high, outPtr, rowCount);
+      const fn = negate ? wasm.exports.filterFloat64NotRange : wasm.exports.filterFloat64Range;
+      const count = fn(dataPtr, rowCount, low, high, outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -598,7 +594,8 @@ function wasmFilterRange(
       }
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
-      const count = wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
+      const fn = negate ? wasm.exports.filterInt64NotRange : wasm.exports.filterInt64Range;
+      const count = fn(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -609,61 +606,8 @@ function wasmFilterRange(
       for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
-      const count = wasm.exports.filterInt32Range(dataPtr, rowCount, low, high, outPtr, rowCount);
-      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/** Run WASM NOT BETWEEN (inverted range) filter on decoded numeric values. */
-function wasmFilterNotRange(
-  values: DecodedValue[],
-  dtype: string,
-  low: number,
-  high: number,
-  rowCount: number,
-  wasm: WasmEngine,
-): Uint32Array | null {
-  try {
-    wasm.exports.resetHeap();
-
-    if (dtype === "float64" || dtype === "float32") {
-      const dataPtr = wasm.exports.alloc(rowCount * 8);
-      if (!dataPtr) return null;
-      const dst = new Float64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
-      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
-      const outPtr = wasm.exports.alloc(rowCount * 4);
-      if (!outPtr) return null;
-      const count = wasm.exports.filterFloat64NotRange(dataPtr, rowCount, low, high, outPtr, rowCount);
-      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
-    }
-
-    if (dtype === "int64") {
-      const dataPtr = wasm.exports.alloc(rowCount * 8);
-      if (!dataPtr) return null;
-      const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
-      for (let i = 0; i < rowCount; i++) {
-        const v = values[i];
-        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
-      }
-      const outPtr = wasm.exports.alloc(rowCount * 4);
-      if (!outPtr) return null;
-      const count = wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
-      return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
-    }
-
-    if (dtype === "int32") {
-      const dataPtr = wasm.exports.alloc(rowCount * 4);
-      if (!dataPtr) return null;
-      const dst = new Int32Array(wasm.exports.memory.buffer, dataPtr, rowCount);
-      for (let i = 0; i < rowCount; i++) dst[i] = (values[i] as number) ?? 0;
-      const outPtr = wasm.exports.alloc(rowCount * 4);
-      if (!outPtr) return null;
-      const count = wasm.exports.filterInt32NotRange(dataPtr, rowCount, low, high, outPtr, rowCount);
+      const fn = negate ? wasm.exports.filterInt32NotRange : wasm.exports.filterInt32Range;
+      const count = fn(dataPtr, rowCount, low, high, outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -2034,8 +1978,8 @@ export class WasmAggregateOperator implements Operator {
       const agg = aggregates[i];
       const alias = agg.alias ?? `${agg.fn}_${agg.column}`;
       switch (agg.fn) {
-        case "sum": row[alias] = acc[i].sum; break;
-        case "avg": row[alias] = acc[i].count === 0 ? 0 : acc[i].sum / acc[i].count; break;
+        case "sum": row[alias] = acc[i].count === 0 ? null : acc[i].sum; break;
+        case "avg": row[alias] = acc[i].count === 0 ? null : acc[i].sum / acc[i].count; break;
         case "min": row[alias] = acc[i].count === 0 ? null : acc[i].min; break;
         case "max": row[alias] = acc[i].count === 0 ? null : acc[i].max; break;
         case "count": row[alias] = acc[i].count; break;

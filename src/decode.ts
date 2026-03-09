@@ -77,32 +77,20 @@ export function canSkipFragment(
     }
   }
 
-  // Build a synthetic "fragment page" with the aggregated stats and reuse canSkipPage
-  for (const f of filters) {
+  const synthPage = (s: { min: number | bigint | string; max: number | bigint | string }): PageInfo =>
+    ({ byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0, minValue: s.min, maxValue: s.max });
+
+  const filterSkips = (f: FilterOp): boolean => {
     const stats = colStats.get(f.column);
-    if (!stats) continue;
-    const syntheticPage: PageInfo = {
-      byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0,
-      minValue: stats.min, maxValue: stats.max,
-    };
-    if (canSkipPage(syntheticPage, [f], f.column)) return true;
-  }
+    return stats ? canSkipPage(synthPage(stats), [f], f.column) : false;
+  };
+
+  // Build a synthetic "fragment page" with the aggregated stats and reuse canSkipPage
+  for (const f of filters) if (filterSkips(f)) return true;
 
   // OR groups: skip only if ALL groups eliminate the fragment
   if (filterGroups && filterGroups.length > 0) {
-    const allGroupsSkip = filterGroups.every(group => {
-      for (const f of group) {
-        const stats = colStats.get(f.column);
-        if (!stats) continue;
-        const syntheticPage: PageInfo = {
-          byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0,
-          minValue: stats.min, maxValue: stats.max,
-        };
-        if (canSkipPage(syntheticPage, [f], f.column)) return true;
-      }
-      return false;
-    });
-    if (allGroupsSkip) return true;
+    if (filterGroups.every(group => group.some(f => filterSkips(f)))) return true;
   }
 
   return false;

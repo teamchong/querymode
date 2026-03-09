@@ -24,6 +24,9 @@ export interface PartialAggState {
   distinctSet?: Set<string>;
   /** For percentile: target percentile (0-1) */
   percentileTarget?: number;
+  /** For min/max on string columns */
+  strMin?: string;
+  strMax?: string;
 }
 
 export function initPartialAggState(
@@ -68,7 +71,7 @@ export function updatePartialAgg(
   }
 }
 
-function resolveValue(state: PartialAggState): number | null {
+function resolveValue(state: PartialAggState): number | string | null {
   // count/count_distinct always return a number (0 for empty)
   if (state.fn === "count") return state.count;
   if (state.fn === "count_distinct") return state.distinctSet?.size ?? 0;
@@ -77,8 +80,8 @@ function resolveValue(state: PartialAggState): number | null {
   switch (state.fn) {
     case "sum": return state.sum;
     case "avg": return state.sum / state.count;
-    case "min": return state.min;
-    case "max": return state.max;
+    case "min": return state.strMin !== undefined ? state.strMin : state.min;
+    case "max": return state.strMax !== undefined ? state.strMax : state.max;
     case "stddev": return state.count < 2 ? 0 : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
     case "variance": return state.count < 2 ? 0 : (state.m2 ?? 0) / state.count;
     case "median": {
@@ -121,6 +124,10 @@ function feedAggStates(
         updatePartialAgg(states[i], 0, val);
       } else if (aggregates[i].fn === "count") {
         states[i].count++;
+      } else if (typeof val === "string" && (aggregates[i].fn === "min" || aggregates[i].fn === "max")) {
+        states[i].count++;
+        if (states[i].strMin === undefined || val < states[i].strMin!) states[i].strMin = val;
+        if (states[i].strMax === undefined || val > states[i].strMax!) states[i].strMax = val;
       }
     }
   }
@@ -206,6 +213,12 @@ function mergeStates(
     target[i].count += source[i].count;
     if (source[i].min < target[i].min) target[i].min = source[i].min;
     if (source[i].max > target[i].max) target[i].max = source[i].max;
+    if (source[i].strMin !== undefined) {
+      if (target[i].strMin === undefined || source[i].strMin! < target[i].strMin!) target[i].strMin = source[i].strMin;
+    }
+    if (source[i].strMax !== undefined) {
+      if (target[i].strMax === undefined || source[i].strMax! > target[i].strMax!) target[i].strMax = source[i].strMax;
+    }
     if (target[i].values !== undefined && source[i].values !== undefined) {
       const src = source[i].values!;
       const tgt = target[i].values!;
