@@ -246,8 +246,8 @@ function compileWindowFunction(expr: SqlExpr & { kind: "call" }, alias?: string)
 
     spec.frame = {
       type: win.frame.type,
-      start: frameBoundToValue(win.frame.start) as number | "unbounded",
-      end: win.frame.end ? frameBoundToValue(win.frame.end) as number | "current" | "unbounded" : "current",
+      start: frameBoundToValue(win.frame.start),
+      end: win.frame.end ? frameBoundToValue(win.frame.end) : "current",
     };
   }
 
@@ -398,21 +398,23 @@ function compileSimpleFilter(expr: SqlExpr & { kind: "binary" }): FilterOp | und
   const colName = extractColumnName(expr.left);
   const value = extractLiteralValue(expr.right);
 
+  const opMap: Record<string, FilterOp["op"]> = {
+    eq: "eq", ne: "neq", lt: "lt", le: "lte", gt: "gt", ge: "gte",
+  };
+
   if (!colName || value === undefined) {
     const rCol = extractColumnName(expr.right);
     const lVal = extractLiteralValue(expr.left);
     if (rCol && lVal !== undefined) {
       const flippedOp = flipOp(expr.op);
-      if (flippedOp) {
-        return { column: rCol, op: flippedOp as FilterOp["op"], value: lVal as FilterOp["value"] };
+      const filterOp = flippedOp ? opMap[flippedOp] : undefined;
+      if (filterOp) {
+        return { column: rCol, op: filterOp, value: lVal as FilterOp["value"] };
       }
     }
     return undefined;
   }
 
-  const opMap: Record<string, FilterOp["op"]> = {
-    eq: "eq", ne: "neq", lt: "lt", le: "lte", gt: "gt", ge: "gte",
-  };
   const filterOp = opMap[expr.op];
   if (!filterOp) return undefined;
 

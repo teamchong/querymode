@@ -1068,6 +1068,7 @@ export class WindowOperator implements Operator {
       let start: number, end: number;
 
       if (frameStart === "unbounded") start = 0;
+      else if (frameStart === "current") start = i;
       else start = Math.max(0, i + (frameStart as number));
 
       if (frameEnd === "unbounded") end = indices.length - 1;

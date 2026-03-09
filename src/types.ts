@@ -122,7 +122,7 @@ export interface WindowSpec {
   partitionBy: string[];
   orderBy: { column: string; direction: "asc" | "desc" }[];
   alias: string;
-  frame?: { type: "rows" | "range"; start: number | "unbounded"; end: number | "current" | "unbounded" };
+  frame?: { type: "rows" | "range"; start: number | "unbounded" | "current"; end: number | "current" | "unbounded" };
 }
 
 /** Join key specification */
