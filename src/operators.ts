@@ -818,7 +818,7 @@ export class SubqueryInOperator implements Operator {
       const filtered: Row[] = [];
       for (const row of batch) {
         const val = row[this.column];
-        const key = val === null ? "__null__" : typeof val === "bigint" ? val.toString() : String(val);
+        const key = val === null || val === undefined ? NULL_SENTINEL : typeof val === "bigint" ? val.toString() : String(val);
         if (this.valueSet.has(key)) {
           filtered.push(row);
         }
@@ -887,8 +887,8 @@ export class WindowOperator implements Operator {
           for (const ob of win.orderBy) {
             const av = rows[a][ob.column], bv = rows[b][ob.column];
             if (av === null && bv === null) continue;
-            if (av === null) return ob.direction === "asc" ? 1 : -1;
-            if (bv === null) return ob.direction === "asc" ? -1 : 1;
+            if (av === null) return 1;  // nulls-last regardless of direction
+            if (bv === null) return -1;
             if (av < bv) return ob.direction === "asc" ? -1 : 1;
             if (av > bv) return ob.direction === "asc" ? 1 : -1;
           }
@@ -1608,17 +1608,17 @@ export class TopKOperator implements Operator {
 
     const cmp = (a: Row, b: Row): number => {
       const av = a[col], bv = b[col];
-      if (av === null && bv === null) return 0;
-      if (av === null) return -1;
-      if (bv === null) return 1;
+      if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
+      if (av === null || av === undefined) return 1;  // nulls-last
+      if (bv === null || bv === undefined) return -1;
       const c = av < bv ? -1 : av > bv ? 1 : 0;
       return desc ? -c : c;
     };
 
     const shouldReplace = (row: Row): boolean => {
       const nv = row[col], rv = heap[0][col];
-      if (nv === null) return false;
-      if (rv === null) return true;
+      if (nv === null || nv === undefined) return false;
+      if (rv === null || rv === undefined) return true;
       return desc ? nv > rv : nv < rv;
     };
 
@@ -2113,7 +2113,7 @@ export class HashJoinOperator implements Operator {
   }
 
   private toJoinKey(val: Row[string]): string {
-    if (val === null) return "__null__";
+    if (val === null || val === undefined) return NULL_SENTINEL;
     if (typeof val === "bigint") return val.toString();
     return String(val);
   }
@@ -2223,7 +2223,9 @@ export class HashJoinOperator implements Operator {
         // Fits in memory — build hash map directly
         this.hashMap = new Map<string, Row[]>();
         for (const row of inMemoryRows) {
-          const key = this.toJoinKey(row[this.rightKey]);
+          const val = row[this.rightKey];
+          if (val === null || val === undefined) continue; // NULL never matches in SQL joins
+          const key = this.toJoinKey(val);
           const bucket = this.hashMap.get(key);
           if (bucket) bucket.push(row);
           else this.hashMap.set(key, [row]);
@@ -2457,7 +2459,12 @@ export class HashJoinOperator implements Operator {
 
         const result: Row[] = [];
         for (const leftRow of batch) {
-          const key = this.toJoinKey(leftRow[this.leftKey]);
+          const leftVal = leftRow[this.leftKey];
+          if (leftVal === null || leftVal === undefined) {
+            if (this.joinType === "left" || this.joinType === "full") result.push({ ...leftRow });
+            continue;
+          }
+          const key = this.toJoinKey(leftVal);
           const rightRows = this.hashMap.get(key);
           if (rightRows) {
             for (let i = 0; i < rightRows.length; i++) {
