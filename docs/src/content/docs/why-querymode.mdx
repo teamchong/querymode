@@ -1,38 +1,36 @@
 ---
 title: Why QueryMode
-description: Agents are the new users. They need dynamic pipelines, not pre-built ETL.
+description: Agents query like humans, but at machine pace. Data infrastructure needs to keep up.
 ---
 
-1. **Agents are becoming the majority of internet traffic.** They serve different owners across different parts of the world, but share the same training data and independently reach the same conclusions. When thousands of agents hit the same endpoints at the same millisecond, the result is thundering herds that look like a DDoS — except every request is legitimate. That's not a DDoS attack. That's just Tuesday. Data must live at the edge to survive this.
+1. **Agents serve humans.** An agent asking "what's my retention this week?" is the same question a PM would ask in a dashboard. The query is identical. The difference is pace — one human asks once, a thousand agents ask at the same millisecond on behalf of a thousand humans.
 
-2. **Agents need live data.** Decisions based on outdated training data lead to bad outcomes. Training data can't keep up with the speed the world produces information. Agents make API calls for live data — lots of them. That data needs to live at the edge, close to where agents run.
+2. **That pace breaks traditional infrastructure.** A thousand identical queries hitting the same origin database at once looks like a DDoS, except every request is legitimate. Connection pools saturate. Cold caches stampede. The database that handles one dashboard user fine collapses under a thousand agents doing the same thing concurrently.
 
-3. **Pre-built ETL can't serve agents.** Traditional data pipelines assume a human pre-defines what questions matter, builds a pipeline on a schedule, and stores the results. Agents don't ask pre-defined questions. They chain queries in ways no pipeline designer anticipated — funnel analysis, then retention for just those users, then attribution for just those retained users. The pipeline doesn't exist until the agent creates it.
+3. **Every request pays a serialization tax.** Each agent builds a SQL string, sends it over the network, waits for JSON back, parses it, then builds the next query. An agent chaining three analyses pays that tax six times — three round-trips, three serialize/deserialize cycles. The queries are simple. The overhead is not.
 
-## Fixed ETL vs dynamic pipelines
+## The real problem isn't what agents ask — it's how many ask at once
 
-Most data is not well-structured enough to query directly. It needs transformation. The question is: **who defines the transformation, and when?**
+Agents don't ask mysterious questions. They ask the same questions humans ask: funnel analysis, retention, attribution, top-N queries. The infrastructure challenge isn't unpredictability — it's concurrency at the origin and serialization overhead per request.
 
-| | Fixed ETL | QueryMode |
+| | Traditional | QueryMode |
 |---|---|---|
-| **Who** | A human, in advance | The agent, at query time |
-| **When** | On a schedule | On demand |
-| **What** | Pre-defined transformations | Whatever the agent needs right now |
-| **Boundary** | Query → serialize → DB → serialize → result → parse → next query | Query and business logic run in the same code, same process |
+| **Where data lives** | Origin database, single region | R2 at the edge, free egress |
+| **Concurrency model** | Connection pool, shared origin | Isolated Durable Objects per region |
+| **Query overhead** | SQL string → network → JSON → parse per query | Same-process function call, zero serialization |
+| **Follow-up queries** | Full round-trip each time | Branch over the same result set in memory |
 
-QueryMode replaces fixed ETL pipelines with dynamic ones. The agent writes both the query and the business logic in the same code, with no serialization overhead between stages.
+## No serialization boundary
 
-## The serialization boundary problem
-
-Every traditional query engine has a boundary between your code and the engine:
+Every traditional query engine has a wall between your code and the engine:
 
 ```
 Your code → build SQL string → send to database → wait → JSON response → parse → your code
 ```
 
-If you need to ask a follow-up question based on the answer, you do it all again. Umami's attribution report does this **8 times** for a single dashboard page — each query rebuilds the same base data.
+If you need a follow-up question, you do it all again. Umami's attribution report does this **8 times** for a single dashboard page — each query rebuilds the same base data.
 
-QueryMode has no boundary:
+QueryMode has no wall:
 
 ```typescript
 // 1 collect(), then branch freely in code
@@ -54,15 +52,13 @@ Three analyses on one result set. No SQL string construction, no JSON parsing, n
 
 > **What about memory?** `collect()` doesn't load a 50GB file into a V8 isolate. Filter pushdown already skipped irrelevant pages via min/max stats, aggregation already reduced rows to group summaries, projection already dropped unused columns. What lands in memory is the *result*, not the dataset. Operators are memory-bounded (default 32MB) and [spill to R2](/querymode/operators/#memory-bounded-with-r2-spill) when they exceed budget.
 
-## How it actually works under the hood
+## Edge-native: survive the thundering herd
 
-### Where the data lives
+Data sits in **R2** as columnar files (Parquet, Lance, Iceberg). Regional Query DOs cache table footers (~4KB each) and read data pages from R2 via coalesced HTTP range requests (~10ms). Free egress means a thousand concurrent reads don't cost a thousand times more.
 
-Data sits in **R2** as columnar files (Parquet, Lance, Iceberg). Nothing gets replicated to 300 edge nodes. Regional Query DOs cache table footers (~4KB each) and read data pages from R2 via coalesced HTTP range requests (~10ms).
+A thousand agents asking the same question from the same region hit the same Query DO, which serves cached footers and coordinates parallel fragment scans. No origin database. No connection pool. No stampede.
 
-"Data at the edge" means metadata cached locally, pages fetched on demand with free egress. Not replicated databases.
-
-### The operators ARE the optimizer
+## The operators ARE the optimizer
 
 Every query runs through a pull-based [operator pipeline](/querymode/operators/):
 
@@ -82,11 +78,15 @@ These do real query optimization work:
 
 The difference: you can see every stage, swap implementations, inject custom logic between operators, and control the memory budget. The plan isn't a black box.
 
-### Governance
+## Composable — even if Cloudflare ships native OLAP
 
-"The pipeline doesn't exist until the agent creates it" sounds terrifying if you're a CISO. But the pipeline is just operator composition — it doesn't grant access to anything. `MasterDO` owns table metadata. The agent can only query tables that are registered, and only columns that are exposed. Row-level and column-level access control happens before the pipeline runs, not inside it.
+Cloudflare may eventually ship a native analytics engine. That would be a fixed engine with a fixed query language. QueryMode is composable: operators are building blocks your code assembles. You can put an [ML scoring function between pipeline stages](/querymode/operators/#compose-operators-directly), swap the sort algorithm, or inject a rate limiter between scan and filter. A black-box engine can't do that — no matter how fast it is.
 
-The transformation is dynamic. The authorization is not.
+## Governance
+
+"Agents query at machine pace" sounds terrifying if you're a CISO. But the pipeline is just operator composition — it doesn't grant access to anything. `MasterDO` owns table metadata. The agent can only query tables that are registered, and only columns that are exposed. Row-level and column-level access control happens before the pipeline runs, not inside it.
+
+The pace is dynamic. The authorization is not.
 
 ## What we've tested so far
 
@@ -96,10 +96,6 @@ We ported query patterns from two open-source analytics platforms:
 
 **[Umami](https://github.com/umami-software/umami)** (23k+ stars, PostgreSQL/ClickHouse) — 10 query patterns, including funnel analysis, cohort retention, user journeys, and attribution. Umami's attribution sends 8 separate database queries that each rebuild the same base CTE. On QueryMode, the same analysis runs as 1 `collect()` with 8 code branches over the same result set.
 
-Both test suites also include multi-step analyses that would be awkward with the original architecture — things like running funnel analysis and then feeding the resulting session IDs directly into a retention computation, without a second round-trip. These aren't impossible in SQL, but they'd require rewriting queries and additional database calls. With QueryMode, intermediate results are just objects in memory.
+## The agent IS the user
 
-## The agent IS the pipeline
-
-QueryMode doesn't eliminate transformation. It moves it from a pre-built schedule to query time. The agent decides what to query, how to transform it, and what to do with the result — all in the same code, same process. If the data is well-structured, the agent queries it directly. If it's not, the agent builds the transformation on the spot. Either way, no one had to anticipate the question in advance.
-
-It doesn't eliminate the query optimizer either. The operators do filter pushdown, vectorized decode, memory-bounded spill — but you assemble them, you control the budget, and you can put an [ML scoring function between pipeline stages](/querymode/operators/#compose-operators-directly) if you want to.
+QueryMode doesn't change what gets queried. It changes where and how fast. Data lives at the edge instead of a central origin. Queries execute in-process instead of over the network. Follow-ups branch over results in memory instead of round-tripping. The agent asks the same questions a human would — it just asks them at machine pace, and the infrastructure keeps up.
