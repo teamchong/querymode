@@ -1,4 +1,4 @@
-import type { ColumnMeta, PageInfo, Row, DataType } from "./types.js";
+import type { ColumnMeta, FilterOp, PageInfo, Row, DataType } from "./types.js";
 import { rowComparator } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
@@ -56,7 +56,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
 export function canSkipFragment(
   meta: { columns: ColumnMeta[] },
   filters: QueryDescriptor["filters"],
-  filterGroups?: import("./types.js").FilterOp[][],
+  filterGroups?: FilterOp[][],
 ): boolean {
   if (filters.length === 0 && (!filterGroups || filterGroups.length === 0)) return false;
 
