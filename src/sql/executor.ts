@@ -63,16 +63,20 @@ export class SqlWrappingExecutor implements QueryExecutor {
       innerQuery.projections = [];
     }
 
-    // If multi-column sort, we handle sort + limit/offset
+    // Strip limit/offset when we post-filter (HAVING, WHERE) or multi-sort — otherwise
+    // the inner executor limits rows before our filter removes some, giving fewer results.
     let externalLimit: number | undefined;
     let externalOffset: number | undefined;
-    if (hasMultiSort) {
+    const needsExternalLimit = hasMultiSort || !!this.opts.havingExpr || hasWhereExpr || manualAggregation;
+    if (needsExternalLimit) {
       externalLimit = innerQuery.limit;
       externalOffset = innerQuery.offset;
-      delete innerQuery.sortColumn;
-      delete innerQuery.sortDirection;
       delete innerQuery.limit;
       delete innerQuery.offset;
+    }
+    if (hasMultiSort) {
+      delete innerQuery.sortColumn;
+      delete innerQuery.sortDirection;
     }
 
     const result = await this.inner.execute(innerQuery);
@@ -134,8 +138,10 @@ export class SqlWrappingExecutor implements QueryExecutor {
         }
         return 0;
       });
+    }
 
-      // Re-apply offset + limit
+    // 6. Re-apply offset + limit (stripped when post-filtering or multi-sorting)
+    if (needsExternalLimit) {
       if (externalOffset) rows = rows.slice(externalOffset);
       if (externalLimit !== undefined) rows = rows.slice(0, externalLimit);
     }
