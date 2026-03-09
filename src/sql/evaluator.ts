@@ -2,6 +2,7 @@
 
 import type { Row } from "../types.js";
 import type { SqlExpr } from "./ast.js";
+import { compileLikeRegex } from "../decode.js";
 
 export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
   switch (expr.kind) {
@@ -175,25 +176,8 @@ function toNumber(val: unknown): number {
   return 0;
 }
 
-/** Convert SQL LIKE pattern to case-insensitive match. % = any chars, _ = one char. */
-const _likeCache = new Map<string, RegExp>();
 function matchLike(value: string, pattern: string): boolean {
-  let regex = _likeCache.get(pattern);
-  if (!regex) {
-    let re = "^";
-    for (let i = 0; i < pattern.length; i++) {
-      const ch = pattern[i];
-      if (ch === "%") re += ".*";
-      else if (ch === "_") re += ".";
-      else if (/[.*+?^${}()|[\]\\]/.test(ch)) re += "\\" + ch;
-      else re += ch;
-    }
-    re += "$";
-    regex = new RegExp(re, "i");
-    if (_likeCache.size > 64) _likeCache.clear();
-    _likeCache.set(pattern, regex);
-  }
-  return regex.test(value);
+  return compileLikeRegex(pattern).test(value);
 }
 
 function castValue(val: unknown, targetType: string): unknown {

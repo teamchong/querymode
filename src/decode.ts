@@ -529,7 +529,7 @@ function getInSet(values: readonly (number | bigint | string)[]): Set<number | b
 /** Cache compiled LIKE regexes — avoids re-compilation per row. */
 const likeRegexCache = new Map<string, RegExp>();
 
-function compileLikeRegex(pattern: string): RegExp {
+export function compileLikeRegex(pattern: string): RegExp {
   let cached = likeRegexCache.get(pattern);
   if (cached) return cached;
   // Escape regex metacharacters, then replace SQL wildcards

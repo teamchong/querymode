@@ -942,7 +942,12 @@ export class MaterializedExecutor implements QueryExecutor {
           if (agg.fn === "count") {
             if (agg.column === "*") { out[alias] = bucket.length; }
             else { let cnt = 0; for (const r of bucket) if (r[agg.column] != null) cnt++; out[alias] = cnt; }
+          } else if (agg.fn === "count_distinct") {
+            const seen = new Set<string>();
+            for (const r of bucket) { const v = r[agg.column]; if (v != null) seen.add(String(v)); }
+            out[alias] = seen.size;
           } else {
+            const values: number[] = [];
             let sum = 0, count = 0, min = Infinity, max = -Infinity;
             for (const r of bucket) {
               const v = r[agg.column];
@@ -952,6 +957,7 @@ export class MaterializedExecutor implements QueryExecutor {
               sum += n; count++;
               if (n < min) min = n;
               if (n > max) max = n;
+              if (agg.fn === "stddev" || agg.fn === "variance" || agg.fn === "median" || agg.fn === "percentile") values.push(n);
             }
             if (count === 0) { out[alias] = null; continue; }
             switch (agg.fn) {
@@ -959,6 +965,29 @@ export class MaterializedExecutor implements QueryExecutor {
               case "avg": out[alias] = sum / count; break;
               case "min": out[alias] = min; break;
               case "max": out[alias] = max; break;
+              case "stddev": {
+                const mean = sum / count;
+                let sq = 0; for (const v of values) sq += (v - mean) ** 2;
+                out[alias] = Math.sqrt(sq / count); break;
+              }
+              case "variance": {
+                const mean = sum / count;
+                let sq = 0; for (const v of values) sq += (v - mean) ** 2;
+                out[alias] = sq / count; break;
+              }
+              case "median": {
+                values.sort((a, b) => a - b);
+                const mid = Math.floor(count / 2);
+                out[alias] = count % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2; break;
+              }
+              case "percentile": {
+                if (agg.percentileTarget === undefined) { out[alias] = null; break; }
+                values.sort((a, b) => a - b);
+                const p = agg.percentileTarget;
+                const idx = p * (count - 1);
+                const lo = Math.floor(idx), hi = Math.ceil(idx);
+                out[alias] = lo === hi ? values[lo] : values[lo] + (values[hi] - values[lo]) * (idx - lo); break;
+              }
               default: out[alias] = null;
             }
           }

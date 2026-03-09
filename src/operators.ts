@@ -18,7 +18,7 @@ const _textEncoder = new TextEncoder();
 
 /** Cached identity index arrays to avoid repeated allocations on hot paths. */
 const _identityCache = new Map<number, Uint32Array>();
-function identityIndices(n: number): Uint32Array {
+export function identityIndices(n: number): Uint32Array {
   let cached = _identityCache.get(n);
   if (cached) return cached;
   cached = new Uint32Array(n);
@@ -2056,8 +2056,8 @@ export class WasmAggregateOperator implements Operator {
       switch (agg.fn) {
         case "sum": row[alias] = acc[i].sum; break;
         case "avg": row[alias] = acc[i].count === 0 ? 0 : acc[i].sum / acc[i].count; break;
-        case "min": row[alias] = acc[i].min; break;
-        case "max": row[alias] = acc[i].max; break;
+        case "min": row[alias] = acc[i].count === 0 ? null : acc[i].min; break;
+        case "max": row[alias] = acc[i].count === 0 ? null : acc[i].max; break;
         case "count": row[alias] = acc[i].count; break;
       }
     }
@@ -2902,88 +2902,7 @@ export function buildPipeline(
   }
 
   const scan = new ScanOperator(fragments, query, wasm, /* applyFilters */ true);
-  let pipeline: Operator = scan;
-  const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
-
-  // Filter — skip if ScanOperator already applies filters via WASM SIMD
-  const hasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
-  if (hasFilters && !scan.filtersApplied) {
-    pipeline = new FilterOperator(pipeline, query.filters, query.filterGroups);
-  }
-
-  // SubqueryIn filters (pre-computed value sets)
-  if (query.subqueryIn) {
-    for (const sq of query.subqueryIn) {
-      pipeline = new SubqueryInOperator(pipeline, sq.column, sq.valueSet);
-    }
-  }
-
-  // Computed columns (in-process callbacks)
-  if (query.computedColumns) {
-    pipeline = new ComputedColumnOperator(pipeline, query.computedColumns);
-  }
-
-  // User-injected pipe stages (inserted after filter/computed, before agg/sort)
-  if (query.pipeStages) {
-    for (const stage of query.pipeStages) {
-      pipeline = stage(pipeline);
-    }
-  }
-
-  // Window functions
-  if (query.windows && query.windows.length > 0) {
-    pipeline = new WindowOperator(pipeline, query.windows);
-  }
-
-  // Distinct
-  if (query.distinct) {
-    pipeline = new DistinctOperator(pipeline, query.distinct);
-  }
-
-  const hasAgg = query.aggregates && query.aggregates.length > 0;
-
-  if (hasAgg) {
-    // Aggregate: consumes all filtered rows, produces aggregate output
-    pipeline = new AggregateOperator(pipeline, query);
-
-    // Sort/limit on aggregate output (aggregate output is small — always in-memory)
-    if (query.sortColumn && query.limit !== undefined) {
-      pipeline = new TopKOperator(
-        pipeline, query.sortColumn, query.sortDirection === "desc",
-        query.limit, query.offset ?? 0,
-      );
-    } else if (query.sortColumn) {
-      pipeline = new InMemorySortOperator(
-        pipeline, query.sortColumn, query.sortDirection === "desc",
-        query.offset ?? 0,
-      );
-    } else if (query.offset || query.limit !== undefined) {
-      pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
-    }
-  } else if (query.sortColumn) {
-    // Sort path
-    if (query.limit !== undefined) {
-      pipeline = new TopKOperator(
-        pipeline, query.sortColumn, query.sortDirection === "desc",
-        query.limit, query.offset ?? 0,
-      );
-    } else {
-      // Full sort without limit — use external sort to handle TB+ data
-      pipeline = new ExternalSortOperator(
-        pipeline, query.sortColumn, query.sortDirection === "desc",
-        query.offset ?? 0, memBudget, options?.spill,
-      );
-    }
-  } else if (query.offset || query.limit !== undefined) {
-    // No sort — streaming limit with offset
-    pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
-  }
-
-  // Project — strip extra columns at the end
-  if (outputColumns.length > 0) {
-    pipeline = new ProjectOperator(pipeline, outputColumns);
-  }
-
+  const pipeline = assemblePipeline(scan, query, outputColumns, scan.filtersApplied, options);
   return { pipeline, scan };
 }
 
@@ -2997,43 +2916,51 @@ export function buildEdgePipeline(
   outputColumns: string[],
   options?: PipelineOptions,
 ): Operator {
-  let pipeline: Operator = scan;
+  const filtersApplied = "filtersApplied" in scan && (scan as { filtersApplied: boolean }).filtersApplied;
+  // Skip projection when aggregation is active — aggregate output columns
+  // (aliases like "count_*", "sum_value") don't match the original table columns,
+  // so projecting to table columns would strip all aggregate results.
+  const hasAgg = query.aggregates && query.aggregates.length > 0;
+  const projectCols = hasAgg ? [] : outputColumns;
+  return assemblePipeline(scan, query, projectCols, filtersApplied, options);
+}
+
+/** Shared pipeline assembly: filter → subquery → computed → pipe → window → distinct → agg → sort → project */
+function assemblePipeline(
+  source: Operator,
+  query: QueryDescriptor,
+  outputColumns: string[],
+  filtersApplied: boolean,
+  options?: PipelineOptions,
+): Operator {
+  let pipeline: Operator = source;
   const memBudget = options?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET;
 
-  // Skip FilterOperator if the scan operator already applies filters
-  // (e.g. EdgeScanOperator Lance path uses WASM SQL with WHERE,
-  //  EdgeScanOperator Parquet path now uses WASM executeQuery with filters)
-  const scanHandlesFilters = "filtersApplied" in scan && (scan as { filtersApplied: boolean }).filtersApplied;
-  const edgeHasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
-  if (edgeHasFilters && !scanHandlesFilters) {
+  const hasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
+  if (hasFilters && !filtersApplied) {
     pipeline = new FilterOperator(pipeline, query.filters, query.filterGroups);
   }
 
-  // SubqueryIn filters
   if (query.subqueryIn) {
     for (const sq of query.subqueryIn) {
       pipeline = new SubqueryInOperator(pipeline, sq.column, sq.valueSet);
     }
   }
 
-  // Computed columns
   if (query.computedColumns) {
     pipeline = new ComputedColumnOperator(pipeline, query.computedColumns);
   }
 
-  // User-injected pipe stages (inserted after filter/computed, before agg/sort)
   if (query.pipeStages) {
     for (const stage of query.pipeStages) {
       pipeline = stage(pipeline);
     }
   }
 
-  // Window functions
   if (query.windows && query.windows.length > 0) {
     pipeline = new WindowOperator(pipeline, query.windows);
   }
 
-  // Distinct
   if (query.distinct) {
     pipeline = new DistinctOperator(pipeline, query.distinct);
   }
@@ -3071,10 +2998,7 @@ export function buildEdgePipeline(
     pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
   }
 
-  // Skip projection when aggregation is active — aggregate output columns
-  // (aliases like "count_*", "sum_value") don't match the original table columns,
-  // so projecting to table columns would strip all aggregate results.
-  if (!hasAgg && outputColumns.length > 0) {
+  if (outputColumns.length > 0) {
     pipeline = new ProjectOperator(pipeline, outputColumns);
   }
 

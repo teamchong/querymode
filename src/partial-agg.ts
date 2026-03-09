@@ -2,17 +2,7 @@ import type { Row } from "./types.js";
 import { groupKey, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
-
-const _identityCacheLocal = new Map<number, Uint32Array>();
-function identityIndicesLocal(n: number): Uint32Array {
-  let cached = _identityCacheLocal.get(n);
-  if (cached) return cached;
-  cached = new Uint32Array(n);
-  for (let i = 0; i < n; i++) cached[i] = i;
-  if (_identityCacheLocal.size > 16) _identityCacheLocal.clear();
-  _identityCacheLocal.set(n, cached);
-  return cached;
-}
+import { identityIndices } from "./operators.js";
 
 export interface PartialAgg {
   states: PartialAggState[];
@@ -85,9 +75,9 @@ function resolveValue(state: PartialAggState): number {
     case "avg":
       return state.count === 0 ? 0 : state.sum / state.count;
     case "min":
-      return state.min;
+      return state.count === 0 ? 0 : state.min;
     case "max":
-      return state.max;
+      return state.count === 0 ? 0 : state.max;
     case "count":
       return state.count;
     case "count_distinct":
@@ -125,6 +115,36 @@ function aliasFor(agg: { fn: string; column: string; alias?: string }): string {
   return agg.alias ?? `${agg.fn}_${agg.column}`;
 }
 
+/** Feed a single value into agg states for one row. */
+function feedAggStates(
+  states: PartialAggState[],
+  aggregates: { fn: PartialAggState["fn"]; column: string }[],
+  getVal: (col: string, aggIdx: number) => unknown,
+): void {
+  for (let i = 0; i < aggregates.length; i++) {
+    const col = aggregates[i].column;
+    if (col === "*") { states[i].count++; continue; }
+    const val = getVal(col, i);
+    if (typeof val === "number") {
+      updatePartialAgg(states[i], val, val);
+    } else if (typeof val === "bigint") {
+      updatePartialAgg(states[i], Number(val), val);
+    } else if (val !== null && val !== undefined) {
+      if (aggregates[i].fn === "count_distinct") {
+        updatePartialAgg(states[i], 0, val);
+      } else if (aggregates[i].fn === "count") {
+        states[i].count++;
+      }
+    }
+  }
+}
+
+function initStates(aggregates: { fn: PartialAggState["fn"]; column: string; percentileTarget?: number }[]): PartialAggState[] {
+  return aggregates.map((agg) =>
+    initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
+  );
+}
+
 export function computePartialAgg(
   rows: Row[],
   query: QueryDescriptor,
@@ -132,67 +152,19 @@ export function computePartialAgg(
   const aggregates = query.aggregates ?? [];
 
   if (!query.groupBy || query.groupBy.length === 0) {
-    const states = aggregates.map((agg) =>
-      initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
-    );
-    for (const row of rows) {
-      for (let i = 0; i < aggregates.length; i++) {
-        const col = aggregates[i].column;
-        if (col === "*") {
-          // count(*) — always count the row
-          states[i].count++;
-        } else {
-          const val = row[col];
-          if (typeof val === "number") {
-            updatePartialAgg(states[i], val, val);
-          } else if (typeof val === "bigint") {
-            updatePartialAgg(states[i], Number(val), val);
-          } else if (val !== null && val !== undefined) {
-            if (aggregates[i].fn === "count_distinct") {
-              updatePartialAgg(states[i], 0, val);
-            } else if (aggregates[i].fn === "count") {
-              states[i].count++;
-            }
-          }
-        }
-      }
-    }
+    const states = initStates(aggregates);
+    for (const row of rows) feedAggStates(states, aggregates, col => row[col]);
     return { states };
   }
 
   const groups = new Map<string, PartialAggState[]>();
   const groupCols = query.groupBy;
-
   for (const row of rows) {
     const key = groupKey(row, groupCols);
     let states = groups.get(key);
-    if (!states) {
-      states = aggregates.map((agg) =>
-        initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
-      );
-      groups.set(key, states);
-    }
-    for (let i = 0; i < aggregates.length; i++) {
-      const col = aggregates[i].column;
-      if (col === "*") {
-        states[i].count++;
-      } else {
-        const val = row[col];
-        if (typeof val === "number") {
-          updatePartialAgg(states[i], val, val);
-        } else if (typeof val === "bigint") {
-          updatePartialAgg(states[i], Number(val), val);
-        } else if (val !== null && val !== undefined) {
-          if (aggregates[i].fn === "count_distinct") {
-            updatePartialAgg(states[i], 0, val);
-          } else if (aggregates[i].fn === "count") {
-            states[i].count++;
-          }
-        }
-      }
-    }
+    if (!states) { states = initStates(aggregates); groups.set(key, states); }
+    feedAggStates(states, aggregates, col => row[col]);
   }
-
   return { states: [], groups };
 }
 
@@ -201,40 +173,18 @@ export function computePartialAggColumnar(
   query: QueryDescriptor,
 ): PartialAgg {
   const aggregates = query.aggregates ?? [];
-  const indices = batch.selection ?? identityIndicesLocal(batch.rowCount);
+  const indices = batch.selection ?? identityIndices(batch.rowCount);
+  const aggArrays = aggregates.map(a => a.column === "*" ? null : (batch.columns.get(a.column) ?? null));
 
   if (!query.groupBy || query.groupBy.length === 0) {
-    const states = aggregates.map((agg) =>
-      initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
-    );
-    const aggArrays = aggregates.map(a => a.column === "*" ? null : (batch.columns.get(a.column) ?? null));
-    for (const idx of indices) {
-      for (let i = 0; i < aggregates.length; i++) {
-        if (!aggArrays[i]) {
-          states[i].count++;
-        } else {
-          const val = aggArrays[i]![idx];
-          if (typeof val === "number") {
-            updatePartialAgg(states[i], val, val);
-          } else if (typeof val === "bigint") {
-            updatePartialAgg(states[i], Number(val), val);
-          } else if (val !== null && val !== undefined) {
-            if (aggregates[i].fn === "count_distinct") {
-              updatePartialAgg(states[i], 0, val);
-            } else if (aggregates[i].fn === "count") {
-              states[i].count++;
-            }
-          }
-        }
-      }
-    }
+    const states = initStates(aggregates);
+    for (const idx of indices) feedAggStates(states, aggregates, (_, i) => aggArrays[i] ? aggArrays[i]![idx] : undefined);
     return { states };
   }
 
   const groups = new Map<string, PartialAggState[]>();
   const groupCols = query.groupBy;
   const groupArrays = groupCols.map(c => batch.columns.get(c) ?? null);
-  const aggArrays2 = aggregates.map(a => a.column === "*" ? null : (batch.columns.get(a.column) ?? null));
 
   for (const idx of indices) {
     let key = "";
@@ -244,32 +194,9 @@ export function computePartialAggColumnar(
       key += v === null || v === undefined ? NULL_SENTINEL : String(v);
     }
     let states = groups.get(key);
-    if (!states) {
-      states = aggregates.map((agg) =>
-        initPartialAggState(agg.fn, agg.column, { percentileTarget: agg.percentileTarget }),
-      );
-      groups.set(key, states);
-    }
-    for (let i = 0; i < aggregates.length; i++) {
-      if (!aggArrays2[i]) {
-        states[i].count++;
-      } else {
-        const val = aggArrays2[i]![idx];
-        if (typeof val === "number") {
-          updatePartialAgg(states[i], val, val);
-        } else if (typeof val === "bigint") {
-          updatePartialAgg(states[i], Number(val), val);
-        } else if (val !== null && val !== undefined) {
-          if (aggregates[i].fn === "count_distinct") {
-            updatePartialAgg(states[i], 0, val);
-          } else if (aggregates[i].fn === "count") {
-            states[i].count++;
-          }
-        }
-      }
-    }
+    if (!states) { states = initStates(aggregates); groups.set(key, states); }
+    feedAggStates(states, aggregates, (_, i) => aggArrays[i] ? aggArrays[i]![idx] : undefined);
   }
-
   return { states: [], groups };
 }
 
