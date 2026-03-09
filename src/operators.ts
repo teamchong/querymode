@@ -34,6 +34,7 @@ import {
   computePartialAgg,
   computePartialAggColumnar,
   mergePartialAggs,
+  mergeStates,
   finalizePartialAgg,
   type PartialAgg,
 } from "./partial-agg.js";
@@ -1533,7 +1534,17 @@ export class AggregateOperator implements Operator {
         const batch = await this.upstream.nextColumnar();
         if (!batch) break;
         const partial = computePartialAggColumnar(batch, this.query);
-        merged = merged ? mergePartialAggs([merged, partial]) : partial;
+        if (!merged) { merged = partial; continue; }
+        // Merge in-place — we own merged, no clone needed
+        if (merged.groups && partial.groups) {
+          for (const [key, states] of partial.groups) {
+            const existing = merged.groups.get(key);
+            if (!existing) merged.groups.set(key, states);
+            else mergeStates(existing, states);
+          }
+        } else {
+          mergeStates(merged.states, partial.states);
+        }
       }
       if (!merged) return finalizePartialAgg(computePartialAgg([], this.query), this.query);
       return finalizePartialAgg(merged, this.query);
@@ -1545,7 +1556,16 @@ export class AggregateOperator implements Operator {
       const batch = await this.upstream.next();
       if (!batch) break;
       const partial = computePartialAgg(batch, this.query);
-      merged = merged ? mergePartialAggs([merged, partial]) : partial;
+      if (!merged) { merged = partial; continue; }
+      if (merged.groups && partial.groups) {
+        for (const [key, states] of partial.groups) {
+          const existing = merged.groups.get(key);
+          if (!existing) merged.groups.set(key, states);
+          else mergeStates(existing, states);
+        }
+      } else {
+        mergeStates(merged.states, partial.states);
+      }
     }
 
     if (!merged) {
@@ -1633,7 +1653,7 @@ export class TopKOperator implements Operator {
         const batch = await this.upstream.nextColumnar();
         if (!batch) break;
         const indices = batch.selection ?? identityIndices(batch.rowCount);
-        const colNames = Array.from(batch.columns.keys());
+        const colEntries = Array.from(batch.columns.entries());
         const sortVals = batch.columns.get(col);
         for (const idx of indices) {
           // Fast reject: if heap is full and this value can't beat the root, skip materialization
@@ -1644,8 +1664,8 @@ export class TopKOperator implements Operator {
             if (rv !== null && (desc ? nv <= rv : nv >= rv)) continue;
           }
           const row: Row = {};
-          for (const name of colNames) {
-            row[name] = (batch.columns.get(name)![idx] as Row[string]) ?? null;
+          for (let c = 0; c < colEntries.length; c++) {
+            row[colEntries[c][0]] = (colEntries[c][1][idx] as Row[string]) ?? null;
           }
           pushRow(row);
         }

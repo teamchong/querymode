@@ -194,7 +194,7 @@ export function computePartialAggColumnar(
   return { states: [], groups };
 }
 
-function mergeStates(
+export function mergeStates(
   target: PartialAggState[],
   source: PartialAggState[],
 ): void {
@@ -230,13 +230,21 @@ function mergeStates(
   }
 }
 
+function cloneState(s: PartialAggState): PartialAggState {
+  return {
+    ...s,
+    values: s.values ? [...s.values] : undefined,
+    distinctSet: s.distinctSet ? new Set(s.distinctSet) : undefined,
+  };
+}
+
 export function mergePartialAggs(partials: PartialAgg[]): PartialAgg {
   if (partials.length === 0) return { states: [] };
 
   const hasGroups = partials.some((p) => p.groups && p.groups.size > 0);
 
   if (!hasGroups) {
-    const merged = partials[0].states.map((s) => ({ ...s }));
+    const merged = partials[0].states.map(cloneState);
     for (let i = 1; i < partials.length; i++) {
       mergeStates(merged, partials[i].states);
     }
@@ -249,7 +257,7 @@ export function mergePartialAggs(partials: PartialAgg[]): PartialAgg {
     for (const [key, states] of partial.groups) {
       const existing = mergedGroups.get(key);
       if (!existing) {
-        mergedGroups.set(key, states.map((s) => ({ ...s })));
+        mergedGroups.set(key, states.map(cloneState));
       } else {
         mergeStates(existing, states);
       }
