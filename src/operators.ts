@@ -1535,7 +1535,7 @@ export class AggregateOperator implements Operator {
         const partial = computePartialAggColumnar(batch, this.query);
         merged = merged ? mergePartialAggs([merged, partial]) : partial;
       }
-      if (!merged) return finalizePartialAgg({ states: [] }, this.query);
+      if (!merged) return finalizePartialAgg(computePartialAgg([], this.query), this.query);
       return finalizePartialAgg(merged, this.query);
     }
 
@@ -1549,7 +1549,7 @@ export class AggregateOperator implements Operator {
     }
 
     if (!merged) {
-      return finalizePartialAgg({ states: [] }, this.query);
+      return finalizePartialAgg(computePartialAgg([], this.query), this.query);
     }
     return finalizePartialAgg(merged, this.query);
   }
