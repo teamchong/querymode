@@ -29,6 +29,7 @@ export default defineConfig({
       "src/bucket.test.ts",
       "src/materialized-executor.test.ts",
       "src/descriptor-to-code.test.ts",
+      "src/pg-wire/pg-wire.test.ts",
     ],
     hookTimeout: 300_000,
     testTimeout: 300_000,
