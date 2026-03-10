@@ -767,6 +767,14 @@ export class QueryDO extends DurableObject<Env> {
       }
     }
 
+    const fragmentsScanned = totalFragments - fragmentsSkipped;
+    const estimatedRowsAfterPrune = dataset
+      ? [...dataset.fragmentMetas.values()]
+          .filter(m => !canSkipFragment(m, query.filters, query.filterGroups))
+          .reduce((s, m) => s + m.totalRows, 0)
+      : meta.totalRows;
+    const fanOut = fragmentsScanned >= FANOUT_FRAGMENT_MIN && estimatedRowsAfterPrune > FANOUT_ROW_THRESHOLD;
+
     return {
       table: query.table,
       format: meta.format ?? "lance",
@@ -780,6 +788,8 @@ export class QueryDO extends DurableObject<Env> {
       estimatedRows: meta.totalRows,
       fragments: totalFragments,
       fragmentsSkipped,
+      fragmentsScanned,
+      fanOut,
       partitionCatalog: this.partitionCatalogs.has(query.table)
         ? { column: this.partitionCatalogs.get(query.table)!.column, partitionValues: this.partitionCatalogs.get(query.table)!.stats().partitionValues }
         : undefined,

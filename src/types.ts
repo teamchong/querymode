@@ -343,6 +343,10 @@ export interface ExplainResult {
   metaCached: boolean;
   /** Estimated number of rows after filter pushdown */
   estimatedRows: number;
+  /** Whether the query fans out to Fragment DOs for parallel scan */
+  fanOut?: boolean;
+  /** Fragments scanned after pruning */
+  fragmentsScanned?: number;
 }
 
 /** Environment bindings for Cloudflare Workers */

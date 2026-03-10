@@ -257,6 +257,8 @@ export class LocalExecutor implements QueryExecutor {
       estimatedR2Reads: coalesced.length,
       estimatedRows,
       fragments: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
+      fragmentsScanned: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
+      fanOut: false,
       filters: query.filters.map(f => ({
         column: f.column,
         op: f.op,
