@@ -206,3 +206,54 @@ describe("SQL Integration - buildSqlDataFrame", () => {
     expect(result.rowCount).toBe(2);
   });
 });
+
+describe("SQL Integration - CTEs", () => {
+  it("CTE inlines filters into main query", async () => {
+    const df = buildSqlDataFrame(
+      "WITH engineers AS (SELECT * FROM data WHERE dept = 'eng') SELECT * FROM engineers",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    expect(result.rowCount).toBe(3);
+    expect(result.rows.every(r => r.dept === "eng")).toBe(true);
+  });
+
+  it("CTE with additional filter in main query", async () => {
+    const df = buildSqlDataFrame(
+      "WITH engineers AS (SELECT * FROM data WHERE dept = 'eng') SELECT * FROM engineers WHERE age > 28",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    // eng + age>28: Alice(30), Eve(32)
+    expect(result.rowCount).toBe(2);
+    const names = result.rows.map(r => r.name).sort();
+    expect(names).toEqual(["Alice", "Eve"]);
+  });
+
+  it("CTE with aggregation in main query", async () => {
+    const df = buildSqlDataFrame(
+      "WITH engineers AS (SELECT * FROM data WHERE dept = 'eng') SELECT count(*) AS cnt FROM engineers",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    expect(result.rows[0].cnt).toBe(3);
+  });
+
+  it("CTE with sort and limit in main query", async () => {
+    const df = buildSqlDataFrame(
+      "WITH engineers AS (SELECT * FROM data WHERE dept = 'eng') SELECT * FROM engineers ORDER BY salary DESC LIMIT 2",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    expect(result.rowCount).toBe(2);
+    expect(result.rows[0].name).toBe("Eve");    // 130k
+    expect(result.rows[1].name).toBe("Alice");   // 120k
+  });
+
+  it("CTE descriptor compiles correct table name", async () => {
+    const { sqlToDescriptor } = await import("./index.js");
+    const desc = sqlToDescriptor("WITH active AS (SELECT * FROM users WHERE active = true) SELECT name FROM active");
+    // CTE should be inlined — table name should be the underlying table
+    expect(desc.table).toBe("users");
+  });
+});

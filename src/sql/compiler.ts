@@ -175,6 +175,18 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     windows: windows.length > 0 ? windows : undefined,
   };
 
+  // Inline CTE: if FROM references a CTE name, merge its filters and resolve to the real table
+  if (compiledCtes) {
+    const cteMap = new Map(compiledCtes.map(c => [c.name, c.result]));
+    const cte = cteMap.get(desc.table);
+    if (cte) {
+      const base = cte.descriptor;
+      desc.table = base.table;
+      desc.filters = [...base.filters, ...desc.filters];
+      desc.filterGroups = [...(base.filterGroups ?? []), ...(desc.filterGroups ?? [])];
+    }
+  }
+
   return {
     descriptor: desc,
     whereExpr,
