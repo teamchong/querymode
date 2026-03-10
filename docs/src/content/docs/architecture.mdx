@@ -56,20 +56,6 @@ One per fragment — scales with data, no hard cap. Each scans its assigned frag
 5. **QueryDO** merges partial results via k-way merge
 6. **Response** returned as JSON or streaming columnar format
 
-## Network as a computer
-
-WASM adds overhead (~1.3–1.5× slower than native), and a single Durable Object has hard memory and CPU caps. A traditional query engine running in one WASM instance on one node can't scale.
-
-QueryMode uses the network the way a GPU uses cores:
-
-| Concept | Traditional engine | QueryMode |
-|---------|-------------------|-----------|
-| **Compute** | One process, one CPU | One Fragment DO per fragment — scales with data, each running a small WASM SIMD burst |
-| **Memory** | Bounded by process RAM | R2 spill — operators treat R2 as unbounded virtual memory |
-| **Throughput** | Vertical (bigger machine) | Horizontal — more fragments = more parallel R2 reads = more bandwidth |
-
-No single node does heavy work. The orchestration (network fan-out, R2 caching, scatter/gather) runs in JS at native speed. WASM handles the compute-dense part (SIMD filtering, aggregation, decode) on small shards where its overhead is negligible relative to I/O latency.
-
 ## WASM engine (Zig)
 
 The `querymode.wasm` binary is compiled from Zig source (`wasm/src/`):

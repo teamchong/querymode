@@ -334,32 +334,17 @@ const similar = await qm
   .exec()
 ```
 
-## Network as a computer
+## MapReduce over the network
 
 WASM is slower than native (~1.3–1.5× overhead), and a single Durable Object has hard memory and CPU caps. You can't build a competitive query engine by running everything in one WASM instance on one node.
 
-QueryMode doesn't try. It uses the network the way a GPU uses cores:
+QueryMode doesn't try. It uses the network as a distributed compute fabric:
 
 - **DOs as parallel compute units** — one Fragment DO per fragment, each processing a small shard of column pages with WASM SIMD. Scale out, not up. Idle DOs cost nothing (they hibernate).
 - **R2 as virtual memory** — when a single DO's 128MB fills up, operators spill to R2. The pipeline doesn't care if data is in-memory or spilled — same interface, unbounded capacity.
-- **Fan-out as bandwidth** — more fragments = more parallel R2 reads = more aggregate throughput. Like adding GPU lanes.
+- **Fan-out as bandwidth** — more fragments = more parallel R2 reads = more aggregate throughput.
 
-No single node does heavy work. WASM only needs to be fast enough on its small shard — and with SIMD, it easily clears that bar. The real bottleneck is I/O, which JS handles natively with async concurrency. The orchestration (network, caching, scatter/gather) runs at native speed; WASM handles the math.
-
-## How it works
-
-```
-Traditional engine:  fetch metadata (RTT) → plan → fetch ALL data (RTT) → materialize → execute → serialize → return
-QueryMode:           plan instantly (footer cached) → fetch ONLY matching byte ranges (RTT) → WASM decode zero-copy → done
-```
-
-1. **Footer cache** — every table's metadata (~4KB) is cached in DO memory. Query planning is instant, no round-trip.
-2. **Page-level skip** — min/max stats per page mean non-matching pages are never read, never downloaded, never allocated.
-3. **Coalesced Range reads** — nearby byte ranges merged within 64KB gaps into fewer R2 requests.
-4. **Zero-copy WASM** — raw bytes from R2 are passed directly to Zig SIMD. No Arrow conversion, no DataFrame construction.
-5. **Batched WASM registration** — column data is registered in batched calls (table name written once, reused across all columns) to minimize WASM boundary crossings. SharedArrayBuffer isn't available in Workers, but copy overhead is <0.05% of total query time vs R2 I/O latency.
-6. **VIP eviction** — frequently-accessed table footers are protected from cache eviction by cold one-off accesses.
-7. **Bounded prefetch** — prefetch next page while WASM decodes current page, with up to 8 concurrent R2 range reads per page fetch.
+QueryDO **maps** fragments to Fragment DOs, each DO runs WASM SIMD on its shard, then QueryDO **reduces** via k-way merge. No single node does heavy work. See [Architecture](https://teamchong.github.io/querymode/architecture/) for the full deep dive.
 
 ## License
 
