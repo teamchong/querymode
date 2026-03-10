@@ -56,6 +56,22 @@ One per fragment — scales with data, no hard cap. Each scans its assigned frag
 5. **QueryDO** merges partial results via k-way merge
 6. **Response** returned as JSON or streaming columnar format
 
+## Mental model: DOs as GPU cores
+
+Every Fragment DO runs the same WASM binary — like GPU cores running the same shader. They don't think; they execute. The QueryDO is the CPU: it decides what to dispatch, then collects and merges results.
+
+| GPU | QueryMode |
+|-----|-----------|
+| CPU dispatches kernel | QueryDO maps fragments to Fragment DOs |
+| All cores run same shader | All DOs run same WASM binary |
+| Each core processes one tile | Each DO scans one fragment |
+| Cores don't talk to each other | Fragment DOs are isolated |
+| CPU collects results | QueryDO reduces via k-way merge |
+| More data → more thread blocks | More fragments → more DOs |
+| Idle cores cost nothing | Idle DOs hibernate (zero cost) |
+
+The fan-out decision is workload-aware: small scans run locally in the QueryDO (no RPC overhead), large scans dispatch to Fragment DOs for parallel execution. No configuration — the engine decides based on estimated rows after pruning.
+
 ## WASM engine (Zig)
 
 The `querymode.wasm` binary is compiled from Zig source (`wasm/src/`):
