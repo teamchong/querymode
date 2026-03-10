@@ -1837,16 +1837,19 @@ export class QueryDO extends DurableObject<Env> {
       }));
 
       const fulfilled: QueryResult[] = [];
+      const failures: string[] = [];
       for (const s of settled) {
         if (s.status === "fulfilled") {
           fulfilled.push(s.value);
         } else {
-          this.log("warn", "fragment_do_failed", { reason: String(s.reason) });
+          const reason = String(s.reason);
+          failures.push(reason);
+          this.log("error", "fragment_do_failed", { reason });
         }
       }
 
-      if (fulfilled.length === 0) {
-        throw new Error("All Fragment DOs failed");
+      if (failures.length > 0) {
+        throw new Error(`${failures.length}/${settled.length} Fragment DOs failed: ${failures[0]}`);
       }
 
       const merged = mergeQueryResults(fulfilled, query);
