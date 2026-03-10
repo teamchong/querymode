@@ -2368,10 +2368,13 @@ export class HashJoinOperator implements Operator {
 
   /** Process one partition: load right → build map → probe left → emit matches. */
   private async processPartition(partIdx: number): Promise<Row[]> {
-    // Load right partition into hash map
+    // Load right partition into hash map (skip NULL keys — SQL NULL != NULL)
     const rightMap = new Map<string, Row[]>();
+    const rightNullRows: Row[] = [];
     for await (const row of this.streamPartition(this.rightPartitionIds[partIdx])) {
-      const key = this.toJoinKey(row[this.rightKey]);
+      const val = row[this.rightKey];
+      if (val === null || val === undefined) { rightNullRows.push(row); continue; }
+      const key = this.toJoinKey(val);
       const bucket = rightMap.get(key);
       if (bucket) bucket.push(row);
       else rightMap.set(key, [row]);
@@ -2380,10 +2383,15 @@ export class HashJoinOperator implements Operator {
     // Track matched right rows for right/full joins
     const matched = (this.joinType === "right" || this.joinType === "full") ? new Set<string>() : null;
 
-    // Probe with left partition
+    // Probe with left partition (skip NULL keys)
     const result: Row[] = [];
     for await (const leftRow of this.streamPartition(this.leftPartitionIds[partIdx])) {
-      const key = this.toJoinKey(leftRow[this.leftKey]);
+      const leftVal = leftRow[this.leftKey];
+      if (leftVal === null || leftVal === undefined) {
+        if (this.joinType === "left" || this.joinType === "full") result.push({ ...leftRow });
+        continue;
+      }
+      const key = this.toJoinKey(leftVal);
       const rightRows = rightMap.get(key);
       if (rightRows) {
         for (let i = 0; i < rightRows.length; i++) {
@@ -2395,7 +2403,7 @@ export class HashJoinOperator implements Operator {
       }
     }
 
-    // Emit unmatched right rows for right/full joins
+    // Emit unmatched right rows for right/full joins (including null-keyed right rows)
     if (matched) {
       for (const [key, rows] of rightMap) {
         for (let i = 0; i < rows.length; i++) {
@@ -2403,6 +2411,10 @@ export class HashJoinOperator implements Operator {
             result.push({ ...rows[i] });
           }
         }
+      }
+      // NULL-keyed right rows never match — always unmatched
+      for (const row of rightNullRows) {
+        result.push({ ...row });
       }
     }
 

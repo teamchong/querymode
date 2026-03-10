@@ -222,6 +222,31 @@ export function rewriteAggregatesAsColumns(expr: SqlExpr): SqlExpr {
       };
     case "unary":
       return { kind: "unary", op: expr.op, operand: rewriteAggregatesAsColumns(expr.operand) };
+    case "between":
+      return {
+        kind: "between",
+        expr: rewriteAggregatesAsColumns(expr.expr),
+        low: rewriteAggregatesAsColumns(expr.low),
+        high: rewriteAggregatesAsColumns(expr.high),
+      };
+    case "in_list":
+      return {
+        kind: "in_list", negated: expr.negated,
+        expr: rewriteAggregatesAsColumns(expr.expr),
+        values: expr.values.map(rewriteAggregatesAsColumns),
+      };
+    case "case_expr":
+      return {
+        kind: "case_expr",
+        operand: expr.operand ? rewriteAggregatesAsColumns(expr.operand) : undefined,
+        whenClauses: expr.whenClauses.map(w => ({
+          condition: rewriteAggregatesAsColumns(w.condition),
+          result: rewriteAggregatesAsColumns(w.result),
+        })),
+        elseResult: expr.elseResult ? rewriteAggregatesAsColumns(expr.elseResult) : undefined,
+      };
+    case "cast":
+      return { kind: "cast", expr: rewriteAggregatesAsColumns(expr.expr), targetType: expr.targetType };
     default:
       return expr;
   }

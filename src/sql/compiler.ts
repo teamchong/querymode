@@ -71,8 +71,11 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
   let whereExpr: SqlExpr | undefined;
   let filterGroups: FilterOp[][] | undefined;
   if (stmt.where) {
+    const savedLen = filters.length;
     const fullyFlattened = tryFlattenFilters(stmt.where, filters);
     if (!fullyFlattened) {
+      // Roll back any partially-pushed filters to avoid double-filtering
+      filters.length = savedLen;
       // Try OR decomposition: if top-level is OR, flatten each branch independently
       const orGroups = tryFlattenOrGroups(stmt.where);
       if (orGroups) {

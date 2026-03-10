@@ -3,7 +3,7 @@
  * TS handles orchestration (R2 reads, cache); WASM handles all compute.
  */
 
-import type { Row, DataType, PageInfo } from "./types.js";
+import type { Row, DataType, PageInfo, FilterOp } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 
 const textEncoder = new TextEncoder();
@@ -984,6 +984,28 @@ export class WasmEngine {
 
 // --- SQL generation ---
 
+const COMPARISON_OP_MAP: Record<string, string> = { eq: "=", neq: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=" };
+
+function filterToSql(f: FilterOp): string {
+  if (f.op === "is_null") return `${quote(f.column)} IS NULL`;
+  if (f.op === "is_not_null") return `${quote(f.column)} IS NOT NULL`;
+  if (f.op === "in" && Array.isArray(f.value)) {
+    return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
+  }
+  if (f.op === "not_in" && Array.isArray(f.value)) {
+    return `${quote(f.column)} NOT IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
+  }
+  if ((f.op === "between" || f.op === "not_between") && Array.isArray(f.value) && f.value.length === 2) {
+    const lo = typeof f.value[0] === "string" ? `'${escapeSql(f.value[0])}'` : String(f.value[0]);
+    const hi = typeof f.value[1] === "string" ? `'${escapeSql(f.value[1])}'` : String(f.value[1]);
+    return `${quote(f.column)} ${f.op === "not_between" ? "NOT " : ""}BETWEEN ${lo} AND ${hi}`;
+  }
+  if (f.op === "like") return `${quote(f.column)} LIKE '${escapeSql(f.value as string)}'`;
+  if (f.op === "not_like") return `${quote(f.column)} NOT LIKE '${escapeSql(f.value as string)}'`;
+  const val = typeof f.value === "string" ? `'${escapeSql(f.value)}'` : String(f.value);
+  return `${quote(f.column)} ${COMPARISON_OP_MAP[f.op] ?? "="} ${val}`;
+}
+
 function queryToSql(query: QueryDescriptor): string {
   const parts: string[] = [];
 
@@ -1003,28 +1025,16 @@ function queryToSql(query: QueryDescriptor): string {
 
   parts.push(`FROM ${quote(query.table)}`);
 
-  if (query.filters.length > 0) {
-    const conditions = query.filters.map(f => {
-      if (f.op === "is_null") return `${quote(f.column)} IS NULL`;
-      if (f.op === "is_not_null") return `${quote(f.column)} IS NOT NULL`;
-      if (f.op === "in" && Array.isArray(f.value)) {
-        return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
-      }
-      if (f.op === "not_in" && Array.isArray(f.value)) {
-        return `${quote(f.column)} NOT IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
-      }
-      if ((f.op === "between" || f.op === "not_between") && Array.isArray(f.value) && f.value.length === 2) {
-        const lo = typeof f.value[0] === "string" ? `'${escapeSql(f.value[0])}'` : String(f.value[0]);
-        const hi = typeof f.value[1] === "string" ? `'${escapeSql(f.value[1])}'` : String(f.value[1]);
-        return `${quote(f.column)} ${f.op === "not_between" ? "NOT " : ""}BETWEEN ${lo} AND ${hi}`;
-      }
-      if (f.op === "like") return `${quote(f.column)} LIKE '${escapeSql(f.value as string)}'`;
-      if (f.op === "not_like") return `${quote(f.column)} NOT LIKE '${escapeSql(f.value as string)}'`;
-      const opMap: Record<string, string> = { eq: "=", neq: "!=", gt: ">", gte: ">=", lt: "<", lte: "<=" };
-      const val = typeof f.value === "string" ? `'${escapeSql(f.value)}'` : String(f.value);
-      return `${quote(f.column)} ${opMap[f.op]} ${val}`;
-    });
-    parts.push(`WHERE ${conditions.join(" AND ")}`);
+  const andConditions = query.filters.map(filterToSql);
+  const orGroupConditions = (query.filterGroups ?? [])
+    .filter(g => g.length > 0)
+    .map(g => g.length === 1 ? filterToSql(g[0]) : `(${g.map(filterToSql).join(" AND ")})`);
+  if (andConditions.length > 0 || orGroupConditions.length > 0) {
+    const whereParts: string[] = [...andConditions];
+    if (orGroupConditions.length > 0) {
+      whereParts.push(orGroupConditions.length === 1 ? orGroupConditions[0] : `(${orGroupConditions.join(" OR ")})`);
+    }
+    parts.push(`WHERE ${whereParts.join(" AND ")}`);
   }
 
   if (query.vectorSearch) {
@@ -1071,7 +1081,7 @@ function parseWasmResult(memoryBuffer: ArrayBuffer, ptr: number, size: number): 
 
   const rows: Row[] = Array.from({ length: numRows }, () => ({}));
   let dp = dataStart;
-  const end = ptr + size;
+  const end = size;
 
   for (const col of columns) {
     for (let r = 0; r < numRows; r++) {

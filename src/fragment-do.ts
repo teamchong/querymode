@@ -85,40 +85,57 @@ export class FragmentDO extends DurableObject<Env> {
         }
       }
 
-      // Build byte ranges for each page, skipping via min/max stats
+      // Build byte ranges for each page, skipping uniformly across all columns.
+      // A page is skipped only if any AND filter eliminates it — same for all columns.
+      const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
+      const keptPageIndices: number[] = [];
+      for (let pi = 0; pi < maxPages; pi++) {
+        let skip = false;
+        if (!query.vectorSearch) {
+          for (const f of query.filters) {
+            const col = cols.find(c => c.name === f.column);
+            if (!col) continue;
+            const page = col.pages[pi];
+            if (!page) continue;
+            if (canSkipPage(page, [f], f.column)) { skip = true; break; }
+          }
+        }
+        if (skip) { totalPagesSkipped += cols.length; continue; }
+        keptPageIndices.push(pi);
+      }
+
       const ranges: { column: string; offset: number; length: number }[] = [];
       for (const col of cols) {
-        for (const page of col.pages) {
-          if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-            totalPagesSkipped++;
-            continue;
-          }
+        for (const pi of keptPageIndices) {
+          const page = col.pages[pi];
+          if (!page) continue;
           ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
         }
       }
 
-      // Cache-before-fetch: check WASM buffer pool for each range
-      const columnData = new Map<string, ArrayBuffer[]>();
-      const uncachedRanges: typeof ranges = [];
+      // Cache-before-fetch: check WASM buffer pool for each range.
+      // Track results by index to preserve page ordering when cache is partially warm.
+      const rangeResults = new Array<ArrayBuffer | null>(ranges.length).fill(null);
+      const uncachedRanges: { range: typeof ranges[0]; idx: number }[] = [];
 
-      for (const r of ranges) {
+      for (let ri = 0; ri < ranges.length; ri++) {
+        const r = ranges[ri];
         const cacheKey = `${r2Key}:${r.offset}:${r.length}`;
         const cached = this.wasmEngine.cacheGet(cacheKey);
         if (cached) {
           totalCacheHits++;
-          const arr = columnData.get(r.column) ?? [];
-          arr.push(cached);
-          columnData.set(r.column, arr);
+          rangeResults[ri] = cached;
         } else {
           totalCacheMisses++;
-          uncachedRanges.push(r);
+          uncachedRanges.push({ range: r, idx: ri });
         }
       }
 
       // Fetch uncached ranges from R2 with retry + timeout
       const r2Start = Date.now();
       if (uncachedRanges.length > 0) {
-        const coalesced = coalesceRanges(uncachedRanges, autoCoalesceGap(uncachedRanges));
+        const fetchRanges = uncachedRanges.map(u => u.range);
+        const coalesced = coalesceRanges(fetchRanges, autoCoalesceGap(fetchRanges));
         const fetched = await fetchBounded(
           coalesced.map(c => () =>
             withRetry(() =>
@@ -135,20 +152,33 @@ export class FragmentDO extends DurableObject<Env> {
           ),
           8,
         );
+        // Build a lookup from (column, offset, length) → fetched slice
+        const fetchedMap = new Map<string, ArrayBuffer>();
         for (const f of fetched) {
           if (!f) continue;
           totalBytesRead += f.data.byteLength;
           for (const sub of f.ranges) {
             const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
-            const arr = columnData.get(sub.column) ?? [];
-            arr.push(slice);
-            columnData.set(sub.column, arr);
-
-            // Populate cache for next time
+            fetchedMap.set(`${sub.column}:${sub.offset}:${sub.length}`, slice);
             const cacheKey = `${r2Key}:${sub.offset}:${sub.length}`;
             this.wasmEngine.cacheSet(cacheKey, slice);
           }
         }
+        // Fill in uncached slots in order
+        for (const u of uncachedRanges) {
+          const key = `${u.range.column}:${u.range.offset}:${u.range.length}`;
+          rangeResults[u.idx] = fetchedMap.get(key) ?? null;
+        }
+      }
+
+      // Assemble columnData in correct page order
+      const columnData = new Map<string, ArrayBuffer[]>();
+      for (let ri = 0; ri < ranges.length; ri++) {
+        const buf = rangeResults[ri];
+        if (!buf) continue;
+        const arr = columnData.get(ranges[ri].column) ?? [];
+        arr.push(buf);
+        columnData.set(ranges[ri].column, arr);
       }
       totalR2ReadMs += Date.now() - r2Start;
 
@@ -161,7 +191,7 @@ export class FragmentDO extends DurableObject<Env> {
         .map(col => ({
           name: col.name, dtype: col.dtype, listDim: col.listDimension,
           pages: columnData.get(col.name)!,
-          pageInfos: col.pages,
+          pageInfos: keptPageIndices.map(pi => col.pages[pi]).filter(Boolean),
         }));
       if (!this.wasmEngine.registerColumns(fragTable, fragColEntries)) {
         throw new Error(`WASM OOM: failed to register columns for fragment "${r2Key}"`);

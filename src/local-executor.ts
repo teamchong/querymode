@@ -182,7 +182,7 @@ export class LocalExecutor implements QueryExecutor {
   /** Count matching rows. No-filter case uses metadata only (zero I/O). */
   async count(query: QueryDescriptor): Promise<number> {
     const meta = await this.getOrLoadMeta(query.table);
-    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct) {
+    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
       return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
     }
     // With filters: fall through to aggregate path
@@ -387,6 +387,10 @@ export class LocalExecutor implements QueryExecutor {
     if (query.groupBy) for (const g of query.groupBy) feed(g);
     if (query.distinct) feed("distinct");
     if (query.version !== undefined) feed(`v${query.version}`);
+    if (query.windows) for (const w of query.windows) { feed(w.fn); feed(w.alias); feed(w.column ?? ""); }
+    if (query.computedColumns) for (const cc of query.computedColumns) feed(cc.name);
+    if (query.setOperation) { feed(query.setOperation.type); feed(query.setOperation.table); }
+    if (query.subqueryIn) { feed(query.subqueryIn.column); feed(query.subqueryIn.table); }
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 

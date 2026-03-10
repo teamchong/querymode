@@ -95,37 +95,46 @@ class EdgeScanOperator implements Operator {
     const query = this.query;
     const meta = this.meta;
 
-    let cols = query.projections.length > 0
-      ? meta.columns.filter(c => query.projections.includes(c.name))
-      : meta.columns;
-
-    if (query.vectorSearch) {
-      const vc = query.vectorSearch.column;
-      if (!cols.some(c => c.name === vc)) {
-        const ec = meta.columns.find(c => c.name === vc);
-        if (ec) cols = [...cols, ec];
-      }
+    // Determine columns to fetch: projections + all columns referenced by filters/sort/groupBy/aggregates
+    let neededNames: Set<string>;
+    if (query.projections.length > 0) {
+      neededNames = new Set(query.projections);
+      for (const f of query.filters) neededNames.add(f.column);
+      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededNames.add(f.column);
+      if (query.sortColumn) neededNames.add(query.sortColumn);
+      if (query.groupBy) for (const g of query.groupBy) neededNames.add(g);
+      if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededNames.add(a.column);
+    } else {
+      neededNames = new Set(meta.columns.map(c => c.name));
     }
+    if (query.vectorSearch) neededNames.add(query.vectorSearch.column);
+
+    let cols = meta.columns.filter(c => neededNames.has(c.name));
     this.cols = cols;
 
-    for (const col of cols) {
-      const keptPages: typeof col.pages = [];
-      for (const page of col.pages) {
-        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-          this.pagesSkipped++;
-          continue;
+    // Determine which pages to keep — must be uniform across all columns to avoid row misalignment.
+    // A page is skipped only if any AND filter eliminates it (same logic as canSkipPageMultiCol).
+    const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
+    const keptPageIndices: number[] = [];
+    for (let pi = 0; pi < maxPages; pi++) {
+      let skip = false;
+      if (!query.vectorSearch) {
+        for (const f of query.filters) {
+          const col = cols.find(c => c.name === f.column);
+          if (!col) continue;
+          const page = col.pages[pi];
+          if (!page) continue;
+          if (canSkipPage(page, [f], f.column)) { skip = true; break; }
         }
-        keptPages.push(page);
       }
-      this.columnPageInfos.set(col.name, keptPages);
+      if (skip) { this.pagesSkipped += cols.length; continue; }
+      keptPageIndices.push(pi);
     }
 
-    // Count total pages from first column
-    const firstCol = cols[0];
-    if (firstCol) {
-      const keptPages = this.columnPageInfos.get(firstCol.name) ?? firstCol.pages;
-      this.pageCount = keptPages.length;
+    for (const col of cols) {
+      this.columnPageInfos.set(col.name, keptPageIndices.map(pi => col.pages[pi]).filter(Boolean));
     }
+    this.pageCount = keptPageIndices.length;
   }
 
   /**
@@ -670,6 +679,11 @@ export class QueryDO extends DurableObject<Env> {
     if (query.offset !== undefined) feed(String(query.offset));
     if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
     if (query.groupBy) for (const g of query.groupBy) feed(g);
+    if (query.distinct) feed("distinct");
+    if (query.windows) for (const w of query.windows) { feed(w.fn); feed(w.alias); feed(w.column ?? ""); }
+    if (query.computedColumns) for (const cc of query.computedColumns) feed(cc.name);
+    if (query.setOperation) { feed(query.setOperation.type); feed(query.setOperation.table); }
+    if (query.subqueryIn) { feed(query.subqueryIn.column); feed(query.subqueryIn.table); }
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 
@@ -922,31 +936,52 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Scan only the needed pages from R2 via coalesced Range reads, with cache-before-fetch. */
   private async scanPages(query: QueryDescriptor, meta: TableMeta, t0: number): Promise<QueryResult> {
-    let cols = query.projections.length > 0
-      ? meta.columns.filter(c => query.projections.includes(c.name))
-      : meta.columns;
-
-    if (query.vectorSearch) {
-      const vc = query.vectorSearch.column;
-      if (!cols.some(c => c.name === vc)) {
-        const ec = meta.columns.find(c => c.name === vc);
-        if (ec) cols = [...cols, ec];
-      }
+    // Determine columns to fetch: projections + all referenced by filters/sort/groupBy/aggregates
+    let neededNames: Set<string>;
+    if (query.projections.length > 0) {
+      neededNames = new Set(query.projections);
+      for (const f of query.filters) neededNames.add(f.column);
+      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededNames.add(f.column);
+      if (query.sortColumn) neededNames.add(query.sortColumn);
+      if (query.groupBy) for (const g of query.groupBy) neededNames.add(g);
+      if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededNames.add(a.column);
+    } else {
+      neededNames = new Set(meta.columns.map(c => c.name));
     }
+    if (query.vectorSearch) neededNames.add(query.vectorSearch.column);
 
-    // Build per-page ranges, applying page-level skip.
-    // Track non-skipped page infos per column so buffer indices stay aligned.
+    let cols = meta.columns.filter(c => neededNames.has(c.name));
+
+    // Build per-page ranges, applying page-level skip uniformly across all columns.
+    // A page is skipped only if any AND filter eliminates it — same decision for all columns
+    // to prevent row misalignment when different columns have different page counts.
     const ranges: { column: string; offset: number; length: number }[] = [];
     const columnPageInfos = new Map<string, typeof cols[0]["pages"]>();
     let pagesSkipped = 0;
+
+    const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
+    const keptPageIndices: number[] = [];
+    for (let pi = 0; pi < maxPages; pi++) {
+      let skip = false;
+      if (!query.vectorSearch) {
+        for (const f of query.filters) {
+          const col = cols.find(c => c.name === f.column);
+          if (!col) continue;
+          const page = col.pages[pi];
+          if (!page) continue;
+          if (canSkipPage(page, [f], f.column)) { skip = true; break; }
+        }
+      }
+      if (skip) { pagesSkipped += cols.length; continue; }
+      keptPageIndices.push(pi);
+    }
+
     for (const col of cols) {
-      const keptPages: typeof col.pages = [];
-      for (const page of col.pages) {
-        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) { pagesSkipped++; continue; }
-        keptPages.push(page);
+      const keptPages = keptPageIndices.map(pi => col.pages[pi]).filter(Boolean);
+      columnPageInfos.set(col.name, keptPages);
+      for (const page of keptPages) {
         ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
       }
-      columnPageInfos.set(col.name, keptPages);
     }
 
     // 3-tier cache hierarchy:
