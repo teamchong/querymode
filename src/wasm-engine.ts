@@ -370,12 +370,13 @@ export class WasmEngine {
       case "float32": {
         // Promote float32 → float64 (fixed_size_list vectors use dtype "fixed_size_list")
         const src = new Float32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
-        const f64Bytes = totalRows * 8;
+        const count = Math.min(totalRows, src.length);
+        const f64Bytes = count * 8;
         const dataPtr = this.exports.alloc(f64Bytes);
         if (!dataPtr) return false;
-        const dst = new Float64Array(this.exports.memory.buffer, dataPtr, totalRows);
-        for (let i = 0; i < totalRows; i++) dst[i] = src[i];
-        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        const dst = new Float64Array(this.exports.memory.buffer, dataPtr, count);
+        for (let i = 0; i < count; i++) dst[i] = src[i];
+        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, count);
         return true;
       }
 
@@ -384,12 +385,13 @@ export class WasmEngine {
         const src = dtype === "int32"
           ? new Int32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2)
           : new Uint32Array(flat.buffer, flat.byteOffset, flat.byteLength >> 2);
-        const i64Bytes = totalRows * 8;
+        const count = Math.min(totalRows, src.length);
+        const i64Bytes = count * 8;
         const dataPtr = this.exports.alloc(i64Bytes);
         if (!dataPtr) return false;
-        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
-        for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
-        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, count);
+        for (let i = 0; i < count; i++) dst[i] = BigInt(src[i]);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, count);
         return true;
       }
 
@@ -402,12 +404,13 @@ export class WasmEngine {
           case "int16": src = new Int16Array(flat.buffer, flat.byteOffset, flat.byteLength >> 1); break;
           case "uint16": src = new Uint16Array(flat.buffer, flat.byteOffset, flat.byteLength >> 1); break;
         }
-        const i64Bytes = totalRows * 8;
+        const count = Math.min(totalRows, src.length);
+        const i64Bytes = count * 8;
         const dataPtr = this.exports.alloc(i64Bytes);
         if (!dataPtr) return false;
-        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, totalRows);
-        for (let i = 0; i < totalRows; i++) dst[i] = BigInt(src[i]);
-        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, totalRows);
+        const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, count);
+        for (let i = 0; i < count; i++) dst[i] = BigInt(src[i]);
+        this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, count);
         return true;
       }
 
