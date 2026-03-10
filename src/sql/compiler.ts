@@ -2,10 +2,16 @@
 
 import type { QueryDescriptor } from "../client.js";
 import type { AggregateOp, FilterOp, WindowSpec } from "../types.js";
-import type { SelectStmt, SqlExpr, TableRef, SqlOrderBy } from "./ast.js";
+import type { SelectStmt, SqlExpr, TableRef, SqlOrderBy, CteDef } from "./ast.js";
 import { rewriteAggregatesAsColumns } from "./evaluator.js";
 
 const AGGREGATE_FNS = new Set(["COUNT", "SUM", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "STDDEV", "VARIANCE", "MEDIAN", "PERCENTILE"]);
+
+/** A compiled CTE — name + its full compile result */
+export interface CompiledCte {
+  name: string;
+  result: SqlCompileResult;
+}
 
 /** Full compile result with extras that need runtime evaluation */
 export interface SqlCompileResult {
@@ -18,6 +24,8 @@ export interface SqlCompileResult {
   allOrderBy?: SqlOrderBy[];
   /** Non-column SELECT expressions (CASE, CAST, arithmetic) that need per-row computation */
   computedExprs?: { alias: string; expr: SqlExpr }[];
+  /** CTEs that must be materialized before the main query runs */
+  ctes?: CompiledCte[];
 }
 
 /** Compile to just a QueryDescriptor (backward-compatible) */
@@ -27,6 +35,15 @@ export function compile(stmt: SelectStmt): QueryDescriptor {
 
 /** Full compilation returning extras for runtime evaluation */
 export function compileFull(stmt: SelectStmt): SqlCompileResult {
+  // Compile CTEs first — each becomes a materialized subquery
+  let compiledCtes: CompiledCte[] | undefined;
+  if (stmt.ctes && stmt.ctes.length > 0) {
+    compiledCtes = stmt.ctes.map(cte => ({
+      name: cte.name,
+      result: compileFull(cte.query),
+    }));
+  }
+
   const table = extractTableName(stmt.from);
   const filters: FilterOp[] = [];
   const aggregates: AggregateOp[] = [];
@@ -164,6 +181,7 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     havingExpr,
     allOrderBy,
     computedExprs: computedExprs.length > 0 ? computedExprs : undefined,
+    ctes: compiledCtes,
   };
 }
 

@@ -385,4 +385,27 @@ describe("SQL Statement Parser", () => {
       expect(result.stmt.from).toEqual({ kind: "simple", name: "t", alias: undefined });
     }
   });
+
+  it("parses single CTE", () => {
+    const stmt = parse("WITH active AS (SELECT * FROM users WHERE active = true) SELECT name FROM active");
+    expect(stmt.ctes).toHaveLength(1);
+    expect(stmt.ctes![0].name).toBe("active");
+    expect(stmt.ctes![0].query.from).toEqual({ kind: "simple", name: "users", alias: undefined });
+    expect(stmt.from).toEqual({ kind: "simple", name: "active", alias: undefined });
+  });
+
+  it("parses multiple CTEs", () => {
+    const stmt = parse("WITH a AS (SELECT * FROM t1), b AS (SELECT * FROM t2) SELECT * FROM a");
+    expect(stmt.ctes).toHaveLength(2);
+    expect(stmt.ctes![0].name).toBe("a");
+    expect(stmt.ctes![1].name).toBe("b");
+  });
+
+  it("parses CTE with filters and aggregates", () => {
+    const stmt = parse("WITH filtered AS (SELECT * FROM events WHERE region = 'us') SELECT region, count(*) FROM filtered GROUP BY region");
+    expect(stmt.ctes).toHaveLength(1);
+    expect(stmt.ctes![0].query.where).toBeDefined();
+    expect(stmt.groupBy).toBeDefined();
+    expect(stmt.groupBy!.columns).toEqual(["region"]);
+  });
 });

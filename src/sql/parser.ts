@@ -5,7 +5,7 @@ import type { Token } from "./lexer.js";
 import type {
   SelectStmt, SelectItem, SqlExpr, TableRef, JoinClause, JoinType,
   SqlOrderBy, SqlGroupBy, BinaryOp, UnaryOp, SetOperationType, SqlWindowSpec,
-  SqlStatement, ShowVersionsStmt, DiffStmt,
+  SqlStatement, ShowVersionsStmt, DiffStmt, CteDef,
 } from "./ast.js";
 
 const COMPARISON_OPS: readonly [TokenType, BinaryOp][] = [
@@ -133,6 +133,20 @@ class Parser {
   }
 
   parseSelect(): SelectStmt {
+    // WITH name AS (SELECT ...), name2 AS (SELECT ...) SELECT ...
+    let ctes: CteDef[] | undefined;
+    if (this.match(TokenType.WITH)) {
+      ctes = [];
+      do {
+        const name = this.parseIdentifier();
+        this.expect(TokenType.AS);
+        this.expect(TokenType.LPAREN);
+        const query = this.parseSelect();
+        this.expect(TokenType.RPAREN);
+        ctes.push({ name, query });
+      } while (this.match(TokenType.COMMA));
+    }
+
     this.expect(TokenType.SELECT);
 
     const distinct = this.match(TokenType.DISTINCT);
@@ -172,7 +186,9 @@ class Parser {
       setOperation = this.parseSetOperation();
     }
 
-    return { distinct, columns, from, where, groupBy, orderBy, limit, offset, setOperation };
+    const stmt: SelectStmt = { distinct, columns, from, where, groupBy, orderBy, limit, offset, setOperation };
+    if (ctes) stmt.ctes = ctes;
+    return stmt;
   }
 
   private parseSelectList(): SelectItem[] {

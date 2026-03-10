@@ -84,6 +84,11 @@ export interface SetOperation {
   right: SelectStmt;
 }
 
+export interface CteDef {
+  name: string;
+  query: SelectStmt;
+}
+
 export interface SelectStmt {
   distinct: boolean;
   columns: SelectItem[];
@@ -94,6 +99,7 @@ export interface SelectStmt {
   limit?: number;
   offset?: number;
   setOperation?: SetOperation;
+  ctes?: CteDef[];
 }
 
 export interface ShowVersionsStmt {
