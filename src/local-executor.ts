@@ -167,9 +167,10 @@ export class LocalExecutor implements QueryExecutor {
     // Write _latest
     await fs.writeFile(latestPath, String(newVersion));
 
-    // Invalidate meta cache
+    // Invalidate meta + result caches
     this.metaCache.delete(tablePath);
     this.datasetCache.delete(tablePath);
+    this.resultCache.invalidateByPrefix(`qr:${tablePath}:`);
 
     return {
       version: newVersion,

@@ -198,16 +198,62 @@ export function queryHashKey(desc: QueryDescriptor): string {
     parts.push(`g:${[...desc.groupBy].sort().join(",")}`);
   }
 
+  // Filter groups (OR)
+  if (desc.filterGroups && desc.filterGroups.length > 0) {
+    for (let gi = 0; gi < desc.filterGroups.length; gi++) {
+      const grp = desc.filterGroups[gi];
+      for (const f of grp) parts.push(`fg${gi}:${f.column}:${f.op}:${stringifyValue(f.value)}`);
+    }
+  }
+
+  // Distinct
+  if (desc.distinct && desc.distinct.length > 0) {
+    parts.push(`d:${[...desc.distinct].sort().join(",")}`);
+  }
+
   // Vector search
   if (desc.vectorSearch) {
     const vs = desc.vectorSearch;
     parts.push(`v:${vs.column}:${vs.topK}:${Array.from(vs.queryVector).join(",")}`);
   }
 
+  // Windows
+  if (desc.windows && desc.windows.length > 0) {
+    for (const w of desc.windows) {
+      let wp = `w:${w.fn}:${w.alias}:${w.column ?? ""}`;
+      if (w.partitionBy?.length) wp += `:pb=${w.partitionBy.join(",")}`;
+      if (w.orderBy?.length) wp += `:ob=${w.orderBy.map(o => o.column + o.direction).join(",")}`;
+      if (w.frame) wp += `:fr=${w.frame.type}:${w.frame.start}:${w.frame.end}`;
+      parts.push(wp);
+    }
+  }
+
+  // Computed columns
+  if (desc.computedColumns && desc.computedColumns.length > 0) {
+    for (const cc of desc.computedColumns) parts.push(`cc:${cc.alias}`);
+  }
+
+  // Set operation
+  if (desc.setOperation) {
+    parts.push(`so:${desc.setOperation.mode}:${queryHashKey(desc.setOperation.right as QueryDescriptor)}`);
+  }
+
+  // Subquery IN
+  if (desc.subqueryIn) {
+    for (const sq of desc.subqueryIn) {
+      parts.push(`sq:${sq.column}:${[...sq.valueSet].sort().join(",")}`);
+    }
+  }
+
   // Join
   if (desc.join) {
     const j = desc.join;
     parts.push(`j:${j.leftKey}:${j.rightKey}:${j.type ?? "inner"}:${queryHashKey(j.right as QueryDescriptor)}`);
+  }
+
+  // Version
+  if (desc.version !== undefined) {
+    parts.push(`ver:${desc.version}`);
   }
 
   return parts.join("|");
