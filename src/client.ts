@@ -599,6 +599,18 @@ export class DataFrame<T extends Row = Row> {
     return result;
   }
 
+  /** Add a column to the table schema. Existing rows get the default value. */
+  async addColumn(column: string, dtype: string, defaultValue: unknown = null): Promise<import("./types.js").SchemaEvolutionResult> {
+    if (!this._executor.addColumn) throw new Error("addColumn not supported by this executor");
+    return this._executor.addColumn(this._table, column, dtype, defaultValue);
+  }
+
+  /** Drop a column from the table schema. Data is not rewritten. */
+  async dropColumn(column: string): Promise<import("./types.js").SchemaEvolutionResult> {
+    if (!this._executor.dropColumn) throw new Error("dropColumn not supported by this executor");
+    return this._executor.dropColumn(this._table, column);
+  }
+
   /** Replace null values in a column with a default. */
   fillNull(column: string, value: number | string | boolean): DataFrame {
     return this.computed(column, (row: Row) => {
@@ -963,6 +975,26 @@ export class MaterializedExecutor implements QueryExecutor {
       estimatedRows: this.result.rowCount,
     };
   }
+
+  async addColumn(table: string, column: string, _dtype: string, defaultValue: unknown): Promise<import("./types.js").SchemaEvolutionResult> {
+    // Add column with default value to all existing rows
+    for (const row of this.result.rows) {
+      if (!(column in row)) row[column] = defaultValue as Row[string];
+    }
+    if (!this.result.columns.includes(column)) {
+      this.result.columns.push(column);
+    }
+    return { table, operation: "add_column", column, columnsAfter: [...this.result.columns] };
+  }
+
+  async dropColumn(table: string, column: string): Promise<import("./types.js").SchemaEvolutionResult> {
+    // Remove column from all rows and column list
+    for (const row of this.result.rows) {
+      delete row[column];
+    }
+    this.result.columns = this.result.columns.filter(c => c !== column);
+    return { table, operation: "drop_column", column, columnsAfter: [...this.result.columns] };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,6 +1074,10 @@ export interface QueryExecutor {
   exists?(query: QueryDescriptor): Promise<boolean>;
   /** Optional: return first matching row */
   first?(query: QueryDescriptor): Promise<Row | null>;
+  /** Schema evolution: add a column with a default value (existing rows get the default) */
+  addColumn?(table: string, column: string, dtype: string, defaultValue: unknown): Promise<import("./types.js").SchemaEvolutionResult>;
+  /** Schema evolution: drop a column (data not rewritten, column excluded from reads) */
+  dropColumn?(table: string, column: string): Promise<import("./types.js").SchemaEvolutionResult>;
   /** Plan inspection without execution */
   explain(query: QueryDescriptor): Promise<ExplainResult>;
   /** Optional: lazy batch iteration */

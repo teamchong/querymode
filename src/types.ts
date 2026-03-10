@@ -286,6 +286,14 @@ export interface IcebergDatasetMeta {
   updatedAt: number;
 }
 
+/** Result of a schema evolution operation */
+export interface SchemaEvolutionResult {
+  table: string;
+  operation: "add_column" | "drop_column";
+  column: string;
+  columnsAfter: string[];
+}
+
 /** Options for append (write) operations — catalog-friendly */
 export interface AppendOptions {
   /** R2 path prefix for the output Lance dataset (e.g., "pipelines/job-123/output.lance/").

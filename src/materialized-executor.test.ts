@@ -428,4 +428,52 @@ describe("MaterializedExecutor", () => {
       expect(c2).toBe(2);
     });
   });
+
+  describe("schema evolution", () => {
+    it("addColumn adds column with default value to all rows", async () => {
+      const df = createFromJSON(data);
+      const result = await df.addColumn("status", "utf8", "active");
+      expect(result.operation).toBe("add_column");
+      expect(result.column).toBe("status");
+      expect(result.columnsAfter).toContain("status");
+
+      // Verify all rows have the new column
+      const rows = await df.collect();
+      expect(rows.rows.every(r => r.status === "active")).toBe(true);
+    });
+
+    it("addColumn with null default", async () => {
+      const df = createFromJSON(data);
+      await df.addColumn("notes", "utf8", null);
+      const rows = await df.collect();
+      expect(rows.rows.every(r => r.notes === null)).toBe(true);
+    });
+
+    it("dropColumn removes column from all rows", async () => {
+      const df = createFromJSON(data);
+      const result = await df.dropColumn("amount");
+      expect(result.operation).toBe("drop_column");
+      expect(result.column).toBe("amount");
+      expect(result.columnsAfter).not.toContain("amount");
+
+      // Verify column is gone
+      const rows = await df.collect();
+      expect(rows.rows.every(r => !("amount" in r))).toBe(true);
+    });
+
+    it("addColumn then query filters on new column", async () => {
+      const df = createFromJSON(data);
+      await df.addColumn("tier", "utf8", "free");
+      const result = await df.filter("tier", "eq", "free").collect();
+      expect(result.rowCount).toBe(5);
+    });
+
+    it("dropColumn then query excludes dropped column", async () => {
+      const df = createFromJSON(data);
+      await df.dropColumn("region");
+      const result = await df.collect();
+      expect(result.columns).not.toContain("region");
+      expect(Object.keys(result.rows[0])).not.toContain("region");
+    });
+  });
 });
