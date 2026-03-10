@@ -24,15 +24,15 @@ const pipeReturn = d.addBox("4. Return RPC result\n(zero serialization)", { row:
 
 // ── Row 5-7: Fragment DO Pool ──
 const coord = d.addBox("Query DO\n(Coordinator)", { row: 5, col: 0, color: "frontend" });
-const frag0 = d.addBox("Fragment DO\nslot-0: frags 0..99\n+ footer cache", { row: 5, col: 1, color: "external" });
-const frag1 = d.addBox("Fragment DO\nslot-1: frags 100..199\n+ footer cache", { row: 6, col: 1, color: "external" });
-const frag2 = d.addBox("Fragment DO\nslot-2: frags 200..299\n+ footer cache", { row: 7, col: 1, color: "external" });
+const frag0 = d.addBox("Fragment DO\nslot-0 (RPC)\n+ footer cache", { row: 5, col: 1, color: "external" });
+const frag1 = d.addBox("Fragment DO\nslot-1 (RPC)\n+ footer cache", { row: 6, col: 1, color: "external" });
+const frag2 = d.addBox("Fragment DO\nslot-N (RPC)\n+ footer cache", { row: 7, col: 1, color: "external" });
 const merge = d.addBox("mergeQueryResults()\nk-way merge | partial-agg merge", { row: 6, col: 2, color: "database" });
 
 // ── Groups ──
 d.addGroup("Regional Query DOs  (1 per datacenter)", [sjc, nrt, ams], { strokeColor: "#868e96" });
 d.addGroup("Page-Streaming Pipeline (inside Query DO + Fragment DO)  →", [pipeFetch, pipeWasm, pipeAccum, pipeReturn], { strokeColor: "#9c36b5" });
-d.addGroup("TB+ Scale: Fragment DO Pool (frag-{region}-slot-{N}, max 20)", [coord, frag0, frag1, frag2, merge], { strokeColor: "#e03131" });
+d.addGroup("Fragment DO Pool (frag-{region}-slot-{N}, scales with data)", [coord, frag0, frag1, frag2, merge], { strokeColor: "#e03131" });
 
 // ── Connections: Client → Worker ──
 d.connect(client, worker, "HTTPS request");
@@ -62,10 +62,10 @@ d.connect(masterDO, r2, "read footer (40B)", { strokeColor: "#c92a2a" });
 
 // ── Connections: R2 → Pipeline + Fragment Pool (vertical connectors) ──
 d.connect(r2, pipeFetch, "page reads", { strokeColor: "#f08c00" });
-d.connect(r2, coord, "TB+ scale", { strokeColor: "#1971c2" });
+d.connect(r2, coord, "scales with data", { strokeColor: "#1971c2" });
 
 // ── Connections: Fragment DO Pool ──
-d.connect(coord, frag0, "fan-out", { strokeColor: "#e03131" });
+d.connect(coord, frag0, "RPC fan-out", { strokeColor: "#e03131" });
 d.connect(coord, frag1, "", { strokeColor: "#e03131" });
 d.connect(coord, frag2, "", { strokeColor: "#e03131" });
 d.connect(frag0, merge, "", { strokeColor: "#2f9e44" });
@@ -78,4 +78,4 @@ d.addText("Legend\n\n--- Solid arrow: data flow\n- - Dashed: broadcast invalidat
 // ── Bounded Prefetch (below Pipeline group, left side) ──
 d.addText("Bounded Prefetch:\nfetch page N+1 while\nWASM processes page N", { x: 300, y: 1210, fontSize: 11, color: "cache" });
 
-return d.render({ format: ["excalidraw", "png"], path: "docs/architecture/querymode-architecture" });
+return d.render({ format: ["excalidraw", "png", "svg"], path: "docs/architecture/querymode-architecture" });

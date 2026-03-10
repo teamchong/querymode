@@ -25,7 +25,8 @@ import { resolveBucket } from "./bucket.js";
 import { PartitionCatalog } from "./partition-catalog.js";
 import wasmModule from "./wasm-module.js";
 
-const FRAGMENT_POOL_MAX = 100; // Max Fragment DO slots per datacenter (idle slots cost nothing)
+// No hard cap on Fragment DO slots — scale with data. Idle DOs cost nothing (hibernate).
+// Slot names are deterministic (frag-{region}-slot-{N}) so they get reused across queries.
 const R2_TIMEOUT_MS = 10_000;
 const FRAGMENT_TIMEOUT_MS = 25_000;
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
@@ -1760,15 +1761,16 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Claim N available slots from the Fragment DO pool. Returns slot indices.
    *  Slots are per-datacenter, named frag-{region}-slot-{N}.
-   *  Idle slots cost nothing (hibernated DOs). Active tracking prevents
+   *  No hard cap — scales with data. Active tracking prevents
    *  concurrent queries from queueing behind each other on the same slot. */
   private claimSlots(needed: number): number[] {
     const slots: number[] = [];
-    for (let i = 0; i < FRAGMENT_POOL_MAX && slots.length < needed; i++) {
+    // Find unused slot indices — start from 0 and skip active ones
+    for (let i = 0; slots.length < needed; i++) {
       if (!this.activeFragmentSlots.has(i)) slots.push(i);
     }
     for (const s of slots) this.activeFragmentSlots.add(s);
-    return slots; // may be fewer than requested — caller handles overflow
+    return slots;
   }
 
   private releaseSlots(slots: number[]): void {
@@ -1777,13 +1779,12 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Fan-out query to pooled Fragment DOs for parallel scanning.
    *  Uses Promise.allSettled for partial failure tolerance.
-   *  Pool is per-datacenter (frag-{region}-slot-{N}), max FRAGMENT_POOL_MAX slots. */
+   *  Pool is per-datacenter (frag-{region}-slot-{N}), scales with data — no hard cap. */
   private async executeWithFragmentDOs(query: QueryDescriptor, prunedFragments: TableMeta[], t0: number): Promise<QueryResult> {
     const allFragItems = prunedFragments.map(meta => ({ r2Key: meta.r2Key, meta }));
 
-    // Claim as many slots as we can (may be fewer than fragments)
-    const slotsWanted = Math.min(allFragItems.length, FRAGMENT_POOL_MAX);
-    const slots = this.claimSlots(slotsWanted);
+    // One slot per fragment — maximum parallelism, idle DOs cost nothing
+    const slots = this.claimSlots(allFragItems.length);
 
     const region = (await this.ctx.storage.get<string>("region")) ?? "default";
 

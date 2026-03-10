@@ -252,7 +252,7 @@ npx tsx examples/nextjs-api-route.ts
 - **IVF-PQ vector search** — index-aware routing in Query DO, falls back to flat SIMD search when no index present
 - **Multi-format support** — Lance, Parquet, and Iceberg tables
 - **Local mode** — same API reads Lance/Parquet files from disk or HTTP (Node/Bun)
-- **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (max 100 slots per datacenter)
+- **Fragment DO pool** — fan-out parallel scanning for multi-fragment datasets (one DO per fragment, scales with data)
 - **600+ tests** — unit tests cover footer parsing, column decoding, Parquet/Thrift, merging, aggregates, VIP cache, WASM integration, SQL, partition catalog, materialized executor, toCode decompiler; 110+ conformance tests validate every operator against DuckDB at 1M-5M row scale
 - **CI benchmarks** — head-to-head QueryMode (Miniflare) vs DuckDB (native) on every push, results posted to [GitHub Actions summary](https://github.com/teamchong/querymode/actions/workflows/ci.yml)
 
@@ -333,6 +333,18 @@ const similar = await qm
   .vector("embedding", queryVec, 10)
   .exec()
 ```
+
+## Network as a computer
+
+WASM is slower than native (~1.3–1.5× overhead), and a single Durable Object has hard memory and CPU caps. You can't build a competitive query engine by running everything in one WASM instance on one node.
+
+QueryMode doesn't try. It uses the network the way a GPU uses cores:
+
+- **DOs as parallel compute units** — one Fragment DO per fragment, each processing a small shard of column pages with WASM SIMD. Scale out, not up. Idle DOs cost nothing (they hibernate).
+- **R2 as virtual memory** — when a single DO's 128MB fills up, operators spill to R2. The pipeline doesn't care if data is in-memory or spilled — same interface, unbounded capacity.
+- **Fan-out as bandwidth** — more fragments = more parallel R2 reads = more aggregate throughput. Like adding GPU lanes.
+
+No single node does heavy work. WASM only needs to be fast enough on its small shard — and with SIMD, it easily clears that bar. The real bottleneck is I/O, which JS handles natively with async concurrency. The orchestration (network, caching, scatter/gather) runs at native speed; WASM handles the math.
 
 ## How it works
 
