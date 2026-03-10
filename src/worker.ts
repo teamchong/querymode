@@ -78,10 +78,13 @@ export default {
         return json(base, 200, headers);
       }
 
-      // Direct R2 upload (local dev only)
+      // Direct R2 upload (local dev only — blocked in production)
       if (url.pathname === "/upload" && request.method === "POST") {
+        if (!env.DEV_MODE) return json({ error: "upload disabled" }, 403);
         const key = url.searchParams.get("key");
-        if (!key) return new Response("Missing ?key=", { status: 400 });
+        if (!key || key.includes("..") || key.startsWith("/")) {
+          return json({ error: "invalid key" }, 400);
+        }
         await resolveBucket(env, key).put(key, request.body);
         return json({ uploaded: key });
       }

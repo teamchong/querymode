@@ -34,7 +34,8 @@ const vectorSearchSchema = z.object({
 });
 
 export const queryDescriptorSchema = z.object({
-  table: z.string().min(1, "Table name is required"),
+  table: z.string().min(1, "Table name is required")
+    .refine(s => !s.includes("..") && !s.startsWith("/"), "Invalid table name"),
   filters: z.array(filterOpSchema).default([]),
   projections: z.array(z.string()).default([]),
   select: z.array(z.string()).optional(), // alias for projections

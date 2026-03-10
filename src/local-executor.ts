@@ -367,30 +367,37 @@ export class LocalExecutor implements QueryExecutor {
   private queryCacheKey(query: QueryDescriptor): string {
     let h = 0x811c9dc5;
     const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
-    feed(query.table);
+    feed(query.table); feed("\0");
+    if (query.version !== undefined) { feed(`v${query.version}`); feed("\0"); }
     for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
-      feed(f.column); feed(f.op); feed(String(f.value));
+      feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
     }
-    for (const p of [...query.projections].sort()) feed(p);
-    if (query.sortColumn) { feed(query.sortColumn); feed(query.sortDirection ?? "asc"); }
-    if (query.limit !== undefined) feed(String(query.limit));
-    if (query.offset !== undefined) feed(String(query.offset));
     if (query.filterGroups) {
       for (const group of query.filterGroups) {
         feed("|");
         for (const f of [...group].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
-          feed(f.column); feed(f.op); feed(String(f.value));
+          feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
         }
       }
     }
-    if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed(a.column); if (a.alias) feed(a.alias); }
-    if (query.groupBy) for (const g of query.groupBy) feed(g);
-    if (query.distinct) feed("distinct");
-    if (query.version !== undefined) feed(`v${query.version}`);
-    if (query.windows) for (const w of query.windows) { feed(w.fn); feed(w.alias); feed(w.column ?? ""); }
-    if (query.computedColumns) for (const cc of query.computedColumns) feed(cc.name);
-    if (query.setOperation) { feed(query.setOperation.type); feed(query.setOperation.table); }
-    if (query.subqueryIn) { feed(query.subqueryIn.column); feed(query.subqueryIn.table); }
+    for (const p of [...query.projections].sort()) { feed(p); feed("\0"); }
+    if (query.sortColumn) { feed(query.sortColumn); feed("\0"); feed(query.sortDirection ?? "asc"); feed("\0"); }
+    if (query.limit !== undefined) { feed(String(query.limit)); feed("\0"); }
+    if (query.offset !== undefined) { feed(String(query.offset)); feed("\0"); }
+    if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed("\0"); feed(a.column); feed("\0"); if (a.alias) feed(a.alias); feed("\0"); }
+    if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
+    if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
+    if (query.windows) for (const w of query.windows) {
+      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? ""); feed("\0");
+      if (w.partitionBy) for (const p of w.partitionBy) { feed(p); feed("\0"); }
+      if (w.orderBy) for (const o of w.orderBy) { feed(o.column); feed(o.direction); feed("\0"); }
+      if (w.frame) { feed(w.frame.type); feed(String(w.frame.start)); feed(String(w.frame.end)); feed("\0"); }
+      if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
+    }
+    if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); }
+    if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(this.queryCacheKey(query.setOperation.right)); feed("\0"); }
+    if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
+    if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(this.queryCacheKey(query.join.right)); feed("\0"); }
     return `qr:${query.table}:${(h >>> 0).toString(36)}`;
   }
 

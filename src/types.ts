@@ -356,6 +356,8 @@ export interface Env {
   MASTER_DO: DurableObjectNamespace;
   QUERY_DO: DurableObjectNamespace;
   FRAGMENT_DO: DurableObjectNamespace;
+  /** Set to truthy in wrangler.toml [vars] to enable /upload endpoint. */
+  DEV_MODE?: string;
 }
 
 /** RPC interface exposed by QueryDO for zero-serialization calls */
