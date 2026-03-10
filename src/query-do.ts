@@ -29,6 +29,12 @@ import wasmModule from "./wasm-module.js";
 // Slot names are deterministic (frag-{region}-slot-{N}) so they get reused across queries.
 const R2_TIMEOUT_MS = 10_000;
 const FRAGMENT_TIMEOUT_MS = 25_000;
+
+// Fan-out heuristic: estimate total work (rows to scan after pruning).
+// Below this threshold, scan locally in the QueryDO — RPC overhead exceeds parallelism gain.
+// Above it, fan out to Fragment DOs for GPU-style parallelism.
+const FANOUT_ROW_THRESHOLD = 100_000; // rows — ~32KB/col at 4 bytes/value
+const FANOUT_FRAGMENT_MIN = 2; // always fan out with ≥ this many fragments regardless of row count
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
 const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from eviction)
 const DATASET_CACHE_MAX = 100; // Max cached datasets before eviction
@@ -1737,8 +1743,10 @@ export class QueryDO extends DurableObject<Env> {
       };
     }
 
-    // Large datasets (>4 fragments): fan out to Fragment DOs
-    if (fragments.length > 4) {
+    // Workload-aware fan-out: estimate total rows after pruning.
+    // Fan out when the work justifies RPC overhead — like GPU dispatch.
+    const estimatedRows = fragments.reduce((s, m) => s + m.totalRows, 0);
+    if (fragments.length >= FANOUT_FRAGMENT_MIN && estimatedRows > FANOUT_ROW_THRESHOLD) {
       return this.executeWithFragmentDOs(query, fragments, t0);
     }
 
