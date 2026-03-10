@@ -338,13 +338,13 @@ const similar = await qm
 
 WASM is slower than native (~1.3–1.5× overhead), and a single Durable Object has hard memory and CPU caps. You can't build a competitive query engine by running everything in one WASM instance on one node.
 
-QueryMode doesn't try. It uses the network as a distributed compute fabric:
+QueryMode doesn't try. It uses the network as a distributed compute fabric — like biological cells, not a brain:
 
-- **DOs as parallel compute units** — one Fragment DO per fragment, each processing a small shard of column pages with WASM SIMD. Scale out, not up. Idle DOs cost nothing (they hibernate).
+- **DOs as cells** — every Fragment DO carries the same WASM binary (DNA). They activate on signal, scan their fragment, and go dormant. More data → more cells. Idle cells cost nothing (they hibernate).
 - **R2 as virtual memory** — when a single DO's 128MB fills up, operators spill to R2. The pipeline doesn't care if data is in-memory or spilled — same interface, unbounded capacity.
-- **Fan-out as bandwidth** — more fragments = more parallel R2 reads = more aggregate throughput.
+- **Fan-out as bandwidth** — more fragments = more parallel R2 reads = more aggregate throughput. No cell coordinates with another — they all respond to the same signal independently.
 
-QueryDO **maps** fragments to Fragment DOs, each DO runs WASM SIMD on its shard, then QueryDO **reduces** via k-way merge. No single node does heavy work. See [Architecture](https://teamchong.github.io/querymode/architecture/) for the full deep dive.
+QueryDO **maps** fragments to Fragment DOs, each DO runs WASM SIMD on its shard, then QueryDO **reduces** via k-way merge. No single node does heavy work. The code is the DNA — scale comes from more cells, not smarter ones. See [Architecture](https://teamchong.github.io/querymode/architecture/) for the full deep dive.
 
 ## License
 

@@ -56,19 +56,21 @@ One per fragment — scales with data, no hard cap. Each scans its assigned frag
 5. **QueryDO** merges partial results via k-way merge
 6. **Response** returned as JSON or streaming columnar format
 
-## Mental model: DOs as GPU cores
+## Mental model: biological cells, not a brain
 
-Every Fragment DO runs the same WASM binary — like GPU cores running the same shader. They don't think; they execute. The QueryDO is the CPU: it decides what to dispatch, then collects and merges results.
+Every Fragment DO runs the same WASM binary — like cells sharing the same DNA. No cell knows the whole organism. No central brain directs them. They activate on signal, do their work, and go dormant.
 
-| GPU | QueryMode |
-|-----|-----------|
-| CPU dispatches kernel | QueryDO maps fragments to Fragment DOs |
-| All cores run same shader | All DOs run same WASM binary |
-| Each core processes one tile | Each DO scans one fragment |
-| Cores don't talk to each other | Fragment DOs are isolated |
-| CPU collects results | QueryDO reduces via k-way merge |
-| More data → more thread blocks | More fragments → more DOs |
-| Idle cores cost nothing | Idle DOs hibernate (zero cost) |
+| Biology | QueryMode |
+|---------|-----------|
+| DNA (shared code) | Same WASM binary on every DO |
+| Cell activates on signal | DO wakes on RPC, hibernates when idle |
+| Each cell processes local inputs | Each DO scans its own fragment |
+| Cells don't coordinate with each other | Fragment DOs are isolated |
+| Body collects and integrates | QueryDO reduces via k-way merge |
+| More tissue → more cells | More fragments → more DOs |
+| Dormant cells cost nothing | Idle DOs hibernate (zero cost) |
+
+The code is the DNA of these cells — every Fragment DO carries the same WASM engine, responds to the same signals (scan, filter, aggregate), and produces the same output format. Scale comes from having more cells, not smarter ones.
 
 The fan-out decision is workload-aware: small scans run locally in the QueryDO (no RPC overhead), large scans dispatch to Fragment DOs for parallel execution. No configuration — the engine decides based on estimated rows after pruning.
 
