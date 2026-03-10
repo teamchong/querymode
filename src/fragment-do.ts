@@ -156,12 +156,15 @@ export class FragmentDO extends DurableObject<Env> {
       const wasmStart = Date.now();
       const fragTable = `__frag_${r2Key}`;
       this.wasmEngine.exports.resetHeap();
-      for (const col of cols) {
-        const pages = columnData.get(col.name);
-        if (!pages?.length) continue;
-        if (!this.wasmEngine.registerColumn(fragTable, col.name, col.dtype, pages, col.pages, col.listDimension)) {
-          throw new Error(`WASM OOM: failed to register column "${col.name}" for fragment "${r2Key}"`);
-        }
+      const fragColEntries = cols
+        .filter(col => columnData.get(col.name)?.length)
+        .map(col => ({
+          name: col.name, dtype: col.dtype, listDim: col.listDimension,
+          pages: columnData.get(col.name)!,
+          pageInfos: col.pages,
+        }));
+      if (!this.wasmEngine.registerColumns(fragTable, fragColEntries)) {
+        throw new Error(`WASM OOM: failed to register columns for fragment "${r2Key}"`);
       }
 
       const fragQuery = { ...query, table: fragTable };

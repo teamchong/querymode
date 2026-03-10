@@ -252,13 +252,15 @@ class EdgeScanOperator implements Operator {
     const wasmStart = Date.now();
     this.wasmEngine.exports.resetHeap();
     const fragTable = `__edge_${this.meta.r2Key}`;
-    for (const col of this.cols) {
-      const pages = this.columnData.get(col.name);
-      if (!pages?.length) continue;
-      const keptPageInfos = this.columnPageInfos.get(col.name) ?? col.pages;
-      if (!this.wasmEngine.registerColumn(fragTable, col.name, col.dtype, pages, keptPageInfos, col.listDimension)) {
-        throw new Error(`WASM OOM: failed to register column "${col.name}"`);
-      }
+    const colEntries = this.cols
+      .filter(col => this.columnData.get(col.name)?.length)
+      .map(col => ({
+        name: col.name, dtype: col.dtype, listDim: col.listDimension,
+        pages: this.columnData.get(col.name)!,
+        pageInfos: this.columnPageInfos.get(col.name) ?? col.pages,
+      }));
+    if (!this.wasmEngine.registerColumns(fragTable, colEntries)) {
+      throw new Error(`WASM OOM: failed to register columns`);
     }
 
     const decodeQuery: QueryDescriptor = {
@@ -339,15 +341,10 @@ class EdgeScanOperator implements Operator {
 
     this.wasmEngine.exports.resetHeap();
     const fragTable = `__edge_pq_${pi}`;
-    let wasmRegistered = true;
-    for (const col of cols) {
-      const values = decodedColumns.get(col.name);
-      if (!values?.length) continue;
-      if (!this.wasmEngine.registerDecodedColumn(fragTable, col.name, col.dtype, values)) {
-        wasmRegistered = false;
-        break;
-      }
-    }
+    const decodedEntries = cols
+      .filter(col => decodedColumns.get(col.name)?.length)
+      .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
+    const wasmRegistered = this.wasmEngine.registerDecodedColumns(fragTable, decodedEntries);
 
     let rows: Row[];
     if (wasmRegistered) {
@@ -1133,15 +1130,10 @@ export class QueryDO extends DurableObject<Env> {
       // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort/agg)
       const colNames = cols.map(c => c.name);
       this.wasmEngine.exports.resetHeap();
-      let wasmRegistered = true;
-      for (const col of cols) {
-        const values = decodedColumns.get(col.name);
-        if (!values?.length) continue;
-        if (!this.wasmEngine.registerDecodedColumn(query.table, col.name, col.dtype, values)) {
-          wasmRegistered = false;
-          break;
-        }
-      }
+      const decodedEntries = cols
+        .filter(col => decodedColumns.get(col.name)?.length)
+        .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
+      const wasmRegistered = this.wasmEngine.registerDecodedColumns(query.table, decodedEntries);
 
       let rows: Row[];
       if (wasmRegistered) {
@@ -1174,13 +1166,15 @@ export class QueryDO extends DurableObject<Env> {
     // Lance path: zero-copy WASM registration + SQL execution
     const wasmStart = Date.now();
     this.wasmEngine.exports.resetHeap();
-    for (const col of cols) {
-      const pages = columnData.get(col.name);
-      if (!pages?.length) continue;
-      const keptPageInfos = columnPageInfos.get(col.name) ?? col.pages;
-      if (!this.wasmEngine.registerColumn(query.table, col.name, col.dtype, pages, keptPageInfos, col.listDimension)) {
-        throw new Error(`WASM OOM: failed to register column "${col.name}" for table "${query.table}"`);
-      }
+    const lanceColEntries = cols
+      .filter(col => columnData.get(col.name)?.length)
+      .map(col => ({
+        name: col.name, dtype: col.dtype, listDim: col.listDimension,
+        pages: columnData.get(col.name)!,
+        pageInfos: columnPageInfos.get(col.name) ?? col.pages,
+      }));
+    if (!this.wasmEngine.registerColumns(query.table, lanceColEntries)) {
+      throw new Error(`WASM OOM: failed to register columns for table "${query.table}"`);
     }
 
     const rows = this.wasmEngine.executeQuery(query);

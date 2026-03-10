@@ -266,6 +266,45 @@ export class WasmEngine {
   }
 
   /**
+   * Register multiple columns' raw page buffers in WASM for SQL execution.
+   * Batches allocs by writing the table name once and reusing its pointer.
+   * Returns false on WASM OOM (caller should fall back to JS path).
+   */
+  registerColumns(
+    table: string,
+    columns: { name: string; dtype: DataType; pages: ArrayBuffer[]; pageInfos: PageInfo[]; listDim?: number }[],
+  ): boolean {
+    if (columns.length === 0) return true;
+    const { ptr: tPtr, len: tLen } = this.writeString(table);
+    if (!tPtr) return false;
+    for (const col of columns) {
+      if (!this.registerColumnInner(tPtr, tLen, col.name, col.dtype, col.pages, col.pageInfos, col.listDim)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Register multiple decoded JS columns in WASM for SQL execution.
+   * Batches allocs by writing the table name once.
+   */
+  registerDecodedColumns(
+    table: string,
+    columns: { name: string; dtype: DataType; values: (number | bigint | string | boolean | null)[] }[],
+  ): boolean {
+    if (columns.length === 0) return true;
+    const { ptr: tPtr, len: tLen } = this.writeString(table);
+    if (!tPtr) return false;
+    for (const col of columns) {
+      if (!this.registerDecodedColumnInner(tPtr, tLen, col.name, col.dtype, col.values)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Register a column's raw page buffers in WASM for SQL execution.
    * Handles null bitmap stripping, type promotion, and utf8 offset extraction.
    * Returns false on WASM OOM (caller should fall back to JS path).
@@ -276,6 +315,13 @@ export class WasmEngine {
   ): boolean {
     const { ptr: tPtr, len: tLen } = this.writeString(table);
     if (!tPtr) return false;
+    return this.registerColumnInner(tPtr, tLen, colName, dtype, pages, pageInfos, listDim);
+  }
+
+  private registerColumnInner(
+    tPtr: number, tLen: number, colName: string, dtype: DataType,
+    pages: ArrayBuffer[], pageInfos: PageInfo[], listDim?: number,
+  ): boolean {
     const { ptr: cPtr, len: cLen } = this.writeString(colName);
     if (!cPtr) return false;
 
@@ -464,8 +510,18 @@ export class WasmEngine {
     values: (number | bigint | string | boolean | null)[],
   ): boolean {
     if (values.length === 0) return true;
-    const [tPtr, tLen, cPtr, cLen] = this.writeStringPair(table, colName);
-    if (!tPtr || !cPtr) return false;
+    const { ptr: tPtr, len: tLen } = this.writeString(table);
+    if (!tPtr) return false;
+    return this.registerDecodedColumnInner(tPtr, tLen, colName, dtype, values);
+  }
+
+  private registerDecodedColumnInner(
+    tPtr: number, tLen: number, colName: string, dtype: DataType,
+    values: (number | bigint | string | boolean | null)[],
+  ): boolean {
+    if (values.length === 0) return true;
+    const { ptr: cPtr, len: cLen } = this.writeString(colName);
+    if (!cPtr) return false;
     const rowCount = values.length;
 
     switch (dtype) {

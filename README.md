@@ -345,8 +345,9 @@ QueryMode:           plan instantly (footer cached) → fetch ONLY matching byte
 2. **Page-level skip** — min/max stats per page mean non-matching pages are never read, never downloaded, never allocated.
 3. **Coalesced Range reads** — nearby byte ranges merged within 64KB gaps into fewer R2 requests.
 4. **Zero-copy WASM** — raw bytes from R2 are passed directly to Zig SIMD. No Arrow conversion, no DataFrame construction.
-5. **VIP eviction** — frequently-accessed table footers are protected from cache eviction by cold one-off accesses.
-6. **Bounded prefetch** — prefetch next page while WASM decodes current page, with up to 8 concurrent R2 range reads per page fetch.
+5. **Batched WASM registration** — column data is registered in batched calls (table name written once, reused across all columns) to minimize WASM boundary crossings. SharedArrayBuffer isn't available in Workers, but copy overhead is <0.05% of total query time vs R2 I/O latency.
+6. **VIP eviction** — frequently-accessed table footers are protected from cache eviction by cold one-off accesses.
+7. **Bounded prefetch** — prefetch next page while WASM decodes current page, with up to 8 concurrent R2 range reads per page fetch.
 
 ## License
 
