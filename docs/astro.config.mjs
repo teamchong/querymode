@@ -22,6 +22,8 @@ export default defineConfig({
         { label: "SQL", slug: "sql" },
         { label: "Schema Discovery", slug: "schema" },
         { label: "Operators", slug: "operators" },
+        { label: "Composability", slug: "composability" },
+        { label: "Pipeline", slug: "pipeline" },
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },
         { label: "Write Path", slug: "write-path" },

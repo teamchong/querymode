@@ -53,7 +53,7 @@ One per fragment — scales with data, no hard cap. Each scans its assigned frag
    - Coalesced R2 range reads
    - Prefetch next page while decoding current
    - WASM SIMD decode + filter
-5. **QueryDO** merges partial results via k-way merge
+5. **QueryDO** merges partial results via k-way merge (or hierarchical reduction for large fan-outs)
 6. **Response** returned as JSON or streaming columnar format
 
 ## Mental model: biological cells, not a brain
@@ -73,6 +73,25 @@ Every Fragment DO runs the same WASM binary — like cells sharing the same DNA.
 The code is the DNA of these cells — every Fragment DO carries the same WASM engine, responds to the same signals (scan, filter, aggregate), and produces the same output format. Scale comes from having more cells, not smarter ones.
 
 The fan-out decision is workload-aware: small scans run locally in the QueryDO (no RPC overhead), large scans dispatch to Fragment DOs for parallel execution. No configuration — the engine decides based on estimated rows after pruning.
+
+### Hierarchical reduction
+
+When fragment count exceeds 50, a single QueryDO can't hold all partial results in memory. Instead of merging everything in one place, QueryMode adds reducer tiers:
+
+```
+Leaf DOs (scan)  →  Reducer DOs (merge groups of 25)  →  QueryDO (final merge)
+```
+
+Each tier shrinks the result count by 25×. The math:
+
+| Fragments | Reducer tiers | QueryDO merges |
+|-----------|--------------|----------------|
+| 25 | 0 (flat) | 25 results |
+| 50 | 1 | 2 results |
+| 625 | 2 | ~1 result |
+| 15,625 | 3 | ~1 result |
+
+This keeps QueryDO memory bounded at any data scale. The reducer DOs are regular Fragment DOs reused for merge — same pool, same hibernation behavior.
 
 ## WASM engine (Zig)
 

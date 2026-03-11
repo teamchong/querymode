@@ -172,6 +172,7 @@ These execute the query and return results:
 | `stream(batchSize)` | `AsyncGenerator<Row[]>` | Async generator over result batches |
 | `cursor({ batchSize })` | `AsyncIterable<Row[]>` | Async iterable over batches |
 | `materialize()` | `DataFrame` | Execute and re-wrap as in-memory DataFrame |
+| `materializeAs(name, opts?)` | `DataFrame` | Execute, write to named table, return DataFrame for next stage |
 | `append(rows, opts?)` | `AppendResult` | Write rows (CAS-coordinated) |
 | `dropTable()` | `DropResult` | Delete table and all fragments |
 | `execStream()` | `ReadableStream<Row>` | Streaming columnar binary (remote executor) |

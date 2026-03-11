@@ -25,9 +25,9 @@ const server = net.createServer((socket) => {
     },
   });
 
-  socket.on("data", async (chunk) => {
+  socket.on("data", async (chunk: Buffer) => {
     try {
-      await handler.onData(new Uint8Array(chunk));
+      await handler.onData(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
     } catch (err) {
       console.error("Protocol error:", err);
       socket.destroy();
