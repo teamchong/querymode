@@ -135,6 +135,9 @@ export class DataFrame<T extends Row = Row> {
     this._pipeStages = init?.pipeStages ?? [];
   }
 
+  /** The table name this DataFrame queries. */
+  get tableName(): string { return this._table; }
+
   /** Create a shallow clone with overrides — returns a new immutable DataFrame. */
   private derive(overrides: Partial<DataFrameInit>): DataFrame<T> {
     return new DataFrame<T>(this._table, this._executor, {
@@ -1024,6 +1027,94 @@ export class MaterializedExecutor implements QueryExecutor {
     }
     this.result.columns = this.result.columns.filter(c => c !== column);
     return { table, operation: "drop_column", column, columnsAfter: [...this.result.columns] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline — multi-stage MapReduce orchestrator
+// ---------------------------------------------------------------------------
+
+/** A stage in a Pipeline: takes input DataFrame, returns output DataFrame. */
+export type PipelineStage = (input: DataFrame) => DataFrame | Promise<DataFrame>;
+
+/**
+ * Pipeline — multi-stage MapReduce over the network.
+ *
+ * Each stage executes a query, writes results to an auto-named intermediate
+ * table, and feeds it to the next stage. TypeScript is the DAG scheduler.
+ *
+ * Usage:
+ *   const result = await Pipeline.create(qm.table("events"))
+ *     .stage(df => df.filter("type", "eq", "click").groupBy("page").aggregate("count", "*"))
+ *     .stage(df => df.filter("count_*", "gt", 100).sort("count_*", "desc").limit(10))
+ *     .run();
+ *
+ *   // Intermediates auto-cleaned after run() completes.
+ *   // result is a normal QueryResult from the final stage.
+ */
+export class Pipeline {
+  private _input: DataFrame;
+  private _stages: PipelineStage[] = [];
+  private _id: string;
+
+  private constructor(input: DataFrame, id?: string) {
+    this._input = input;
+    this._id = id ?? crypto.randomUUID().slice(0, 8);
+  }
+
+  /** Create a pipeline starting from a source DataFrame. */
+  static create(input: DataFrame): Pipeline {
+    return new Pipeline(input);
+  }
+
+  /** Add a stage. The function receives the previous stage's output DataFrame. */
+  stage(fn: PipelineStage): Pipeline {
+    this._stages.push(fn);
+    return this;
+  }
+
+  /** Execute all stages, return the final QueryResult.
+   *  Intermediate tables are cleaned up after completion (even on error). */
+  async run(): Promise<QueryResult> {
+    const intermediates: string[] = [];
+    let current = this._input;
+
+    try {
+      for (let i = 0; i < this._stages.length; i++) {
+        const isLast = i === this._stages.length - 1;
+
+        // Apply the stage's transformations
+        const transformed = await this._stages[i](current);
+
+        if (isLast) {
+          // Final stage — just collect, no intermediate write
+          return await transformed.collect();
+        }
+
+        // Intermediate stage — materialize to a temp table
+        const tempName = `__pipe_${this._id}_stage_${i}`;
+        intermediates.push(tempName);
+        current = await transformed.materializeAs(tempName, {
+          metadata: {
+            pipeline: this._id,
+            stage: String(i),
+            source: current.tableName,
+          },
+        });
+      }
+
+      // No stages — just collect the input
+      return await current.collect();
+    } finally {
+      // Cleanup all intermediate tables
+      for (const name of intermediates) {
+        try {
+          await new DataFrame(name, (this._input as any)._executor).dropTable();
+        } catch {
+          // Best-effort cleanup — intermediate may not exist if stage failed early
+        }
+      }
+    }
   }
 }
 

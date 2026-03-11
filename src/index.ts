@@ -13,8 +13,9 @@ export { WorkerDO } from "./worker-do.js";
 export type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 export { ReaderRegistry, FileDataSource, UrlDataSource } from "./reader.js";
 export type { FormatReader, DataSource } from "./reader.js";
-export { DataFrame, TableQuery, MaterializedExecutor } from "./client.js";
+export { DataFrame, TableQuery, MaterializedExecutor, Pipeline } from "./client.js";
 export { LazyResultHandle } from "./client.js";
+export type { PipelineStage } from "./client.js";
 export { descriptorToCode } from "./descriptor-to-code.js";
 export {
   FilterOperator, AggregateOperator, TopKOperator, ProjectOperator,
