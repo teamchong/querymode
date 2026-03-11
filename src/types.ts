@@ -355,6 +355,10 @@ export interface ExplainResult {
   fanOut?: boolean;
   /** Fragments scanned after pruning */
   fragmentsScanned?: number;
+  /** Whether hierarchical reduction (tree merge) is used */
+  hierarchicalReduction?: boolean;
+  /** Number of reducer tiers in the tree merge (0 = flat) */
+  reducerTiers?: number;
 }
 
 /** Environment bindings for Cloudflare Workers */

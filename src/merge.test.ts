@@ -86,4 +86,59 @@ describe("mergeQueryResults", () => {
     expect(merged.bytesRead).toBe(200);
     expect(merged.pagesSkipped).toBe(4);
   });
+
+  it("handles large number of partials (simulates hierarchical reduction input)", () => {
+    // Simulate 100 fragment results — this is what a reducer DO would merge
+    const partials = Array.from({ length: 100 }, (_, i) =>
+      makeResult([{ v: i * 2 }, { v: i * 2 + 1 }]),
+    );
+    const query: QueryDescriptor = {
+      table: "t",
+      filters: [],
+      projections: ["v"],
+      sortColumn: "v",
+      sortDirection: "asc",
+      limit: 10,
+    };
+
+    const merged = mergeQueryResults(partials, query);
+    expect(merged.rows.map(r => r.v)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(merged.bytesRead).toBe(10000); // 100 × 100
+  });
+
+  it("aggregation merge works across many partials", () => {
+    const partials = Array.from({ length: 50 }, (_, i) =>
+      makeResult([{ group: "a", val: i + 1 }]),
+    );
+    const query: QueryDescriptor = {
+      table: "t",
+      filters: [],
+      projections: [],
+      aggregates: [{ fn: "sum", column: "val" }],
+      groupBy: ["group"],
+    };
+
+    const merged = mergeQueryResults(partials, query);
+    expect(merged.rows).toHaveLength(1);
+    // Sum of 1..50 = 1275
+    expect(merged.rows[0].sum_val).toBe(1275);
+  });
+
+  it("offset works with sorted merge across partials", () => {
+    const partials = Array.from({ length: 10 }, (_, i) =>
+      makeResult([{ v: i }]),
+    );
+    const query: QueryDescriptor = {
+      table: "t",
+      filters: [],
+      projections: ["v"],
+      sortColumn: "v",
+      sortDirection: "asc",
+      limit: 3,
+      offset: 5,
+    };
+
+    const merged = mergeQueryResults(partials, query);
+    expect(merged.rows.map(r => r.v)).toEqual([5, 6, 7]);
+  });
 });

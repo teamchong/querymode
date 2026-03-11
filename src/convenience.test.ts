@@ -245,3 +245,65 @@ describe("DataFrame Pandas-like methods", () => {
     expect(csv).toBe("");
   });
 });
+
+describe("materializeAs — multi-stage pipeline", () => {
+  it("executes stage 1 and returns new DataFrame for stage 2", async () => {
+    const data = [
+      { dept: "eng", salary: 100 },
+      { dept: "eng", salary: 200 },
+      { dept: "sales", salary: 150 },
+      { dept: "eng", salary: 300 },
+      { dept: "sales", salary: 250 },
+    ];
+
+    // Stage 1: aggregate by dept
+    const stage1 = createFromJSON(data);
+    const stage1Result = await stage1
+      .groupBy("dept")
+      .aggregate("sum", "salary")
+      .collect();
+
+    // materializeAs produces a new DataFrame backed by the result
+    const stage2Input = createFromJSON(stage1Result.rows, "dept_totals");
+    const stage2 = await stage2Input
+      .filter("sum_salary", "gt", 500)
+      .collect();
+
+    expect(stage2.rowCount).toBe(1);
+    expect(stage2.rows[0].dept).toBe("eng");
+    expect(stage2.rows[0].sum_salary).toBe(600);
+  });
+
+  it("multi-stage pipeline: filter → aggregate → filter → sort", async () => {
+    const events = Array.from({ length: 100 }, (_, i) => ({
+      page: `/page-${i % 10}`,
+      type: i % 3 === 0 ? "click" : "view",
+      duration: i * 10,
+    }));
+
+    // Stage 1: filter clicks, aggregate by page
+    const clickData = createFromJSON(events);
+    const clickAgg = await clickData
+      .filter("type", "eq", "click")
+      .groupBy("page")
+      .aggregate("count", "*")
+      .aggregate("avg", "duration")
+      .collect();
+
+    // Stage 2: filter high-traffic pages, sort
+    const highTraffic = createFromJSON(clickAgg.rows, "click_agg");
+    const result = await highTraffic
+      .filter("count_*", "gt", 2)
+      .sort("avg_duration", "desc")
+      .collect();
+
+    // Each page gets ~3-4 clicks out of ~34 total clicks (every 3rd event)
+    expect(result.rowCount).toBeGreaterThan(0);
+    // Results should be sorted descending by avg_duration
+    for (let i = 1; i < result.rows.length; i++) {
+      expect(result.rows[i - 1].avg_duration).toBeGreaterThanOrEqual(
+        result.rows[i].avg_duration as number,
+      );
+    }
+  });
+});

@@ -707,6 +707,36 @@ export class DataFrame<T extends Row = Row> {
     return new DataFrame<T>(this._table, new MaterializedExecutor(result));
   }
 
+  /**
+   * Multi-stage MapReduce: execute this query, write the results to a named
+   * intermediate table, and return a new DataFrame reading from it.
+   * Each stage boundary materializes through the executor's write path.
+   *
+   * Usage:
+   *   const stage1 = await qm.table("events")
+   *     .filter("type", "eq", "click")
+   *     .groupBy("page").aggregate("count", "*")
+   *     .materializeAs("clicks_by_page");
+   *
+   *   const result = await stage1
+   *     .filter("count_*", "gt", 100)
+   *     .sort("count_*", "desc")
+   *     .collect();
+   *
+   * For cleanup after pipeline completion:
+   *   await qm.table("clicks_by_page").dropTable();
+   */
+  async materializeAs(tableName: string, options?: AppendOptions): Promise<DataFrame> {
+    if (!this._executor.append) {
+      throw new Error("materializeAs() requires an executor with write support");
+    }
+    const result = await this.collect();
+    if (result.rows.length > 0) {
+      await this._executor.append(tableName, result.rows, options);
+    }
+    return new DataFrame(tableName, this._executor);
+  }
+
   /** Iterate over results in batches. Processes pages lazily — stops when consumer breaks. */
   cursor(opts?: { batchSize?: number }): AsyncIterable<Row[]> {
     if (!this._executor.cursor) {

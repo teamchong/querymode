@@ -35,6 +35,11 @@ const FRAGMENT_TIMEOUT_MS = 25_000;
 // Above it, fan out to Fragment DOs for GPU-style parallelism.
 const FANOUT_ROW_THRESHOLD = 100_000; // rows — ~32KB/col at 4 bytes/value
 const FANOUT_FRAGMENT_MIN = 2; // always fan out with ≥ this many fragments regardless of row count
+// Hierarchical reduction: when scan fan-out exceeds this, add a reducer tier.
+// Each reducer merges REDUCER_GROUP_SIZE partial results, then QueryDO merges the reducer outputs.
+// Without this, QueryDO holds ALL partial results in memory — OOM at scale.
+const REDUCER_TIER_THRESHOLD = 50; // fragments — above this, use tree merge
+const REDUCER_GROUP_SIZE = 25;     // partial results per reducer DO
 const FOOTER_CACHE_MAX = 1000; // ~4KB per footer = ~4MB at capacity
 const VIP_THRESHOLD = 3; // Accesses needed to become "VIP" (protected from eviction)
 const DATASET_CACHE_MAX = 100; // Max cached datasets before eviction
@@ -790,6 +795,10 @@ export class QueryDO extends DurableObject<Env> {
       fragmentsSkipped,
       fragmentsScanned,
       fanOut,
+      hierarchicalReduction: fanOut && fragmentsScanned >= REDUCER_TIER_THRESHOLD,
+      reducerTiers: fanOut && fragmentsScanned >= REDUCER_TIER_THRESHOLD
+        ? Math.ceil(Math.log(fragmentsScanned) / Math.log(REDUCER_GROUP_SIZE))
+        : 0,
       partitionCatalog: this.partitionCatalogs.has(query.table)
         ? { column: this.partitionCatalogs.get(query.table)!.column, partitionValues: this.partitionCatalogs.get(query.table)!.stats().partitionValues }
         : undefined,
@@ -1804,13 +1813,16 @@ export class QueryDO extends DurableObject<Env> {
   }
 
   /** Fan-out query to pooled Fragment DOs for parallel scanning.
-   *  Uses Promise.allSettled for partial failure tolerance.
+   *  Uses Promise.allSettled for fail-fast error handling.
+   *  When fragment count exceeds REDUCER_TIER_THRESHOLD, adds a reducer tier:
+   *  leaf DOs scan fragments → reducer DOs merge groups → QueryDO merges final set.
    *  Pool is per-datacenter (frag-{region}-slot-{N}), scales with data — no hard cap. */
   private async executeWithFragmentDOs(query: QueryDescriptor, prunedFragments: TableMeta[], t0: number): Promise<QueryResult> {
     const allFragItems = prunedFragments.map(meta => ({ r2Key: meta.r2Key, meta }));
 
     // One slot per fragment — maximum parallelism, idle DOs cost nothing
-    const slots = this.claimSlots(allFragItems.length);
+    const scanSlotCount = allFragItems.length;
+    const slots = this.claimSlots(scanSlotCount);
 
     const region = (await this.ctx.storage.get<string>("region")) ?? "default";
 
@@ -1834,11 +1846,12 @@ export class QueryDO extends DurableObject<Env> {
       this.log("info", "fragment_fan_out", {
         fragments: allFragItems.length, slots: slots.length,
         chunksPerSlot: chunkSize,
+        hierarchical: allFragItems.length >= REDUCER_TIER_THRESHOLD,
       });
 
+      // ── Phase 1: Leaf scan — each Fragment DO scans its assigned fragments ──
       const settled = await Promise.allSettled(groups.map(async (group, idx) => {
         if (idx >= slots.length) {
-          // Overflow: scan locally (shouldn't happen with Math.ceil, but safe)
           const partials = await Promise.all(
             group.map(({ meta }) => this.scanPages(query, meta, t0)),
           );
@@ -1854,11 +1867,11 @@ export class QueryDO extends DurableObject<Env> {
         );
       }));
 
-      const fulfilled: QueryResult[] = [];
+      const scanResults: QueryResult[] = [];
       const failures: string[] = [];
       for (const s of settled) {
         if (s.status === "fulfilled") {
-          fulfilled.push(s.value);
+          scanResults.push(s.value);
         } else {
           const reason = String(s.reason);
           failures.push(reason);
@@ -1870,12 +1883,87 @@ export class QueryDO extends DurableObject<Env> {
         throw new Error(`${failures.length}/${settled.length} Fragment DOs failed: ${failures[0]}`);
       }
 
-      const merged = mergeQueryResults(fulfilled, query);
+      // ── Phase 2: Hierarchical reduction ──
+      // When we have many partial results, don't merge them all in QueryDO.
+      // Instead, group them and send each group to a reducer Fragment DO.
+      // This keeps QueryDO memory bounded: it only holds REDUCER_GROUP_SIZE results at final merge.
+      if (scanResults.length >= REDUCER_TIER_THRESHOLD) {
+        const reduced = await this.hierarchicalReduce(scanResults, query, region);
+        reduced.durationMs = Date.now() - t0;
+        return reduced;
+      }
+
+      const merged = mergeQueryResults(scanResults, query);
       merged.durationMs = Date.now() - t0;
       return merged;
     } finally {
       this.releaseSlots(slots);
     }
+  }
+
+  /** Tree-merge partial results through reducer DOs.
+   *  Recursively groups partials into batches of REDUCER_GROUP_SIZE,
+   *  sends each batch to a Fragment DO's reduceRpc, then merges the outputs.
+   *  At each tier the number of results shrinks by REDUCER_GROUP_SIZE×. */
+  private async hierarchicalReduce(
+    partials: QueryResult[],
+    query: QueryDescriptor,
+    region: string,
+  ): Promise<QueryResult> {
+    let current = partials;
+    let tier = 0;
+
+    while (current.length > REDUCER_GROUP_SIZE) {
+      // Group into batches
+      const batches: QueryResult[][] = [];
+      for (let i = 0; i < current.length; i += REDUCER_GROUP_SIZE) {
+        batches.push(current.slice(i, i + REDUCER_GROUP_SIZE));
+      }
+
+      this.log("info", "reducer_tier", {
+        tier, batches: batches.length, inputCount: current.length,
+      });
+
+      // Claim reducer slots
+      const reducerSlots = this.claimSlots(batches.length);
+      try {
+        const settled = await Promise.allSettled(
+          batches.map(async (batch, idx) => {
+            if (idx >= reducerSlots.length) {
+              // Fallback: merge locally
+              return mergeQueryResults(batch, query);
+            }
+            const doName = `frag-${region}-reducer-${tier}-slot-${reducerSlots[idx]}`;
+            const doId = this.env.FRAGMENT_DO.idFromName(doName);
+            const rpc = this.env.FRAGMENT_DO.get(doId) as unknown as {
+              reduceRpc(partials: QueryResult[], query: QueryDescriptor): Promise<QueryResult>;
+            };
+            return withTimeout(rpc.reduceRpc(batch, query), FRAGMENT_TIMEOUT_MS);
+          }),
+        );
+
+        const failures: string[] = [];
+        const results: QueryResult[] = [];
+        for (const s of settled) {
+          if (s.status === "fulfilled") {
+            results.push(s.value);
+          } else {
+            failures.push(String(s.reason));
+          }
+        }
+        if (failures.length > 0) {
+          throw new Error(`Reducer tier ${tier}: ${failures.length} failures: ${failures[0]}`);
+        }
+
+        current = results;
+        tier++;
+      } finally {
+        this.releaseSlots(reducerSlots);
+      }
+    }
+
+    // Final merge — current.length ≤ REDUCER_GROUP_SIZE, safe for QueryDO memory
+    return mergeQueryResults(current, query);
   }
 
   // ── RPC methods ────────────────────────────────────────────────────────

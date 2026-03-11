@@ -9,6 +9,7 @@ import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline,
 } from "./operators.js";
+import { mergeQueryResults } from "./merge.js";
 import { resolveBucket } from "./bucket.js";
 import wasmModule from "./wasm-module.js";
 
@@ -269,5 +270,12 @@ export class FragmentDO extends DurableObject<Env> {
   async scanRpc(fragments: ScanRequest["fragments"], query: QueryDescriptor): Promise<QueryResult> {
     await this.ensureInitialized();
     return this.executeScan(fragments, query);
+  }
+
+  /** RPC: Reduce (merge) partial results from other Fragment DOs.
+   *  Used by hierarchical reduction — QueryDO fans out scans to leaf DOs,
+   *  then groups their results and sends each group to a reducer DO. */
+  async reduceRpc(partials: QueryResult[], query: QueryDescriptor): Promise<QueryResult> {
+    return mergeQueryResults(partials, query);
   }
 }

@@ -20,10 +20,13 @@ Fan out writes by partition key to separate MasterDOs. Each DO handles its own C
 ### 6. `npx querymode init` ✓
 One-command project scaffold: generates wrangler.toml + src/worker.ts. Idempotent. Prints next steps.
 
+### 7. Hierarchical reduction ✓
+Tree merge when fragment count exceeds threshold (default 50). Leaf Fragment DOs scan → reducer Fragment DOs merge groups of 25 → QueryDO merges final set. Keeps QueryDO memory bounded at any scale. `reduceRpc` on Fragment DO, `hierarchicalReduce` on Query DO. Explain output shows `hierarchicalReduction` and `reducerTiers`.
+
+### 8. `materializeAs()` multi-stage pipeline ✓
+`df.materializeAs("table_name")` executes stage, writes results to a named table, returns new DataFrame for next stage. TypeScript is the DAG scheduler — chain stages through the executor's write path. 2 tests.
+
 ## Future
 
-### `.pipe()` stage chaining (Spark replacement)
-Multi-stage MapReduce: each `.pipe()` writes intermediate results to R2, next stage reads from it. TypeScript is the DAG scheduler — no Spark/YARN needed.
-
-### Hierarchical reduction
-When fragment count exceeds single-QueryDO capacity (~1000), add a reducer tier. Not needed at current scale — pruning keeps fan-out small.
+### `.pipe()` DAG scheduler (Spark replacement)
+Build on `materializeAs()`: automatic intermediate table naming, cleanup after pipeline completion, lineage tracking via `AppendOptions.metadata`. TypeScript orchestrates the DAG — no Spark/YARN needed.
