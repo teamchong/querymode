@@ -195,11 +195,41 @@ class RemoteExecutor implements QueryExecutor {
     return rpc.queryRpc(query);
   }
 
-  /** Append rows via RPC to Master DO. */
+  /** Append rows via RPC to Master DO. Partitioned writes fan out to separate MasterDOs. */
   async append(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!this.masterNamespace) {
       throw new Error("append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
+
+    // Partitioned writes: split by partition key, route each group to a different MasterDO
+    if (options?.partitionBy) {
+      const partCol = options.partitionBy;
+      const groups = new Map<string, Record<string, unknown>[]>();
+      for (const row of rows) {
+        const key = row[partCol] === null || row[partCol] === undefined ? "__null__" : String(row[partCol]);
+        let group = groups.get(key);
+        if (!group) { group = []; groups.set(key, group); }
+        group.push(row);
+      }
+
+      // Fan out: each partition group goes to a MasterDO named by table+partition
+      const results = await Promise.all(
+        [...groups.entries()].map(([partValue, groupRows]) => {
+          const doName = `master-${table}-${partValue}`;
+          const id = this.masterNamespace!.idFromName(doName);
+          const rpc = this.masterNamespace!.get(id) as unknown as MasterDORpc;
+          return rpc.appendRpc(table, groupRows, options);
+        }),
+      );
+
+      const totalWritten = results.reduce((s, r) => s + r.rowsWritten, 0);
+      return {
+        ...results[results.length - 1],
+        rowsWritten: totalWritten,
+        metadata: { ...options.metadata, partitionBy: partCol, partitions: String(groups.size) },
+      };
+    }
+
     const id = this.masterNamespace.idFromName("master");
     const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;
     return masterRpc.appendRpc(table, rows, options);

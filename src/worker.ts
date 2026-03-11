@@ -23,10 +23,21 @@ function getQueryDo(request: Request, env: Env): { rpc: QueryDORpc & { setRegion
   return { rpc, regionName };
 }
 
-/** Get the Master DO (typed as RPC). */
-function getMasterDo(env: Env): MasterDORpc {
-  const masterId = env.MASTER_DO.idFromName("master");
+/** Get the Master DO (typed as RPC). Optionally shard by partition key for write parallelism. */
+function getMasterDo(env: Env, partitionKey?: string): MasterDORpc {
+  const name = partitionKey ? `master-${fnv1aHash(partitionKey)}` : "master";
+  const masterId = env.MASTER_DO.idFromName(name);
   return env.MASTER_DO.get(masterId) as unknown as MasterDORpc;
+}
+
+/** FNV-1a hash → 4-character hex string for deterministic sharding. */
+function fnv1aHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0").slice(0, 4);
 }
 
 /**
@@ -92,8 +103,9 @@ export default {
       // ── Master DO routes ──────────────────────────────────────────────
 
       if (url.pathname === "/write") {
-        const body = await request.json();
-        const result = await getMasterDo(env).writeRpc(body);
+        const body = await request.json() as Record<string, unknown>;
+        const partKey = typeof body.partitionKey === "string" ? body.partitionKey : undefined;
+        const result = await getMasterDo(env, partKey).writeRpc(body);
         return json(result, 200, headers);
       }
 
