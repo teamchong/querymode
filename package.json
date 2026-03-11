@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Serverless columnar query engine on Cloudflare Durable Objects",
   "type": "module",
+  "bin": {
+    "querymode": "src/cli/init.ts"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
