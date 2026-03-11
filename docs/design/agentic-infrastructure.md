@@ -62,6 +62,21 @@ Code navigation is iterative: Glob → Grep → Read → refine → Read more. E
 | [Harness Engineering](https://openai.com/index/harness-engineering/) (OpenAI, Feb 2026) | AGENTS.md as table of contents → progressive disclosure | Pattern, not a tool |
 | [Context Engineering](https://martinfowler.com/articles/exploring-gen-ai/context-engineering-coding-agents.html) (Fowler, Jan 2026) | Layered context, skills for lazy-loading | Describes the problem well, no unified solution |
 | [MCP](https://modelcontextprotocol.io/) (Anthropic → Linux Foundation) | Universal protocol for agent ↔ tool communication | Transport layer, not context selection |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic) | Production context management: **compaction** (auto-summarize old messages near limit), **auto-memory** (persistent MEMORY.md across sessions), **CLAUDE.md** (project instructions always loaded), **skills** (lazy-loaded prompts on demand), **subagents** (delegate to protect main context window), **Glob→Grep→Read** (progressive code navigation) | Purpose-built for codebases, not general knowledge bases |
+| [Cursor / Windsurf](https://www.cursor.com/) | IDE-integrated context: file indexing, @-mentions for explicit inclusion, auto-context from open files | Tied to IDE, file-level granularity, no composable operators |
+
+**Key insight from Claude Code**: The most successful context management system in production isn't RAG — it's Claude Code's layered approach. Each layer has a different lifetime and scope:
+
+| Layer | Lifetime | Scope | Mechanism |
+|---|---|---|---|
+| CLAUDE.md | Permanent | Project-wide instructions | Always loaded into context |
+| Auto-memory (MEMORY.md) | Cross-session | Learned patterns, preferences | Persisted to disk, loaded at start |
+| Compaction | Within-session | Conversation history | Auto-summarize when approaching context limit |
+| Skills | On-demand | Task-specific prompts | Lazy-loaded only when invoked |
+| Subagents | Per-task | Isolated exploration | Separate context window, returns summary |
+| Glob→Grep→Read | Per-query | Code navigation | Progressive disclosure, agent-directed |
+
+This is exactly the model we want to generalize: **layered context with different lifetimes, loaded on demand, agent-directed**. The question is how to apply this to knowledge bases beyond code.
 
 **Key findings**:
 - [Karpathy's analogy](https://weaviate.io/blog/context-engineering): LLM = CPU, context window = RAM. Context engineering = OS deciding what fits in RAM.
@@ -348,20 +363,25 @@ const current = await qm.table("knowledge")
 
 ### How this differs from existing approaches
 
-| | Traditional RAG | LlamaIndex | LangChain | A-RAG | Context as Code (QueryMode) |
-|---|---|---|---|---|---|
-| Selection | One-shot top-k | Hierarchical index routing | Middleware chain | Agent-controlled retrieval tools | Iterative DataFrame queries |
-| Granularity | Fixed chunk size | Node-level | Document/chunk | Chunk + rerank | Section-level, variable |
-| Quality signal | None (or reranker) | None | None | Reranker | Quality score column, filterable |
-| Dedup | None | None | None | None | RedundancyFilterOperator |
-| Budget | Hope it fits | None | Token counting middleware | None | TokenBudgetOperator (exact) |
-| Structure | Flat chunks | Tree of nodes | Flat documents | Flat chunks | Documents → sections → headings |
-| Follow-up | Re-embed, re-retrieve | Re-traverse tree | Re-run chain | Agent decides next retrieval | Navigate: filter, read, follow refs |
-| Freshness | None | None | None | None | FreshnessDecayOperator |
-| Iteration | No | Limited | Chain re-run | Yes (agent loop) | Yes (code you can diff/test/version) |
-| Composability | Fixed pipeline | Plugin-based | Middleware chain | Tool-based | Operator pipeline (same as query) |
+| | Traditional RAG | LlamaIndex | LangChain | Claude Code | A-RAG | Context as Code (QueryMode) |
+|---|---|---|---|---|---|---|
+| Selection | One-shot top-k | Hierarchical index routing | Middleware chain | Layered: CLAUDE.md + memory + compaction + tools | Agent-controlled retrieval tools | Iterative DataFrame queries |
+| Granularity | Fixed chunk size | Node-level | Document/chunk | File → function (Glob/Grep/Read) | Chunk + rerank | Section-level, variable |
+| Quality signal | None (or reranker) | None | None | None (trusts source code) | Reranker | Quality score column, filterable |
+| Dedup | None | None | None | Compaction (summarize old context) | None | RedundancyFilterOperator |
+| Budget | Hope it fits | None | Token counting middleware | Compaction at ~60% limit | None | TokenBudgetOperator (exact) |
+| Structure | Flat chunks | Tree of nodes | Flat documents | Files → directories → imports | Flat chunks | Documents → sections → headings |
+| Follow-up | Re-embed, re-retrieve | Re-traverse tree | Re-run chain | Read more, narrow search, subagent | Agent decides next retrieval | Navigate: filter, read, follow refs |
+| Freshness | None | None | None | Git history, file mtime | None | FreshnessDecayOperator |
+| Iteration | No | Limited | Chain re-run | Yes (core design) | Yes (agent loop) | Yes (code you can diff/test/version) |
+| Composability | Fixed pipeline | Plugin-based | Middleware chain | Tool-based (Glob/Grep/Read) | Tool-based | Operator pipeline (same as query) |
+| Persistence | Index rebuild | Index + cache | Chain state | MEMORY.md + CLAUDE.md (cross-session) | None | R2 (durable, queryable) |
 
-Key insight from [OpenAI's Harness Engineering](https://openai.com/index/harness-engineering/): past ~60% context utilization, agents get worse. TokenBudgetOperator enforces this directly. [A-RAG](https://arxiv.org/html/2602.03442v1) lets the agent control retrieval but still treats context as "stuff it in." [ACE](https://arxiv.org/abs/2510.04618) treats context as evolving playbooks — closest to our model, but academic (+10.6% on benchmarks, no production tool).
+**What Claude Code gets right**: Layered context with different lifetimes (permanent instructions → cross-session memory → within-session compaction → on-demand skills → per-query navigation). Compaction keeps context under ~60% utilization — matching OpenAI's finding that more context hurts. The Glob→Grep→Read pattern is iterative and agent-directed.
+
+**What Claude Code doesn't solve**: It's purpose-built for codebases. Code has natural structure (files, functions, imports). Knowledge bases need the same layered approach but with different primitives — quality scores instead of test results, topic clusters instead of directories, section extraction instead of line-range reads. That's what QueryMode's context operators provide.
+
+Key insight from [OpenAI's Harness Engineering](https://openai.com/index/harness-engineering/): past ~60% context utilization, agents get worse. Both Claude Code's compaction and our TokenBudgetOperator enforce this directly. [A-RAG](https://arxiv.org/html/2602.03442v1) lets the agent control retrieval but still treats context as "stuff it in." [ACE](https://arxiv.org/abs/2510.04618) treats context as evolving playbooks — closest to our model, but academic (+10.6% on benchmarks, no production tool).
 
 ## Implementation plan
 
@@ -438,3 +458,4 @@ Build the agent-facing API that uses these operators:
 17. **Firecrawl** — Managed crawl-to-markdown. https://www.firecrawl.dev/
 18. **Jina Reader** — Zero-setup URL-to-markdown. https://r.jina.ai/
 19. **RAG survey** — Fan et al. (2025). "A Survey on RAG." https://arxiv.org/abs/2501.09136
+20. **Claude Code** — Anthropic. Context management via compaction, auto-memory, CLAUDE.md, skills, subagents. https://docs.anthropic.com/en/docs/claude-code
