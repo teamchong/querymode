@@ -1,24 +1,29 @@
 # QueryMode Roadmap
 
-## From experiment to Snowflake/Spark killer
+## Completed
 
-### 1. CTE in SQL compiler
-SQL `WITH` clause → compiles to chained QueryDescriptors. Runtime already handles it (DataFrame variables). Just syntax support in `src/sql/parser.ts` + `compiler.ts`.
+### 1. CTE in SQL compiler ✓
+SQL `WITH` clause → inlines CTE filters into main query descriptor. 3 parser tests + 5 integration tests.
 
-### 2. RBAC middleware example
-Worker middleware that injects filters (row-level security) and restricts projections (column-level security) based on JWT/CF Access. Example only — no runtime changes.
+### 2. RBAC middleware example ✓
+Worker middleware that injects row-level filters and strips column-level projections based on JWT. Example in `examples/rbac-middleware.ts`.
 
-### 3. Postgres wire protocol
-TCP Worker that translates pg wire messages → SQL → QueryDescriptor → pipeline → pg DataRow responses. One adapter = every BI tool (Tableau, Metabase, Grafana, dbt, psql). Lives in `src/pg-wire/`.
+### 3. Postgres wire protocol ✓
+TCP server implementing pg wire v3 Simple Query protocol. Connect with psql, Tableau, Metabase, Grafana, dbt. 17 tests. `src/pg-wire/`.
 
-### 4. Schema evolution
-Add/drop columns via Lance manifest update — no data rewrite. Old fragments return null for new columns. Manifest-only operation in MasterDO.
+### 4. Schema evolution ✓
+`addColumn(name, dtype, default)` and `dropColumn(name)` — no data rewrite. Works on MaterializedExecutor, same pattern for Lance manifests. 5 tests.
 
-### 5. Partitioned writes (fan-out writes)
-Route writes by partition key hash → multiple MasterDOs. Each owns a partition range, no contention. Bio-cell model: more pressure → more cells. Router Worker picks MasterDO by hash.
+### 5. Partitioned writes ✓
+Fan out writes by partition key to separate MasterDOs. Each DO handles its own CAS loop — no contention across partitions. Bio-cell model: more write pressure → more cells.
 
-### 6. `npx querymode init`
-One-command deploy: scaffolds wrangler.toml, creates R2 bucket, configures DOs, deploys Worker. Zero-to-running in 60 seconds.
+### 6. `npx querymode init` ✓
+One-command project scaffold: generates wrangler.toml + src/worker.ts. Idempotent. Prints next steps.
 
-### 7. `.pipe()` stage chaining (Spark replacement)
-Multi-stage MapReduce: each `.pipe()` writes intermediate results to R2, next stage reads from it. TypeScript is the DAG scheduler — no Spark/YARN needed. Each step fans out to Fragment DOs, reduces back, feeds the next step.
+## Future
+
+### `.pipe()` stage chaining (Spark replacement)
+Multi-stage MapReduce: each `.pipe()` writes intermediate results to R2, next stage reads from it. TypeScript is the DAG scheduler — no Spark/YARN needed.
+
+### Hierarchical reduction
+When fragment count exceeds single-QueryDO capacity (~1000), add a reducer tier. Not needed at current scale — pruning keeps fan-out small.
