@@ -3,6 +3,7 @@ import { groupKey, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
 import { identityIndices } from "./operators.js";
+import { readColumnValue, type ColumnarBatch as QMCBBatch, type ColumnarColumn } from "./columnar.js";
 
 export interface PartialAgg {
   states: PartialAggState[];
@@ -306,4 +307,50 @@ export function finalizePartialAgg(
   }
 
   return rows;
+}
+
+/**
+ * Compute partial aggregation directly from QMCB ColumnarBatch.
+ * Reads typed arrays — no Row[] intermediate.
+ */
+export function computePartialAggQMCB(
+  batch: QMCBBatch,
+  query: QueryDescriptor,
+): PartialAgg {
+  const aggregates = query.aggregates ?? [];
+
+  // Build column lookup: name → ColumnarColumn
+  const colMap = new Map<string, ColumnarColumn>();
+  for (const col of batch.columns) colMap.set(col.name, col);
+
+  if (!query.groupBy || query.groupBy.length === 0) {
+    const states = initStates(aggregates);
+    for (let r = 0; r < batch.rowCount; r++) {
+      feedAggStates(states, aggregates, (col) => {
+        const c = colMap.get(col);
+        return c ? readColumnValue(c, r) : undefined;
+      });
+    }
+    return { states };
+  }
+
+  const groups = new Map<string, PartialAggState[]>();
+  const groupCols = query.groupBy;
+  const groupColRefs = groupCols.map(c => colMap.get(c));
+
+  for (let r = 0; r < batch.rowCount; r++) {
+    let key = "";
+    for (let g = 0; g < groupCols.length; g++) {
+      if (g > 0) key += "\x00";
+      const v = groupColRefs[g] ? readColumnValue(groupColRefs[g]!, r) : null;
+      key += v === null || v === undefined ? NULL_SENTINEL : String(v);
+    }
+    let states = groups.get(key);
+    if (!states) { states = initStates(aggregates); groups.set(key, states); }
+    feedAggStates(states, aggregates, (col) => {
+      const c = colMap.get(col);
+      return c ? readColumnValue(c, r) : undefined;
+    });
+  }
+  return { states: [], groups };
 }

@@ -9,6 +9,7 @@ import { canSkipPage, canSkipFragment, rowPassesFilters, applySortAndLimit } fro
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
+import { decodeColumnarBatch, columnarBatchToRows } from "./columnar.js";
 import { coalesceRanges, autoCoalesceGap, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend, encodeColumnarRun } from "./r2-spill.js";
 import {
@@ -875,6 +876,13 @@ export class QueryDO extends DurableObject<Env> {
       }
     }
 
+    // Decode columnar data to rows for direct consumers (firstRpc, streamRpc, etc.)
+    if (result.columnarData && result.rows.length === 0) {
+      const batch = decodeColumnarBatch(result.columnarData);
+      if (batch) result.rows = columnarBatchToRows(batch);
+      result.columnarData = undefined;
+    }
+
     if (cacheable) {
       this.resultCache.setWithTTL(this.queryKey(query), result, query.cacheTTL!);
     }
@@ -1204,20 +1212,28 @@ export class QueryDO extends DurableObject<Env> {
         .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
       const wasmRegistered = this.wasmEngine.registerDecodedColumns(query.table, decodedEntries);
 
-      let rows: Row[];
       if (wasmRegistered) {
-        const wasmRows = this.wasmEngine.executeQuery(query);
+        const columnarData = this.wasmEngine.executeQueryColumnar(query);
         this.wasmEngine.clearTable(query.table);
-        rows = wasmRows ?? [];
-      } else {
-        // Fallback to JS path if WASM registration fails (OOM, unsupported dtype)
-        rows = this.applyJsPostProcessing(
-          this.assembleRowsFromColumns(decodedColumns, colNames), query,
-        );
-        if (query.aggregates && query.aggregates.length > 0) {
-          const partial = computePartialAgg(rows, query);
-          rows = finalizePartialAgg(partial, query);
+        if (columnarData) {
+          const wasmExecMs = Date.now() - wasmStart;
+          const rowCount = new DataView(columnarData).getUint32(4, true);
+          return {
+            rows: [], columnarData, rowCount, columns: colNames,
+            bytesRead, pagesSkipped, durationMs: Date.now() - t0,
+            r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
+            edgeCacheHits, edgeCacheMisses,
+          };
         }
+      }
+
+      // Fallback to JS path if WASM registration or execution fails
+      let rows = this.applyJsPostProcessing(
+        this.assembleRowsFromColumns(decodedColumns, colNames), query,
+      );
+      if (query.aggregates && query.aggregates.length > 0) {
+        const partial = computePartialAgg(rows, query);
+        rows = finalizePartialAgg(partial, query);
       }
 
       const wasmExecMs = Date.now() - wasmStart;
@@ -1246,13 +1262,14 @@ export class QueryDO extends DurableObject<Env> {
       throw new Error(`WASM OOM: failed to register columns for table "${query.table}"`);
     }
 
-    const rows = this.wasmEngine.executeQuery(query);
-    if (!rows) throw new Error(`WASM query execution failed for table "${query.table}"`);
+    const columnarData = this.wasmEngine.executeQueryColumnar(query);
+    if (!columnarData) throw new Error(`WASM query execution failed for table "${query.table}"`);
     this.wasmEngine.clearTable(query.table);
     const wasmExecMs = Date.now() - wasmStart;
+    const rowCount = new DataView(columnarData).getUint32(4, true);
 
     return {
-      rows, rowCount: rows.length, columns: cols.map(c => c.name),
+      rows: [], columnarData, rowCount, columns: cols.map(c => c.name),
       bytesRead, pagesSkipped, durationMs: Date.now() - t0,
       r2ReadMs, wasmExecMs, cacheHits, cacheMisses,
       edgeCacheHits, edgeCacheMisses,

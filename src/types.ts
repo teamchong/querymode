@@ -202,6 +202,8 @@ export type Row = Record<string, number | bigint | string | boolean | Float32Arr
 /** Execution result returned by .exec() */
 export interface QueryResult<T extends Row = Row> {
   rows: T[];
+  /** QMCB columnar binary — when present, rows may be empty (decode at consumer). */
+  columnarData?: ArrayBuffer;
   rowCount: number;
   /** Columns that were actually fetched */
   columns: string[];

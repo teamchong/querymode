@@ -2,9 +2,19 @@ import type { Row, QueryResult } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import {
   computePartialAgg,
+  computePartialAggQMCB,
   mergePartialAggs,
   finalizePartialAgg,
 } from "./partial-agg.js";
+import {
+  decodeColumnarBatch,
+  columnarBatchToRows,
+  concatColumnarBatches,
+  columnarKWayMerge,
+  sliceColumnarBatch,
+  encodeColumnarBatch,
+  type ColumnarBatch,
+} from "./columnar.js";
 
 interface HeapEntry {
   arrayIdx: number;
@@ -99,6 +109,25 @@ export function kWayMerge(
   return result;
 }
 
+/** Decode columnarData on a partial to ColumnarBatch. Returns null if no columnar data. */
+function partialToColumnarBatch(p: QueryResult): ColumnarBatch | null {
+  if (p.columnarData) {
+    const batch = decodeColumnarBatch(p.columnarData);
+    p.columnarData = undefined; // free binary after decode
+    return batch;
+  }
+  return null;
+}
+
+/** Ensure partial has rows (decode columnar if needed). Mutates partial. */
+function ensureRows(p: QueryResult): void {
+  if (p.columnarData && p.rows.length === 0) {
+    const batch = decodeColumnarBatch(p.columnarData);
+    if (batch) p.rows = columnarBatchToRows(batch);
+    p.columnarData = undefined;
+  }
+}
+
 export function mergeQueryResults(
   partials: QueryResult[],
   query: QueryDescriptor,
@@ -109,25 +138,51 @@ export function mergeQueryResults(
   const columns =
     partials.length > 0 ? partials[0].columns : query.projections;
 
-  // Aggregation path
+  const baseResult = {
+    bytesRead: totalBytesRead,
+    pagesSkipped: totalPagesSkipped,
+    durationMs: maxDuration,
+  };
+
+  // Aggregation path — columnar when possible, Row[] fallback
   if (query.aggregates && query.aggregates.length > 0) {
-    const aggPartials = partials.map((p) => computePartialAgg(p.rows, query));
+    const aggPartials = partials.map((p) => {
+      if (p.columnarData) {
+        const batch = partialToColumnarBatch(p);
+        if (batch) return computePartialAggQMCB(batch, query);
+      }
+      return computePartialAgg(p.rows, query);
+    });
     const merged = mergePartialAggs(aggPartials);
     const rows = finalizePartialAgg(merged, query);
-    return {
-      rows,
-      rowCount: rows.length,
-      columns,
-      bytesRead: totalBytesRead,
-      pagesSkipped: totalPagesSkipped,
-      durationMs: maxDuration,
-    };
+    return { rows, rowCount: rows.length, columns, ...baseResult };
   }
 
-  // Sort path: k-way merge with offset support
+  // Check if all partials are columnar
+  const allColumnar = partials.every(p => p.columnarData || p.rows.length === 0);
+
+  // Sort path: columnar k-way merge
   if (query.sortColumn) {
     const off = query.offset ?? 0;
     const effectiveLimit = (query.limit ?? Infinity) + off;
+
+    if (allColumnar) {
+      const batches: ColumnarBatch[] = [];
+      for (const p of partials) {
+        const batch = partialToColumnarBatch(p);
+        if (batch && batch.rowCount > 0) batches.push(batch);
+      }
+      if (batches.length > 0) {
+        let merged = columnarKWayMerge(batches, query.sortColumn, query.sortDirection ?? "asc", effectiveLimit);
+        if (off > 0) merged = sliceColumnarBatch(merged, off);
+        const columnarData = encodeColumnarBatch(merged);
+        return { rows: [], columnarData, rowCount: merged.rowCount, columns, ...baseResult };
+      }
+      return { rows: [], rowCount: 0, columns, ...baseResult };
+    }
+
+    // Fallback: mixed or row-based partials
+    for (const p of partials) ensureRows(p);
     let rows = kWayMerge(
       partials.map((p) => p.rows),
       query.sortColumn,
@@ -135,17 +190,30 @@ export function mergeQueryResults(
       effectiveLimit,
     );
     if (off > 0) rows = rows.slice(off);
-    return {
-      rows,
-      rowCount: rows.length,
-      columns,
-      bytesRead: totalBytesRead,
-      pagesSkipped: totalPagesSkipped,
-      durationMs: maxDuration,
-    };
+    return { rows, rowCount: rows.length, columns, ...baseResult };
   }
 
-  // Unsorted: concat with offset + limit
+  // Unsorted: columnar concat with offset + limit
+  if (allColumnar) {
+    const batches: ColumnarBatch[] = [];
+    for (const p of partials) {
+      const batch = partialToColumnarBatch(p);
+      if (batch && batch.rowCount > 0) batches.push(batch);
+    }
+    if (batches.length > 0) {
+      let merged = concatColumnarBatches(batches)!;
+      const off = query.offset ?? 0;
+      if (off > 0 || query.limit !== undefined) {
+        merged = sliceColumnarBatch(merged, off, query.limit);
+      }
+      const columnarData = encodeColumnarBatch(merged);
+      return { rows: [], columnarData, rowCount: merged.rowCount, columns, ...baseResult };
+    }
+    return { rows: [], rowCount: 0, columns, ...baseResult };
+  }
+
+  // Fallback: mixed or row-based
+  for (const p of partials) ensureRows(p);
   let rows: Row[];
   const allRows = partials.flatMap((p) => p.rows);
   const off = query.offset ?? 0;
@@ -155,12 +223,5 @@ export function mergeQueryResults(
     rows = allRows;
   }
 
-  return {
-    rows,
-    rowCount: rows.length,
-    columns,
-    bytesRead: totalBytesRead,
-    pagesSkipped: totalPagesSkipped,
-    durationMs: maxDuration,
-  };
+  return { rows, rowCount: rows.length, columns, ...baseResult };
 }

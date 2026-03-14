@@ -15,19 +15,25 @@ QueryMode covers Query. Source→Preprocess and Context Management are open gaps
 - **Source→Preprocess**: Google indexes everything but their quality signals have been gamed for 20 years. AI-generated, SEO-optimized content scores high on PageRank but carries no information. Gemini inherits this — brilliant model, garbage source.
 - **Context Management**: RAG is one-shot retrieval (embed → top-k → stuff). Misses structure, can't follow references, no progressive refinement. Hybrid search (BM25 + vector) just doubles down on the wrong model. Special formats (TOON, etc.) optimize the container but not the selection.
 
-## Core insight: iteration
+## Core insight
 
-The main reason code navigation works for agents is that **you can iterate on it**. You can't iterate on RAG.
+Agents handle huge codebases because code is addressable (file paths, function names), navigable (grep, imports), and DRY (define once, reference everywhere). The agent never loads everything — it navigates to what it needs via Glob → Grep → Read → refine.
 
-RAG is a black box: embed → retrieve → stuff → hope. If the result is wrong, you can't:
-- Diff what changed between two retrievals
-- Version control your retrieval strategy
-- Write a test that asserts "this query should return these documents"
-- Gradually refine the result by narrowing the search
+RAG can't do this. It's one-shot: embed → retrieve → stuff → hope.
 
-Code navigation is iterative: Glob → Grep → Read → refine → Read more. Each step is observable, testable, version-controllable. The agent sees what it got, decides if it's enough, and adjusts.
+### Industry standard for agent memory
 
-**Context management as code** means the same thing: the context selection logic is code you can diff, test, version, and iterate on. Not a pipeline you configure and pray.
+Every shipping tool uses flat markdown files:
+
+| Tool | File |
+|---|---|
+| Claude Code | `CLAUDE.md` + `MEMORY.md` |
+| Cursor | `.cursorrules` |
+| Windsurf | `.windsurfrules` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+| Cline | `.clinerules` |
+
+No graphs, no query systems. Text files in the context window. Works at small scale (<200 lines, single repo). Breaks at scale — memory grows unbounded, drifts from reality, no selective retrieval. Nobody has solved this.
 
 ## Landscape analysis
 
@@ -101,9 +107,11 @@ QueryMode's operator pipeline is uniquely positioned here.
 
 ## Thesis
 
-QueryMode's composable operator model already solves columnar data problems at scale. Documents are rows. Quality, freshness, embedding, topic — these are columns. Filter, dedup, aggregate, project — these are operators.
+QueryMode solves the **Source → Preprocess** layer: crawl → dedup → quality score → store. Documents are rows, quality/freshness/embedding are columns, filter/dedup/aggregate are operators. This is a data problem and QueryMode is a data engine.
 
-Extend QueryMode with domain-specific operators to cover all three layers. Same engine, same API, same infrastructure. The key property: **every step is code** — testable, versionable, iterable.
+The **Context Management** layer is a different problem. The operators below (TokenBudget, SectionExtract, RedundancyFilter) are useful for document retrieval. The memory problem — how an agent accumulates and retrieves knowledge across sessions — remains unsolved industry-wide (see above). The industry standard is flat markdown files, and nothing has proven better at the scale of single-repo agent workflows.
+
+QueryMode handles document ingestion and retrieval. Memory uses markdown files — same as every other shipping tool.
 
 ## Non-goals
 

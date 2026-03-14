@@ -5,6 +5,7 @@
 
 import type { Row, DataType, PageInfo, FilterOp } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
+import { wasmResultToQMCB } from "./columnar.js";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -674,6 +675,32 @@ export class WasmEngine {
     const rows = parseWasmResult(this.exports.memory.buffer, resultPtr, resultSize);
     this.exports.resetResult();
     return rows;
+  }
+
+  /**
+   * Execute a query and return the result as QMCB columnar binary.
+   * Bypasses Row[] creation entirely — reads WASM memory and writes QMCB
+   * in a single pass (memcpy for numeric columns).
+   */
+  executeQueryColumnar(query: QueryDescriptor): ArrayBuffer | null {
+    const MAX_SQL_LENGTH = 64 * 1024;
+    const sqlBytes = textEncoder.encode(queryToSql(query));
+    if (sqlBytes.length > MAX_SQL_LENGTH) {
+      throw new Error(`SQL query too large (${sqlBytes.length} bytes, max ${MAX_SQL_LENGTH})`);
+    }
+    const sqlBufPtr = this.exports.getSqlInputBuffer();
+    new Uint8Array(this.exports.memory.buffer, sqlBufPtr, sqlBytes.length).set(sqlBytes);
+    this.exports.setSqlInputLength(sqlBytes.length);
+
+    const resultPtr = this.exports.executeSql();
+    if (!resultPtr) return null;
+    const resultSize = this.exports.getResultSize();
+    if (!resultSize) return null;
+
+    // Convert directly from WASM memory to QMCB — no Row[] intermediate
+    const qmcb = wasmResultToQMCB(this.exports.memory.buffer, resultPtr, resultSize);
+    this.exports.resetResult();
+    return qmcb;
   }
 
   /** SIMD sum of Float64 buffer. Returns 0 for empty input. */

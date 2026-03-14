@@ -11,6 +11,7 @@ import {
 } from "./operators.js";
 import { mergeQueryResults } from "./merge.js";
 import { resolveBucket } from "./bucket.js";
+import { concatQMCBBatches, decodeColumnarBatch, columnarBatchToRows } from "./columnar.js";
 import wasmModule from "./wasm-module.js";
 
 const R2_TIMEOUT_MS = 10_000;
@@ -62,7 +63,7 @@ export class FragmentDO extends DurableObject<Env> {
     let totalCacheMisses = 0;
     let totalR2ReadMs = 0;
     let totalWasmExecMs = 0;
-    const allRows: Row[] = [];
+    const allBatches: ArrayBuffer[] = [];
 
     for (const { r2Key, meta } of fragments) {
       // Use cached footer if available, otherwise cache what Query DO sent us
@@ -199,34 +200,39 @@ export class FragmentDO extends DurableObject<Env> {
       }
 
       const fragQuery = { ...query, table: fragTable };
-      const rows = this.wasmEngine.executeQuery(fragQuery);
-      if (!rows) throw new Error(`WASM query execution failed for fragment "${r2Key}"`);
+      const qmcb = this.wasmEngine.executeQueryColumnar(fragQuery);
+      if (!qmcb) throw new Error(`WASM query execution failed for fragment "${r2Key}"`);
       this.wasmEngine.clearTable(fragTable);
-      for (let ri = 0; ri < rows.length; ri++) allRows.push(rows[ri]);
+      allBatches.push(qmcb);
       totalWasmExecMs += Date.now() - wasmStart;
     }
 
+    // Concat all columnar batches into a single QMCB
+    const columnarData = concatQMCBBatches(allBatches);
+
     // If query needs cross-page orchestration (ORDER BY without LIMIT),
-    // run through operator pipeline with R2 spill using streaming batches
+    // run through operator pipeline with R2 spill using streaming batches.
+    // Decode to Row[] for pipeline — columnar pipeline is a future optimization.
     const needsPipeline = query.sortColumn && query.limit === undefined;
-    let finalRows = allRows;
+    let finalRows: Row[] = [];
     let spillBytesWritten: number | undefined;
     let spillBytesRead: number | undefined;
 
-    if (needsPipeline && allRows.length > 0) {
+    if (needsPipeline && columnarData) {
+      const batch = decodeColumnarBatch(columnarData);
+      const allRows = batch ? columnarBatchToRows(batch) : [];
       const spillBucket = fragments.length > 0 ? resolveBucket(this.env, fragments[0].r2Key) : resolveBucket(this.env, "");
       const spill = new R2SpillBackend(spillBucket, `__spill/${crypto.randomUUID()}`);
       try {
-        // Yield allRows in bounded batches to avoid holding 2x copies
         const BATCH_SIZE = 4096;
         let batchIdx = 0;
         const batchSource: Operator = {
           async next(): Promise<RowBatch | null> {
             if (batchIdx >= allRows.length) return null;
             const end = Math.min(batchIdx + BATCH_SIZE, allRows.length);
-            const batch = allRows.slice(batchIdx, end);
+            const rows = allRows.slice(batchIdx, end);
             batchIdx = end;
-            return batch;
+            return rows;
           },
           async close() {},
         };
@@ -248,9 +254,15 @@ export class FragmentDO extends DurableObject<Env> {
       }
     }
 
+    // Non-pipeline path: return columnar data directly (zero-copy transfer over RPC)
+    const rowCount = columnarData
+      ? new DataView(columnarData).getUint32(4, true) // read rowCount from QMCB header
+      : finalRows.length;
+
     return {
-      rows: finalRows,
-      rowCount: finalRows.length,
+      rows: needsPipeline ? finalRows : [],
+      columnarData: needsPipeline ? undefined : (columnarData ?? undefined),
+      rowCount,
       columns: query.projections.length > 0
         ? query.projections
         : (fragments[0]?.meta.columns.map(c => c.name) ?? []),
