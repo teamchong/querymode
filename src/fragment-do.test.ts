@@ -22,6 +22,7 @@ vi.mock("./wasm-engine.js", () => ({
     registerColumns: () => true,
     registerDecodedColumns: () => true,
     executeQuery: () => [],
+    executeQueryColumnar: () => null,
     vectorSearchBuffer: () => ({ indices: new Uint32Array(0), scores: new Float32Array(0) }),
     cacheGet: () => null,
     cacheSet: () => false,
