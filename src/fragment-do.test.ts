@@ -22,7 +22,15 @@ vi.mock("./wasm-engine.js", () => ({
     registerColumns: () => true,
     registerDecodedColumns: () => true,
     executeQuery: () => [],
-    executeQueryColumnar: () => null,
+    executeQueryColumnar: () => {
+      // Return empty QMCB: magic(4) + rowCount=0(4) + colCount=0(2) = 10 bytes
+      const buf = new ArrayBuffer(10);
+      const view = new DataView(buf);
+      view.setUint32(0, 0x42434D51, true); // "QMCB"
+      view.setUint32(4, 0, true);          // 0 rows
+      view.setUint16(8, 0, true);          // 0 columns
+      return buf;
+    },
     vectorSearchBuffer: () => ({ indices: new Uint32Array(0), scores: new Float32Array(0) }),
     cacheGet: () => null,
     cacheSet: () => false,
