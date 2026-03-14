@@ -1,0 +1,12 @@
+{
+  "name": "querymode-ui",
+  "main": "vinext/server/app-router-entry",
+  "compatibility_date": "2025-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [
+    {
+      "binding": "QUERYMODE",
+      "service": "querymode"
+    }
+  ]
+}
