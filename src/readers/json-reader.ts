@@ -8,7 +8,7 @@
  * Schema is inferred from the first N objects.
  */
 
-import type { FormatReader, DataSource } from "../reader.js";
+import { type FormatReader, type DataSource, encodeColumnBuffer } from "../reader.js";
 import type { ColumnMeta, DataType, PageInfo, Row } from "../types.js";
 import type { FragmentSource } from "../operators.js";
 
@@ -240,107 +240,6 @@ class JsonFragmentSource implements FragmentSource {
     if (colIdx === undefined) return new ArrayBuffer(0);
     const values = this.parsed.columns[colIdx];
     return encodeColumnBuffer(values, col.dtype);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Encode typed values into the binary format expected by decodePage()
-// ---------------------------------------------------------------------------
-
-function encodeColumnBuffer(
-  values: (number | bigint | string | boolean | null)[],
-  dtype: DataType,
-): ArrayBuffer {
-  switch (dtype) {
-    case "bool": {
-      const numBytes = Math.ceil(values.length / 8);
-      const buf = new Uint8Array(numBytes);
-      for (let i = 0; i < values.length; i++) {
-        if (values[i] === true || values[i] === 1) {
-          buf[i >> 3] |= 1 << (i & 7);
-        }
-      }
-      return buf.buffer;
-    }
-    case "int8": {
-      const arr = new Int8Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "uint8": {
-      const arr = new Uint8Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "int16": {
-      const arr = new Int16Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "uint16": {
-      const arr = new Uint16Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "int32": {
-      const arr = new Int32Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "uint32": {
-      const arr = new Uint32Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "int64": {
-      const arr = new BigInt64Array(values.length);
-      for (let i = 0; i < values.length; i++) {
-        const v = values[i];
-        arr[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0)));
-      }
-      return arr.buffer;
-    }
-    case "uint64": {
-      const arr = new BigUint64Array(values.length);
-      for (let i = 0; i < values.length; i++) {
-        const v = values[i];
-        arr[i] = typeof v === "bigint" ? BigInt.asUintN(64, v) : BigInt(Math.trunc(Number(v ?? 0)));
-      }
-      return arr.buffer;
-    }
-    case "float32": {
-      const arr = new Float32Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "float64": {
-      const arr = new Float64Array(values.length);
-      for (let i = 0; i < values.length; i++) arr[i] = Number(values[i] ?? 0);
-      return arr.buffer;
-    }
-    case "utf8":
-    case "binary": {
-      const encoder = new TextEncoder();
-      const parts: Uint8Array[] = [];
-      let totalLen = 0;
-      for (const v of values) {
-        const str = v === null ? "" : String(v);
-        const encoded = encoder.encode(str);
-        const header = new Uint8Array(4);
-        new DataView(header.buffer).setUint32(0, encoded.length, true);
-        parts.push(header, encoded);
-        totalLen += 4 + encoded.length;
-      }
-      const buf = new Uint8Array(totalLen);
-      let off = 0;
-      for (const p of parts) {
-        buf.set(p, off);
-        off += p.length;
-      }
-      return buf.buffer;
-    }
-    default:
-      return new ArrayBuffer(0);
   }
 }
 
