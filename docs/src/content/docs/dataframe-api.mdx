@@ -253,6 +253,34 @@ descriptorToCode(someDescriptor)
 
 Handles all features: filters (all 14 ops with shorthand methods), aggregates, groupBy, joins, window functions, set operations, vector search, distinct, sort, limit/offset, version, cache, computed columns, pipe stages.
 
+## Schema evolution
+
+Add or drop columns on an existing dataset:
+
+```typescript
+// Add a column with a default value (applied to all existing rows)
+await qm.table("users").addColumn("tier", "utf8", "free")
+
+// Add a nullable column (default: null)
+await qm.table("users").addColumn("notes", "utf8")
+
+// Drop a column
+await qm.table("users").dropColumn("legacy_field")
+```
+
+Both return a `SchemaEvolutionResult`:
+
+```typescript
+{
+  table: "users",
+  operation: "add_column",  // or "drop_column"
+  column: "tier",
+  columnsAfter: ["id", "name", "email", "tier"]
+}
+```
+
+Schema changes apply to the in-memory dataset (MaterializedExecutor). On edge mode, schema evolution coordinates through MasterDO.
+
 ## Progress tracking
 
 For long-running queries, track progress with a callback:
