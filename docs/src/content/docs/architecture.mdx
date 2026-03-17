@@ -118,6 +118,45 @@ For a 10-column query this saves 10 `alloc` calls per page batch. The absolute o
 
 SharedArrayBuffer is not available in Cloudflare Workers (Spectre mitigations), so zero-copy data exchange between JS and WASM is not possible. All column data is copied into WASM linear memory via `alloc` + `Uint8Array.set()`. At ~0.005ms per 64KB page copy vs ~10ms R2 I/O latency, copy overhead accounts for less than 0.05% of total query time — the WASM boundary is not the bottleneck.
 
+## Filter pushdown
+
+Filters are pushed as deep as possible — from the DataFrame/SQL layer down to the WASM scan:
+
+```
+DataFrame .filter("age", "gt", 25)
+  → QueryDescriptor.filters: [{ column: "age", op: "gt", value: 25 }]
+    → Partition catalog prune (skip fragments where age max < 25)
+      → Page-level skip (skip pages where page max < 25)
+        → WASM SIMD filter (process matching pages in one pass)
+```
+
+### Filter operations
+
+All 14 ops push down: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `between`, `not_between`, `like`, `not_like`, `is_null`, `is_not_null`.
+
+### OR filters
+
+OR conditions decompose into `filterGroups: FilterOp[][]` — each inner array is AND-connected, groups are OR-connected:
+
+```typescript
+// WHERE (region = 'us' AND age > 25) OR (region = 'eu' AND age > 30)
+// becomes:
+filterGroups: [
+  [{ column: "region", op: "eq", value: "us" }, { column: "age", op: "gt", value: 25 }],
+  [{ column: "region", op: "eq", value: "eu" }, { column: "age", op: "gt", value: 30 }],
+]
+```
+
+Each group is evaluated independently; results are unioned. This preserves pushdown within each group.
+
+### NULL semantics
+
+Filters follow SQL three-valued logic:
+- `NULL = 5` → NULL (not true, row excluded)
+- `NULL AND true` → NULL (row excluded)
+- `NULL OR true` → true (row included)
+- `NOT IN (1, 2, NULL)` → NULL for all rows (per SQL standard)
+
 ## Footer caching
 
 Table footers (~4KB) are cached in QueryDO memory. The VIP eviction policy protects frequently-accessed tables from being evicted by cold one-off accesses.
