@@ -281,7 +281,7 @@ export function decodePlainValues(
   switch (dtype) {
     case "int8": {
       const n = Math.min(numValues, bytes.length);
-      for (let i = 0; i < n; i++) values.push(new Int8Array(bytes.buffer, bytes.byteOffset + i, 1)[0]);
+      for (let i = 0; i < n; i++) values.push(view.getInt8(i));
       break;
     }
     case "uint8": {
@@ -502,9 +502,11 @@ export function decodeParquetColumnChunk(
               }
             }
           } else {
-            const nonNullCount = defLevels
-              ? defLevels.filter(d => d > 0).length
-              : header.numValues;
+            let nonNullCount = header.numValues;
+            if (defLevels) {
+              nonNullCount = 0;
+              for (let di = 0; di < defLevels.length; di++) if (defLevels[di] > 0) nonNullCount++;
+            }
             const { values: indices } = decodeRleBitPacked(dataPayload, payloadOffset, bitWidth, nonNullCount);
             let idxPtr = 0;
             for (let i = 0; i < header.numValues && values.length < numValues; i++) {
