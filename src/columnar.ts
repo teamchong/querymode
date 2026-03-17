@@ -51,6 +51,10 @@ export interface ColumnarColumn {
   vectorDim?: number;
   /** Null bitmap: bit set = null. */
   nullBitmap?: Uint8Array;
+  /** @internal Cached DataView for single-element reads (avoids per-call allocation). */
+  _dv?: DataView;
+  /** @internal Cached Uint8Array view for bool/byte access. */
+  _u8?: Uint8Array;
 }
 
 /** A batch of columnar data — the unit of zero-copy transfer. */
@@ -517,18 +521,20 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
 /** Read a comparable value from a column at a given row index. */
 export function readColumnValue(col: ColumnarColumn, row: number): number | bigint | string | boolean | null {
   if (col.nullBitmap && (col.nullBitmap[row >> 3] & (1 << (row & 7)))) return null;
+  // Use DataView for single-element reads — avoids per-call TypedArray allocation
+  const dv = col._dv ?? (col._dv = new DataView(col.data));
   switch (col.dtype) {
-    case DTYPE_F64: return new Float64Array(col.data)[row];
-    case DTYPE_I64: return new BigInt64Array(col.data)[row];
-    case DTYPE_I32: return new Int32Array(col.data)[row];
-    case DTYPE_F32: return new Float32Array(col.data)[row];
+    case DTYPE_F64: return dv.getFloat64(row * 8, true);
+    case DTYPE_I64: return dv.getBigInt64(row * 8, true);
+    case DTYPE_I32: return dv.getInt32(row * 4, true);
+    case DTYPE_F32: return dv.getFloat32(row * 4, true);
     case DTYPE_UTF8: {
       const offsets = col.offsets!;
       const start = offsets[row], end = offsets[row + 1];
       return textDecoder.decode(new Uint8Array(col.data, start, end - start));
     }
     case DTYPE_BOOL: {
-      const bits = new Uint8Array(col.data);
+      const bits = col._u8 ?? (col._u8 = new Uint8Array(col.data));
       return (bits[row >> 3] & (1 << (row & 7))) !== 0;
     }
     default: return null;
@@ -545,11 +551,13 @@ function copyColumnValue(
   bpe: number,
 ): void {
   if (bpe > 0) {
-    // Fixed-width: copy bytes
-    const srcBytes = new Uint8Array(src.data, srcRow * bpe, bpe);
-    dst.data.set(srcBytes, dstRow * bpe);
+    // Fixed-width: direct byte copy avoids per-call Uint8Array view allocation
+    const srcBuf = src._u8 ?? (src._u8 = new Uint8Array(src.data));
+    const srcStart = srcRow * bpe;
+    const dstStart = dstRow * bpe;
+    for (let b = 0; b < bpe; b++) dst.data[dstStart + b] = srcBuf[srcStart + b];
   } else if (dtype === DTYPE_BOOL) {
-    const srcBits = new Uint8Array(src.data);
+    const srcBits = src._u8 ?? (src._u8 = new Uint8Array(src.data));
     if (srcBits[srcRow >> 3] & (1 << (srcRow & 7))) {
       dst.data[dstRow >> 3] |= 1 << (dstRow & 7);
     }
@@ -560,7 +568,8 @@ function copyColumnValue(
     const len = end - start;
     dst.offsets![dstRow] = dst.strOffset;
     if (len > 0) {
-      dst.data.set(new Uint8Array(src.data, start, len), dst.strOffset);
+      const srcBuf = src._u8 ?? (src._u8 = new Uint8Array(src.data));
+      dst.data.set(srcBuf.subarray(start, end), dst.strOffset);
     }
     dst.strOffset += len;
   }
