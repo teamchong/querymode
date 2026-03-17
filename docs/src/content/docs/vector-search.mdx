@@ -69,6 +69,68 @@ For larger datasets, create an IVF-PQ (Inverted File with Product Quantization) 
 
 IVF-PQ indexes are stored alongside data in R2 and loaded on first query.
 
+### HNSW
+
+For datasets where you need fast approximate nearest neighbor search with high recall, build an HNSW (Hierarchical Navigable Small World) index:
+
+```typescript
+import { HnswIndex } from "querymode"
+
+// Build index
+const index = new HnswIndex({
+  dim: 128,
+  metric: "cosine",
+  M: 16,              // max connections per node (default: 16)
+  efConstruction: 200, // construction beam width (default: 200)
+})
+
+// Add vectors one at a time
+index.add(0, vec0)
+index.add(1, vec1)
+
+// Or batch add from a contiguous Float32Array
+const allVectors = new Float32Array(1000 * 128) // 1000 vectors, 128 dims
+index.addBatch(allVectors, 128)
+
+// Search
+const { indices, scores } = index.search(queryVec, 10, /* efSearch */ 50)
+// indices: Uint32Array of nearest neighbor IDs
+// scores: Float32Array of distances (lower = more similar)
+```
+
+#### HNSW tuning
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `M` | 16 | Higher = better recall, more memory. 12-48 typical. |
+| `efConstruction` | 200 | Higher = better index quality, slower build. 100-400 typical. |
+| `efSearch` | topK | Higher = better recall at query time, slower search. Set to 2-4x topK. |
+
+#### Serialization
+
+HNSW indexes can be serialized to binary for storage (R2, disk) and deserialized on load:
+
+```typescript
+// Save
+const binary: ArrayBuffer = index.serialize()
+await bucket.put("indexes/embeddings.hnsw", binary)
+
+// Load
+const data = await bucket.get("indexes/embeddings.hnsw")
+const restored = HnswIndex.deserialize(await data.arrayBuffer(), "cosine")
+const results = restored.search(queryVec, 10)
+```
+
+### IVF-PQ vs HNSW
+
+| | IVF-PQ | HNSW |
+|--|--------|------|
+| **Speed** | Fast (quantized distances) | Fast (graph traversal) |
+| **Memory** | Low (compressed codes) | High (full vectors + graph) |
+| **Recall** | Good with enough probes | Excellent |
+| **Build time** | Requires training (k-means) | Incremental (add one at a time) |
+| **Best for** | Large datasets (>1M vectors) | Medium datasets (<1M vectors) |
+
 ## Combining with filters
 
 Vector search composes with all other DataFrame operations:
