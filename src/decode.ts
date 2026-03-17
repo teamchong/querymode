@@ -26,6 +26,19 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
       case "lt":  if (min >= val) return true; break;
       case "lte": if (min > val) return true; break;
       case "eq":  if (val < min || val > max) return true; break;
+      // neq: skip only when entire page is a single value equal to the filter value
+      case "neq": if (min === max && min === val) return true; break;
+      // in: skip when all IN values fall outside the page's [min, max] range
+      case "in": {
+        if (!Array.isArray(filter.value)) break;
+        if (filter.value.every(v => {
+          let cv = v;
+          if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
+          else if (typeof min === "number" && typeof cv === "bigint") cv = Number(cv);
+          return cv < min || cv > max;
+        })) return true;
+        break;
+      }
       case "between": {
         if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
         let lo = filter.value[0];

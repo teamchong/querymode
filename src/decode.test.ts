@@ -138,6 +138,34 @@ describe("canSkipPage", () => {
     const noStats: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0 };
     expect(canSkipPage(noStats, [{ column: "x", op: "gt", value: 100 }], "x")).toBe(false);
   });
+
+  it("skips page where all values equal the neq filter value", () => {
+    const uniform: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 42, maxValue: 42 };
+    expect(canSkipPage(uniform, [{ column: "x", op: "neq", value: 42 }], "x")).toBe(true);
+  });
+
+  it("does not skip page where neq filter value differs from uniform page", () => {
+    const uniform: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 42, maxValue: 42 };
+    expect(canSkipPage(uniform, [{ column: "x", op: "neq", value: 99 }], "x")).toBe(false);
+  });
+
+  it("does not skip page with range for neq filter", () => {
+    expect(canSkipPage(page, [{ column: "x", op: "neq", value: 50 }], "x")).toBe(false);
+  });
+
+  it("skips page where all IN values fall outside range", () => {
+    expect(canSkipPage(page, [{ column: "x", op: "in", value: [1, 2, 3] }], "x")).toBe(true);
+    expect(canSkipPage(page, [{ column: "x", op: "in", value: [95, 100] }], "x")).toBe(true);
+  });
+
+  it("does not skip page where any IN value is in range", () => {
+    expect(canSkipPage(page, [{ column: "x", op: "in", value: [1, 50, 200] }], "x")).toBe(false);
+  });
+
+  it("skips page with bigint IN values outside range", () => {
+    const bigPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 10n, maxValue: 90n };
+    expect(canSkipPage(bigPage, [{ column: "x", op: "in", value: [1, 5, 95] }], "x")).toBe(true);
+  });
 });
 
 describe("assembleRows", () => {
