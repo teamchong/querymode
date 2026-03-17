@@ -535,7 +535,7 @@ function wasmFilterNumeric(
       const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
       for (let i = 0; i < rowCount; i++) {
         const v = values[i];
-        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
+        dst[i] = typeof v === "bigint" ? v : BigInt(Math.trunc((v as number) ?? 0));
       }
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
@@ -592,7 +592,7 @@ function wasmFilterRange(
       const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
       for (let i = 0; i < rowCount; i++) {
         const v = values[i];
-        dst[i] = typeof v === "bigint" ? v : BigInt((v as number) ?? 0);
+        dst[i] = typeof v === "bigint" ? v : BigInt(Math.trunc((v as number) ?? 0));
       }
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;

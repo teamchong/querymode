@@ -543,7 +543,7 @@ export class WasmEngine {
         const dataPtr = this.exports.alloc(rowCount * 8);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
-        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(values[i] as number ?? 0);
+        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(Math.trunc((values[i] as number) ?? 0));
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
         return true;
       }
