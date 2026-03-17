@@ -5,6 +5,9 @@ import {
   encodeColumnarBatch,
   columnarBatchToRows,
   concatQMCBBatches,
+  columnarKWayMerge,
+  sliceColumnarBatch,
+  readColumnValue,
   DTYPE_F64,
   DTYPE_I64,
   DTYPE_I32,
@@ -440,4 +443,148 @@ describe("columnar", () => {
       expect(arr[n - 1]).toBe((n - 1) * 1.5);
     });
   });
+
+  describe("readColumnValue", () => {
+    it("reads f64 values", () => {
+      const batch = makeBatch([{ name: "x", type: 1, values: [1.5, 2.5, 3.5] }]);
+      expect(readColumnValue(batch.columns[0], 0)).toBe(1.5);
+      expect(readColumnValue(batch.columns[0], 2)).toBe(3.5);
+    });
+
+    it("reads i64 values as bigint", () => {
+      const batch = makeBatch([{ name: "id", type: 0, values: [100n, 200n] }]);
+      expect(readColumnValue(batch.columns[0], 0)).toBe(100n);
+      expect(readColumnValue(batch.columns[0], 1)).toBe(200n);
+    });
+
+    it("reads i32 values", () => {
+      const batch = makeBatch([{ name: "n", type: 4, values: [10, 20, 30] }]);
+      expect(readColumnValue(batch.columns[0], 1)).toBe(20);
+    });
+
+    it("reads string values", () => {
+      const batch = makeBatch([{ name: "s", type: 2, values: ["hello", "world"] }]);
+      expect(readColumnValue(batch.columns[0], 0)).toBe("hello");
+      expect(readColumnValue(batch.columns[0], 1)).toBe("world");
+    });
+
+    it("reads bool values", () => {
+      const batch = makeBatch([{ name: "b", type: 3, values: [true, false, true] }]);
+      expect(readColumnValue(batch.columns[0], 0)).toBe(true);
+      expect(readColumnValue(batch.columns[0], 1)).toBe(false);
+      expect(readColumnValue(batch.columns[0], 2)).toBe(true);
+    });
+  });
+
+  describe("sliceColumnarBatch", () => {
+    it("slices numeric batch with offset", () => {
+      const batch = makeBatch([{ name: "x", type: 1, values: [10, 20, 30, 40, 50] }]);
+      const sliced = sliceColumnarBatch(batch, 2);
+      expect(sliced.rowCount).toBe(3);
+      const rows = columnarBatchToRows(sliced);
+      expect(rows.map(r => r.x)).toEqual([30, 40, 50]);
+    });
+
+    it("slices with offset and limit", () => {
+      const batch = makeBatch([{ name: "x", type: 1, values: [10, 20, 30, 40, 50] }]);
+      const sliced = sliceColumnarBatch(batch, 1, 2);
+      expect(sliced.rowCount).toBe(2);
+      const rows = columnarBatchToRows(sliced);
+      expect(rows.map(r => r.x)).toEqual([20, 30]);
+    });
+
+    it("slices string batch correctly", () => {
+      const batch = makeBatch([{ name: "s", type: 2, values: ["a", "bb", "ccc", "dddd"] }]);
+      const sliced = sliceColumnarBatch(batch, 1, 2);
+      const rows = columnarBatchToRows(sliced);
+      expect(rows.map(r => r.s)).toEqual(["bb", "ccc"]);
+    });
+
+    it("slices bool batch correctly", () => {
+      const batch = makeBatch([{ name: "b", type: 3, values: [true, false, true, false, true] }]);
+      const sliced = sliceColumnarBatch(batch, 2, 2);
+      const rows = columnarBatchToRows(sliced);
+      expect(rows.map(r => r.b)).toEqual([true, false]);
+    });
+
+    it("returns same batch when offset=0 and no limit", () => {
+      const batch = makeBatch([{ name: "x", type: 1, values: [1, 2] }]);
+      expect(sliceColumnarBatch(batch, 0)).toBe(batch);
+    });
+
+    it("returns empty batch when offset exceeds rowCount", () => {
+      const batch = makeBatch([{ name: "x", type: 1, values: [1, 2] }]);
+      const sliced = sliceColumnarBatch(batch, 10);
+      expect(sliced.rowCount).toBe(0);
+    });
+  });
+
+  describe("columnarKWayMerge", () => {
+    it("merges two sorted numeric batches ascending", () => {
+      const b1 = makeBatch([{ name: "x", type: 1, values: [1, 3, 5] }]);
+      const b2 = makeBatch([{ name: "x", type: 1, values: [2, 4, 6] }]);
+      const merged = columnarKWayMerge([b1, b2], "x", "asc", 100);
+      const rows = columnarBatchToRows(merged);
+      expect(rows.map(r => r.x)).toEqual([1, 2, 3, 4, 5, 6]);
+    });
+
+    it("merges descending", () => {
+      const b1 = makeBatch([{ name: "x", type: 1, values: [5, 3, 1] }]);
+      const b2 = makeBatch([{ name: "x", type: 1, values: [6, 4, 2] }]);
+      const merged = columnarKWayMerge([b1, b2], "x", "desc", 100);
+      const rows = columnarBatchToRows(merged);
+      expect(rows.map(r => r.x)).toEqual([6, 5, 4, 3, 2, 1]);
+    });
+
+    it("respects limit", () => {
+      const b1 = makeBatch([{ name: "x", type: 1, values: [1, 3, 5] }]);
+      const b2 = makeBatch([{ name: "x", type: 1, values: [2, 4, 6] }]);
+      const merged = columnarKWayMerge([b1, b2], "x", "asc", 3);
+      expect(merged.rowCount).toBe(3);
+      const rows = columnarBatchToRows(merged);
+      expect(rows.map(r => r.x)).toEqual([1, 2, 3]);
+    });
+
+    it("preserves non-sort columns during merge", () => {
+      const b1 = makeBatch([
+        { name: "id", type: 1, values: [1, 3] },
+        { name: "name", type: 2, values: ["alice", "charlie"] },
+      ]);
+      const b2 = makeBatch([
+        { name: "id", type: 1, values: [2, 4] },
+        { name: "name", type: 2, values: ["bob", "dave"] },
+      ]);
+      const merged = columnarKWayMerge([b1, b2], "id", "asc", 100);
+      const rows = columnarBatchToRows(merged);
+      expect(rows).toEqual([
+        { id: 1, name: "alice" },
+        { id: 2, name: "bob" },
+        { id: 3, name: "charlie" },
+        { id: 4, name: "dave" },
+      ]);
+    });
+
+    it("merges three batches", () => {
+      const b1 = makeBatch([{ name: "x", type: 1, values: [1, 4] }]);
+      const b2 = makeBatch([{ name: "x", type: 1, values: [2, 5] }]);
+      const b3 = makeBatch([{ name: "x", type: 1, values: [3, 6] }]);
+      const merged = columnarKWayMerge([b1, b2, b3], "x", "asc", 100);
+      const rows = columnarBatchToRows(merged);
+      expect(rows.map(r => r.x)).toEqual([1, 2, 3, 4, 5, 6]);
+    });
+
+    it("handles empty batches", () => {
+      const b1 = makeBatch([{ name: "x", type: 1, values: [1, 2] }]);
+      const empty: ColumnarBatch = { columns: [{ name: "x", dtype: DTYPE_F64, data: new ArrayBuffer(0), rowCount: 0 }], rowCount: 0 };
+      const merged = columnarKWayMerge([b1, empty], "x", "asc", 100);
+      expect(merged.rowCount).toBe(2);
+    });
+  });
 });
+
+/** Helper: build a decoded ColumnarBatch from WASM result format. */
+function makeBatch(columns: { name: string; type: number; values: (number | bigint | string | boolean)[] }[]): ColumnarBatch {
+  const wasm = buildWasmResult(columns);
+  const qmcb = wasmResultToQMCB(wasm, 0, wasm.byteLength)!;
+  return decodeColumnarBatch(qmcb)!;
+}
