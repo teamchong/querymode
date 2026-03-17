@@ -157,7 +157,7 @@ export class MasterDO extends DurableObject<Env> {
       if (typeof sampleValue === "number") {
         if (Number.isInteger(sampleValue)) {
           const i64 = new BigInt64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) i64[i] = BigInt(rows[i][colName] as number);
+          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; i64[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0))); }
           columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
         } else {
           const f64 = new Float64Array(rows.length);

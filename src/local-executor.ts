@@ -118,7 +118,7 @@ export class LocalExecutor implements QueryExecutor {
       if (typeof sample === "number") {
         if (Number.isInteger(sample)) {
           const arr = new BigInt64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) arr[i] = BigInt(rows[i][colName] as number);
+          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0))); }
           columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
         } else {
           const arr = new Float64Array(rows.length);

@@ -540,7 +540,7 @@ function wasmFilterNumeric(
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
       const count = wasm.exports.filterInt64Buffer(
-        dataPtr, rowCount, op, BigInt(filterValue), outPtr, rowCount,
+        dataPtr, rowCount, op, BigInt(Math.trunc(filterValue as number)), outPtr, rowCount,
       );
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
@@ -597,7 +597,7 @@ function wasmFilterRange(
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
       const fn = negate ? wasm.exports.filterInt64NotRange : wasm.exports.filterInt64Range;
-      const count = fn(dataPtr, rowCount, BigInt(low), BigInt(high), outPtr, rowCount);
+      const count = fn(dataPtr, rowCount, BigInt(Math.trunc(low as number)), BigInt(Math.trunc(high as number)), outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -2032,8 +2032,8 @@ export class WasmAggregateOperator implements Operator {
             : this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
         } else if (col.dtype === "int64") {
           count = isNotBetween
-            ? this.wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount)
-            : this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(f.value[0] as number), BigInt(f.value[1] as number), outPtr, rowCount);
+            ? this.wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(Math.trunc(f.value[0] as number)), BigInt(Math.trunc(f.value[1] as number)), outPtr, rowCount)
+            : this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(Math.trunc(f.value[0] as number)), BigInt(Math.trunc(f.value[1] as number)), outPtr, rowCount);
         } else {
           count = isNotBetween
             ? this.wasm.exports.filterInt32NotRange(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount)
@@ -2045,7 +2045,7 @@ export class WasmAggregateOperator implements Operator {
         if (col.dtype === "float64") {
           count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
         } else if (col.dtype === "int64") {
-          count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(f.value as number), outPtr, rowCount);
+          count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(Math.trunc(f.value as number)), outPtr, rowCount);
         } else {
           count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
         }
