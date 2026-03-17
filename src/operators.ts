@@ -686,8 +686,10 @@ function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32
     const outPtr = wasm.exports.alloc(Math.min(a.length, b.length) * 4);
     if (!aPtr || !bPtr || !outPtr) {
       // Fallback: JS intersect
-      const setB = new Set(b);
-      return a.filter(v => setB.has(v));
+      const setB = new Set<number>(b);
+      const out: number[] = [];
+      for (const v of a) if (setB.has(v)) out.push(v);
+      return new Uint32Array(out);
     }
     new Uint32Array(wasm.exports.memory.buffer, aPtr, a.length).set(a);
     new Uint32Array(wasm.exports.memory.buffer, bPtr, b.length).set(b);
@@ -696,8 +698,10 @@ function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32
     );
     return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
   } catch {
-    const setB = new Set(b);
-    return a.filter(v => setB.has(v));
+    const setB = new Set<number>(b);
+    const out: number[] = [];
+    for (const v of a) if (setB.has(v)) out.push(v);
+    return new Uint32Array(out);
   }
 }
 
@@ -712,7 +716,9 @@ function wasmUnion(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Arra
       // Fallback: JS union
       const set = new Set(a);
       for (const v of b) set.add(v);
-      return new Uint32Array([...set].sort((x, y) => x - y));
+      const arr = Uint32Array.from(set);
+      arr.sort();
+      return arr;
     }
     new Uint32Array(wasm.exports.memory.buffer, aPtr, a.length).set(a);
     new Uint32Array(wasm.exports.memory.buffer, bPtr, b.length).set(b);
@@ -723,7 +729,9 @@ function wasmUnion(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Arra
   } catch {
     const set = new Set(a);
     for (const v of b) set.add(v);
-    return new Uint32Array([...set].sort((x, y) => x - y));
+    const arr = Uint32Array.from(set);
+    arr.sort();
+    return arr;
   }
 }
 

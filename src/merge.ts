@@ -1,4 +1,5 @@
 import type { Row, QueryResult } from "./types.js";
+import { rowComparator } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import {
   computePartialAgg,
@@ -24,18 +25,17 @@ interface HeapEntry {
 function siftDown(
   heap: HeapEntry[],
   i: number,
-  sortCol: string,
-  asc: boolean,
+  cmp: (a: Row, b: Row) => number,
 ): void {
   const size = heap.length;
   while (true) {
     let target = i;
     const left = 2 * i + 1;
     const right = 2 * i + 2;
-    if (left < size && compare(heap[left], heap[target], sortCol, asc) < 0) {
+    if (left < size && cmp(heap[left].row, heap[target].row) < 0) {
       target = left;
     }
-    if (right < size && compare(heap[right], heap[target], sortCol, asc) < 0) {
+    if (right < size && cmp(heap[right].row, heap[target].row) < 0) {
       target = right;
     }
     if (target === i) break;
@@ -44,29 +44,13 @@ function siftDown(
   }
 }
 
-
-function compare(
-  a: HeapEntry,
-  b: HeapEntry,
-  sortCol: string,
-  asc: boolean,
-): number {
-  const va = a.row[sortCol];
-  const vb = b.row[sortCol];
-  if (va === vb) return 0;
-  if (va === null || va === undefined) return 1;
-  if (vb === null || vb === undefined) return -1;
-  const cmp = va < vb ? -1 : 1;
-  return asc ? cmp : -cmp;
-}
-
 export function kWayMerge(
   arrays: Row[][],
   sortCol: string,
   dir: "asc" | "desc",
   limit: number,
 ): Row[] {
-  const asc = dir === "asc";
+  const cmp = rowComparator(sortCol, dir === "desc");
   const indices: number[] = new Array(arrays.length).fill(0);
   const heap: HeapEntry[] = [];
 
@@ -81,7 +65,7 @@ export function kWayMerge(
 
   // Build heap
   for (let i = (heap.length >> 1) - 1; i >= 0; i--) {
-    siftDown(heap, i, sortCol, asc);
+    siftDown(heap, i, cmp);
   }
 
   const result: Row[] = [];
@@ -95,13 +79,13 @@ export function kWayMerge(
     if (indices[ai] < arrays[ai].length) {
       top.row = arrays[ai][indices[ai]];
       indices[ai]++;
-      siftDown(heap, 0, sortCol, asc);
+      siftDown(heap, 0, cmp);
     } else {
       // Remove top by replacing with last
       heap[0] = heap[heap.length - 1];
       heap.pop();
       if (heap.length > 0) {
-        siftDown(heap, 0, sortCol, asc);
+        siftDown(heap, 0, cmp);
       }
     }
   }

@@ -898,7 +898,7 @@ export function columnarBatchToRows(batch: ColumnarBatch): Row[] {
         const dim = col.vectorDim!;
         const arr = new Float32Array(col.data);
         for (let r = 0; r < rowCount; r++) {
-          rows[r][col.name] = arr.slice(r * dim, (r + 1) * dim);
+          rows[r][col.name] = new Float32Array(arr.buffer, (r * dim) * 4, dim);
         }
         break;
       }
