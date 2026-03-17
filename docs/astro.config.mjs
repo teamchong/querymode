@@ -26,6 +26,7 @@ export default defineConfig({
         { label: "Pipeline", slug: "pipeline" },
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },
+        { label: "Columnar Format", slug: "columnar-format" },
         { label: "Write Path", slug: "write-path" },
         { label: "Deployment", slug: "deployment" },
       ],

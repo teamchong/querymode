@@ -1,0 +1,116 @@
+---
+title: Columnar Format (QMCB)
+description: Zero-copy binary wire format for inter-DO data transfer.
+---
+
+## Overview
+
+QMCB (QueryMode Columnar Binary) is the wire format used to transfer query results between Durable Objects without creating JavaScript `Row[]` objects. It enables the zero-copy pipeline:
+
+```
+WASM executeSql
+  → wasmResultToQMCB()     (memcpy from WASM memory)
+  → ArrayBuffer over RPC   (structured clone, not JSON)
+  → decodeColumnarBatch()   (typed array views)
+  → columnarBatchToRows()   (only at final response boundary)
+```
+
+Row materialization happens once, at the exit — not at every hop.
+
+## Binary layout
+
+```
+Offset  Size    Field
+──────  ────    ─────
+0       4       Magic: 0x42434D51 ("QMCB" little-endian)
+4       4       Row count (uint32)
+8       2       Column count (uint16)
+
+── Per column descriptor (repeated colCount times) ──
++0      2       Name length (uint16)
++2      N       Name (UTF-8 bytes)
++N      1       Dtype tag
++N+1    1       Has nulls (0 or 1)
+
+── Per column data (same order as descriptors) ──
+If hasNulls:
+  ceil(rowCount/8) bytes  Null bitmap (bit set = null)
+
+Dtype-specific payload:
+  F64/I64:    rowCount × 8 bytes
+  I32/F32:    rowCount × 4 bytes
+  BOOL:       ceil(rowCount/8) bytes (packed bits)
+  UTF8:       4 bytes totalLen + (rowCount+1) × 4 bytes offsets + totalLen bytes data
+  F32VEC:     4 bytes dim + rowCount × dim × 4 bytes
+```
+
+## Dtype tags
+
+| Tag | Constant    | TypedArray      | Bytes/element |
+|-----|-------------|-----------------|---------------|
+| 0   | `DTYPE_F64` | `Float64Array`  | 8             |
+| 1   | `DTYPE_I64` | `BigInt64Array` | 8             |
+| 2   | `DTYPE_UTF8`| offset+data     | variable      |
+| 3   | `DTYPE_BOOL`| packed bits     | 1/8           |
+| 4   | `DTYPE_F32VEC`| `Float32Array`| 4 × dim       |
+| 5   | `DTYPE_NULL`| (none)          | 0             |
+| 6   | `DTYPE_I32` | `Int32Array`    | 4             |
+| 7   | `DTYPE_F32` | `Float32Array`  | 4             |
+
+## TypeScript types
+
+```typescript
+interface ColumnarColumn {
+  name: string;
+  dtype: number;         // DTYPE_* constant
+  data: ArrayBuffer;     // raw column data
+  rowCount: number;
+  offsets?: Uint32Array;  // UTF8: byte offsets (rowCount+1)
+  vectorDim?: number;     // F32VEC: dimension
+  nullBitmap?: Uint8Array; // bit set = null
+}
+
+interface ColumnarBatch {
+  columns: ColumnarColumn[];
+  rowCount: number;
+}
+```
+
+## Key functions
+
+| Function | Purpose |
+|----------|---------|
+| `wasmResultToQMCB(mem, ptr, size)` | Convert WASM result to QMCB (single pass) |
+| `encodeColumnarBatch(batch)` | Encode `ColumnarBatch` to QMCB `ArrayBuffer` |
+| `decodeColumnarBatch(qmcb)` | Decode QMCB to `ColumnarBatch` |
+| `columnarBatchToRows(batch)` | Materialize to `Row[]` (response boundary only) |
+| `columnarKWayMerge(batches, col, dir, limit)` | Sorted merge on typed arrays |
+| `concatColumnarBatches(batches)` | Concatenate without re-encoding |
+| `sliceColumnarBatch(batch, offset, limit)` | Offset/limit without `Row[]` |
+| `readColumnValue(col, row)` | Read single value from column |
+
+## Alignment
+
+`decodeColumnarBatch` uses `.slice()` to extract column data from the packed QMCB buffer. This is intentional — `Float64Array` and `BigInt64Array` require 8-byte alignment, and QMCB packs data sequentially after variable-length column names. The slice creates an aligned copy.
+
+## Data flow in practice
+
+```
+FragmentDO.scanRpc():
+  1. JS writes column data into wasm.memory via typed array views
+  2. JS calls registerColumns() + executeQueryColumnar()
+  3. WASM processes (filter, agg, sort) — all Zig SIMD
+  4. wasmResultToQMCB() reads WASM result → QMCB ArrayBuffer
+  5. Return QMCB over RPC (structured clone)
+
+QueryDO.executeQuery():
+  6. Receive QMCB from each FragmentDO
+  7. decodeColumnarBatch() on each partial
+  8. columnarKWayMerge() or concatColumnarBatches() — no Row[]
+  9. encodeColumnarBatch() → merged QMCB
+
+Worker exit guard:
+  10. decodeColumnarBatch() + columnarBatchToRows() → Row[] for JSON response
+```
+
+WASM never calls back into JS. JS→WASM call overhead is 6ns cold, 0ns after TurboFan inlines (~1M calls). Shared `wasm.memory` access from JS is identical cost to regular typed arrays.
