@@ -22,7 +22,6 @@ import {
   dataRow,
   commandComplete,
   errorResponse,
-  dtypeToOid,
   type FrontendMessage,
 } from "./protocol.js";
 

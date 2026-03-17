@@ -186,10 +186,18 @@ export function rowDescription(columns: { name: string; oid: number }[]): Uint8A
 
 /** 'D' — DataRow */
 export function dataRow(values: (string | null)[]): Uint8Array {
+  // Pre-encode to avoid double textEncoder.encode() per value
+  const encoded = new Array<Uint8Array | null>(values.length);
   let bodyLen = 2; // field count
-  for (const v of values) {
+  for (let i = 0; i < values.length; i++) {
     bodyLen += 4; // length prefix per field
-    if (v !== null) bodyLen += textEncoder.encode(v).length;
+    if (values[i] !== null) {
+      const bytes = textEncoder.encode(values[i]!);
+      encoded[i] = bytes;
+      bodyLen += bytes.length;
+    } else {
+      encoded[i] = null;
+    }
   }
   const buf = new Uint8Array(1 + 4 + bodyLen);
   const dv = new DataView(buf.buffer);
@@ -198,11 +206,11 @@ export function dataRow(values: (string | null)[]): Uint8Array {
   dv.setInt16(5, values.length);
 
   let pos = 7;
-  for (const v of values) {
-    if (v === null) {
+  for (let i = 0; i < values.length; i++) {
+    const bytes = encoded[i];
+    if (bytes === null) {
       dv.setInt32(pos, -1); pos += 4; // NULL
     } else {
-      const bytes = textEncoder.encode(v);
       dv.setInt32(pos, bytes.length); pos += 4;
       buf.set(bytes, pos); pos += bytes.length;
     }
