@@ -34,6 +34,8 @@
 import type { ColumnMeta, DataType, SchemaField } from "./types.js";
 import { logicalTypeToDataType } from "./manifest.js";
 
+const textDecoder = new TextDecoder();
+
 export interface LanceV2ColumnInfo {
   name: string;
   dtype: DataType;
@@ -553,7 +555,7 @@ export function decodeLanceV2Utf8(buf: ArrayBuffer, rowCount: number): string[] 
   const bytes = new Uint8Array(buf);
 
   // Decode entire string data block at once (1 TextDecoder call, not N)
-  const allStringsDecoded = new TextDecoder().decode(bytes.subarray(dataStart, dataStart + totalStringLen));
+  const allStringsDecoded = textDecoder.decode(bytes.subarray(dataStart, dataStart + totalStringLen));
 
   // Fast path: if all strings are ASCII (common), use byte offsets directly as char offsets
   if (allStringsDecoded.length === totalStringLen) {
@@ -568,12 +570,11 @@ export function decodeLanceV2Utf8(buf: ArrayBuffer, rowCount: number): string[] 
   }
 
   // Slow path: multi-byte UTF-8 — must decode per-string to get correct boundaries
-  const decoder = new TextDecoder();
   const strings = new Array<string>(rowCount);
   let prevEnd = 0;
   for (let i = 0; i < rowCount; i++) {
     const end = endOffsets[i];
-    strings[i] = decoder.decode(bytes.subarray(dataStart + prevEnd, dataStart + end));
+    strings[i] = textDecoder.decode(bytes.subarray(dataStart + prevEnd, dataStart + end));
     prevEnd = end;
   }
   return strings;
