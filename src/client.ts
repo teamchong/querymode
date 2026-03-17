@@ -15,6 +15,7 @@ import type {
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
 import { rowPassesFilters } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
@@ -466,7 +467,7 @@ export class DataFrame<T extends Row = Row> {
           const col = cols[0];
           if (col) {
             const val = row[col];
-            valueSet.add(val === null ? "__null__" : typeof val === "bigint" ? val.toString() : String(val));
+            valueSet.add(val === null || val === undefined ? NULL_SENTINEL : typeof val === "bigint" ? val.toString() : String(val));
           }
         }
         resolved.push({ column: deferred.column, valueSet });

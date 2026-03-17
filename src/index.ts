@@ -1,6 +1,7 @@
 import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendOptions, AppendResult, DropResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";
@@ -207,7 +208,7 @@ class RemoteExecutor implements QueryExecutor {
       const partCol = options.partitionBy;
       const groups = new Map<string, Record<string, unknown>[]>();
       for (const row of rows) {
-        const key = row[partCol] === null || row[partCol] === undefined ? "__null__" : String(row[partCol]);
+        const key = row[partCol] === null || row[partCol] === undefined ? NULL_SENTINEL : String(row[partCol]);
         let group = groups.get(key);
         if (!group) { group = []; groups.set(key, group); }
         group.push(row);
