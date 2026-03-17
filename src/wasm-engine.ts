@@ -451,35 +451,27 @@ export class WasmEngine {
       }
 
       case "utf8": {
-        // Scan length-prefixed strings to build offset/length arrays
+        // Single-pass: build offsets/lengths and copy string data simultaneously
         const offsets = new Uint32Array(totalRows);
         const lengths = new Uint32Array(totalRows);
-        let dataLen = 0;
-        let pos = 0;
+        const strData = new Uint8Array(flat.byteLength); // upper bound; trimmed at WASM copy
         const view = new DataView(flat.buffer, flat.byteOffset, flat.byteLength);
+        let pos = 0;
+        let dOff = 0;
         let ri = 0;
         while (pos + 4 <= flat.byteLength && ri < totalRows) {
           const strLen = view.getUint32(pos, true);
           pos += 4;
-          offsets[ri] = dataLen;
+          offsets[ri] = dOff;
           lengths[ri] = strLen;
-          dataLen += strLen;
+          if (strLen > 0 && pos + strLen <= flat.byteLength) {
+            strData.set(flat.subarray(pos, pos + strLen), dOff);
+          }
+          dOff += strLen;
           pos += strLen;
           ri++;
         }
-
-        // Copy string data (without length prefixes) to WASM
-        const strData = new Uint8Array(dataLen);
-        pos = 0;
-        let dOff = 0;
-        const view2 = new DataView(flat.buffer, flat.byteOffset, flat.byteLength);
-        for (let i = 0; i < ri; i++) {
-          const strLen = view2.getUint32(pos, true);
-          pos += 4;
-          strData.set(flat.subarray(pos, pos + strLen), dOff);
-          dOff += strLen;
-          pos += strLen;
-        }
+        const dataLen = dOff;
 
         const offsetsPtr = this.exports.alloc(offsets.byteLength);
         if (!offsetsPtr) return false;
