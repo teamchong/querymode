@@ -1,5 +1,5 @@
 import type { Row } from "./types.js";
-import { groupKey, NULL_SENTINEL } from "./types.js";
+import { groupKey, groupKeyFrom, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
 import { identityIndices } from "./operators.js";
@@ -182,12 +182,7 @@ export function computePartialAggColumnar(
   const groupArrays = groupCols.map(c => batch.columns.get(c) ?? null);
 
   for (const idx of indices) {
-    let key = "";
-    for (let g = 0; g < groupCols.length; g++) {
-      if (g > 0) key += "\x00";
-      const v = groupArrays[g] ? groupArrays[g]![idx] : null;
-      key += v === null || v === undefined ? NULL_SENTINEL : String(v);
-    }
+    const key = groupKeyFrom(groupCols.length, (g) => groupArrays[g] ? groupArrays[g]![idx] : null);
     let states = groups.get(key);
     if (!states) { states = initStates(aggregates); groups.set(key, states); }
     feedAggStates(states, aggregates, (_, i) => aggArrays[i] ? aggArrays[i]![idx] : undefined);
@@ -339,12 +334,7 @@ export function computePartialAggQMCB(
   const groupColRefs = groupCols.map(c => colMap.get(c));
 
   for (let r = 0; r < batch.rowCount; r++) {
-    let key = "";
-    for (let g = 0; g < groupCols.length; g++) {
-      if (g > 0) key += "\x00";
-      const v = groupColRefs[g] ? readColumnValue(groupColRefs[g]!, r) : null;
-      key += v === null || v === undefined ? NULL_SENTINEL : String(v);
-    }
+    const key = groupKeyFrom(groupCols.length, (g) => groupColRefs[g] ? readColumnValue(groupColRefs[g]!, r) : null);
     let states = groups.get(key);
     if (!states) { states = initStates(aggregates); groups.set(key, states); }
     feedAggStates(states, aggregates, (col) => {

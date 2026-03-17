@@ -3,10 +3,15 @@ export const NULL_SENTINEL = "\x01NULL\x01";
 
 /** Build a GROUP BY key string from row values. Shared by partial-agg, executor, MaterializedExecutor, operators. */
 export function groupKey(row: Row, cols: string[]): string {
+  return groupKeyFrom(cols.length, (g) => row[cols[g]]);
+}
+
+/** Build a GROUP BY key from a value getter. Shared by columnar and QMCB aggregation paths. */
+export function groupKeyFrom(count: number, getValue: (g: number) => unknown): string {
   let key = "";
-  for (let g = 0; g < cols.length; g++) {
+  for (let g = 0; g < count; g++) {
     if (g > 0) key += "\0";
-    const v = row[cols[g]];
+    const v = getValue(g);
     key += v === null || v === undefined ? NULL_SENTINEL : String(v);
   }
   return key;
