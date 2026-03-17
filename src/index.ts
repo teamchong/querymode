@@ -41,6 +41,15 @@ export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js"
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
 export type { MaterializationCacheOptions } from "./lazy.js";
+export {
+  wasmResultToQMCB, encodeColumnarBatch, decodeColumnarBatch,
+  columnarBatchToRows, columnarKWayMerge, concatColumnarBatches,
+  sliceColumnarBatch, concatQMCBBatches, readColumnValue,
+  DTYPE_F64, DTYPE_I64, DTYPE_UTF8, DTYPE_BOOL, DTYPE_F32VEC,
+  DTYPE_NULL, DTYPE_I32, DTYPE_F32,
+} from "./columnar.js";
+export type { ColumnarColumn, ColumnarBatch } from "./columnar.js";
+export { kWayMerge, mergeQueryResults } from "./merge.js";
 export type { QueryExecutor, QueryDescriptor, ProgressInfo, CollectOptions, PipeStage } from "./client.js";
 export type {
   Env,
