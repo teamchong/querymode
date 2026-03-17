@@ -1,0 +1,75 @@
+---
+title: Error Handling
+description: Structured errors with codes, causes, and actionable messages.
+---
+
+All errors thrown by QueryMode are `QueryModeError` instances with a structured `code` field. Low-level errors (ENOENT, parse failures, OOM) are wrapped automatically with context.
+
+## Error codes
+
+| Code | When | Example message |
+|------|------|----------------|
+| `TABLE_NOT_FOUND` | File doesn't exist, R2 key missing | "Table not found: events.lance" |
+| `COLUMN_NOT_FOUND` | Column name not in schema | "Column not found: foo" |
+| `INVALID_FORMAT` | File can't be parsed as any supported format | "Invalid table format: data.xyz" |
+| `SCHEMA_MISMATCH` | Column exists but type doesn't match operation | "Column not found in events: age" |
+| `INVALID_FILTER` | Bad filter op or value type | "Invalid filter: unknown op 'regex'" |
+| `INVALID_AGGREGATE` | Bad aggregate function or missing column | "Invalid aggregate: sum requires numeric column" |
+| `MEMORY_EXCEEDED` | Operator exceeds memory budget | "Memory budget exceeded querying events" |
+| `NETWORK_TIMEOUT` | R2 or RPC call timed out | "Network timeout on events: R2 read timed out" |
+| `QUERY_TIMEOUT` | Total query time exceeded | "Query timeout on events" |
+| `QUERY_FAILED` | Catch-all for unclassified errors | "Query failed on events: ..." |
+
+## Catching errors
+
+```typescript
+import { QueryModeError } from "querymode"
+
+try {
+  await qm.table("missing.lance").collect()
+} catch (err) {
+  if (err instanceof QueryModeError) {
+    switch (err.code) {
+      case "TABLE_NOT_FOUND":
+        console.log("Table doesn't exist:", err.message)
+        break
+      case "MEMORY_EXCEEDED":
+        console.log("Try adding filters or reducing projections")
+        break
+      default:
+        console.log(`${err.code}: ${err.message}`)
+    }
+    // Original error is preserved
+    if (err.cause) console.log("Caused by:", err.cause)
+  }
+}
+```
+
+## Error wrapping
+
+`QueryModeError.from()` wraps any error with context:
+
+```typescript
+try {
+  await riskyOperation()
+} catch (err) {
+  throw QueryModeError.from(err, { table: "events", operation: "scan" })
+  // Automatically classifies: ENOENT → TABLE_NOT_FOUND,
+  // "footer" in message → INVALID_FORMAT, "OOM" → MEMORY_EXCEEDED, etc.
+}
+```
+
+Already-wrapped `QueryModeError` instances pass through unchanged.
+
+## SQL parse errors
+
+SQL syntax errors throw standard `Error` (not `QueryModeError`) with the parse position:
+
+```typescript
+try {
+  await qm.sql("SELECT FROM").collect()
+} catch (err) {
+  // "Expected column or expression at position 7"
+  console.log(err.message)
+}
+```

@@ -420,85 +420,8 @@ export function concatQMCBBatches(batches: ArrayBuffer[]): ArrayBuffer | null {
   const decoded = batches.map(b => decodeColumnarBatch(b)).filter((b): b is ColumnarBatch => b !== null);
   if (decoded.length === 0) return null;
 
-  const totalRows = decoded.reduce((s, b) => s + b.rowCount, 0);
-  const numCols = decoded[0].columns.length;
-
-  const columns: ColumnarColumn[] = [];
-
-  for (let ci = 0; ci < numCols; ci++) {
-    const dtype = decoded[0].columns[ci].dtype;
-    const name = decoded[0].columns[ci].name;
-    const bpe = bytesPerElement(dtype);
-
-    if (bpe > 0) {
-      // Fixed-width numeric: memcpy concat
-      const buf = new ArrayBuffer(totalRows * bpe);
-      const out = new Uint8Array(buf);
-      let offset = 0;
-      for (const batch of decoded) {
-        const src = new Uint8Array(batch.columns[ci].data);
-        out.set(src, offset);
-        offset += src.length;
-      }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows });
-    } else if (dtype === DTYPE_BOOL) {
-      const buf = new ArrayBuffer(Math.ceil(totalRows / 8));
-      const out = new Uint8Array(buf);
-      let row = 0;
-      for (const batch of decoded) {
-        const src = new Uint8Array(batch.columns[ci].data);
-        for (let r = 0; r < batch.rowCount; r++) {
-          if (src[r >> 3] & (1 << (r & 7))) out[row >> 3] |= 1 << (row & 7);
-          row++;
-        }
-      }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows });
-    } else if (dtype === DTYPE_UTF8) {
-      let totalStrLen = 0;
-      for (const batch of decoded) {
-        const col = batch.columns[ci];
-        totalStrLen += col.offsets ? col.offsets[batch.rowCount] : col.data.byteLength;
-      }
-
-      const offsets = new Uint32Array(totalRows + 1);
-      const strBuf = new Uint8Array(totalStrLen);
-      let strOffset = 0;
-      let row = 0;
-
-      for (const batch of decoded) {
-        const col = batch.columns[ci];
-        const srcOffsets = col.offsets!;
-        const srcData = new Uint8Array(col.data);
-        for (let r = 0; r < batch.rowCount; r++) {
-          offsets[row] = strOffset;
-          const start = srcOffsets[r];
-          const end = srcOffsets[r + 1];
-          if (end > start) {
-            strBuf.set(srcData.subarray(start, end), strOffset);
-            strOffset += end - start;
-          }
-          row++;
-        }
-      }
-      offsets[totalRows] = strOffset;
-      columns.push({ name, dtype, data: (strBuf.buffer as ArrayBuffer).slice(0, strOffset), rowCount: totalRows, offsets });
-    } else if (dtype === DTYPE_F32VEC) {
-      const dim = decoded[0].columns[ci].vectorDim || 0;
-      const buf = new ArrayBuffer(totalRows * dim * 4);
-      const out = new Uint8Array(buf);
-      let offset = 0;
-      for (const batch of decoded) {
-        const src = new Uint8Array(batch.columns[ci].data);
-        out.set(src, offset);
-        offset += src.length;
-      }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows, vectorDim: dim });
-    } else {
-      columns.push({ name, dtype, data: new ArrayBuffer(0), rowCount: totalRows });
-    }
-  }
-
-  return encodeColumnarBatch({ columns, rowCount: totalRows });
+  const merged = concatColumnarBatches(decoded);
+  return merged ? encodeColumnarBatch(merged) : null;
 }
 
 // ============================================================================

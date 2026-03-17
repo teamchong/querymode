@@ -29,6 +29,7 @@ export default defineConfig({
         { label: "Columnar Format", slug: "columnar-format" },
         { label: "Lazy Evaluation", slug: "lazy-evaluation" },
         { label: "Performance", slug: "performance" },
+        { label: "Error Handling", slug: "error-handling" },
         { label: "Write Path", slug: "write-path" },
         { label: "Deployment", slug: "deployment" },
       ],

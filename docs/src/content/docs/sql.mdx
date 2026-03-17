@@ -123,6 +123,88 @@ SELECT * FROM images WHERE embedding NEAR [0.1, 0.2, 0.3] TOPK 10
 
 The `NEAR` operator performs vector similarity search on the specified column. `TOPK` limits results to the K nearest neighbors. Uses IVF-PQ index when available, falls back to flat SIMD scan.
 
+## NULL semantics
+
+QueryMode follows SQL three-valued logic. Expressions involving NULL propagate NULL rather than returning true or false:
+
+```sql
+-- NULL comparisons → NULL (row excluded from results)
+SELECT * FROM users WHERE age = NULL          -- no rows (use IS NULL instead)
+SELECT * FROM users WHERE NULL > 5            -- no rows
+
+-- AND with NULL
+SELECT * FROM t WHERE NULL AND true           -- NULL (excluded)
+SELECT * FROM t WHERE NULL AND false          -- false (excluded)
+
+-- OR with NULL
+SELECT * FROM t WHERE NULL OR true            -- true (included)
+SELECT * FROM t WHERE NULL OR false           -- NULL (excluded)
+
+-- NOT IN with NULL elements
+SELECT * FROM t WHERE id NOT IN (1, 2, NULL)  -- NULL for all rows (per SQL standard)
+
+-- BETWEEN with NULL
+SELECT * FROM t WHERE NULL BETWEEN 1 AND 10   -- NULL (excluded)
+
+-- IS NULL / IS NOT NULL (never return NULL)
+SELECT * FROM t WHERE email IS NULL           -- works correctly
+```
+
+Aggregates also follow SQL NULL rules:
+
+| Expression | Result |
+|-----------|--------|
+| `SUM(col)` where all values are NULL | NULL |
+| `COUNT(col)` where all values are NULL | 0 |
+| `COUNT(*)` | counts all rows (ignores NULLs) |
+| `MIN(col)` / `MAX(col)` on empty group | NULL |
+| `AVG(col)` where all values are NULL | NULL |
+
+## Type coercion
+
+Comparisons between different types follow these rules:
+
+| Left type | Right type | Behavior |
+|-----------|------------|----------|
+| number | number | Direct comparison |
+| bigint | number | number promoted to bigint (when integer) |
+| string | number | Numeric comparison if string is numeric, else string comparison |
+| any | NULL | Result is NULL |
+
+`CAST` converts between types explicitly:
+
+```sql
+SELECT CAST(age AS text) AS age_str           -- number → string
+SELECT CAST('42' AS int) AS age               -- string → number
+SELECT CAST(id AS bigint) AS big_id           -- number → bigint
+```
+
+## Operator precedence
+
+From highest to lowest:
+
+1. Parentheses `()`
+2. Unary `NOT`, `-`
+3. Multiplication `*`, Division `/`, Modulo `%`
+4. Addition `+`, Subtraction `-`
+5. Comparison `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`
+6. `IS NULL`, `IS NOT NULL`, `BETWEEN`, `IN`, `LIKE`
+7. `AND`
+8. `OR`
+
+```sql
+-- AND binds tighter than OR
+WHERE a = 1 OR b = 2 AND c = 3
+-- is parsed as: WHERE a = 1 OR (b = 2 AND c = 3)
+```
+
+## Comments
+
+```sql
+-- Line comment (ignored)
+SELECT * FROM users /* block comment */ WHERE age > 25
+```
+
 ## How it works
 
 ```
