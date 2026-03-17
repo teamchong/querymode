@@ -134,8 +134,8 @@ export class SqlWrappingExecutor implements QueryExecutor {
           let cmp: number;
           if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
           else if (typeof av === "bigint" && typeof bv === "bigint") cmp = av < bv ? -1 : av > bv ? 1 : 0;
-          else if (typeof av === "bigint" && typeof bv === "number") cmp = av < BigInt(bv) ? -1 : av > BigInt(bv) ? 1 : 0;
-          else if (typeof av === "number" && typeof bv === "bigint") cmp = BigInt(av) < bv ? -1 : BigInt(av) > bv ? 1 : 0;
+          else if (typeof av === "bigint" && typeof bv === "number") { const bb = BigInt(Math.trunc(bv)); cmp = av < bb ? -1 : av > bb ? 1 : 0; }
+          else if (typeof av === "number" && typeof bv === "bigint") { const ab = BigInt(Math.trunc(av)); cmp = ab < bv ? -1 : ab > bv ? 1 : 0; }
           else cmp = String(av).localeCompare(String(bv));
           if (cmp !== 0) return direction === "desc" ? -cmp : cmp;
         }
