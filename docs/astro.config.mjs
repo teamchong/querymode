@@ -30,6 +30,7 @@ export default defineConfig({
         { label: "Lazy Evaluation", slug: "lazy-evaluation" },
         { label: "Performance", slug: "performance" },
         { label: "Error Handling", slug: "error-handling" },
+        { label: "Vector Search", slug: "vector-search" },
         { label: "Write Path", slug: "write-path" },
         { label: "Deployment", slug: "deployment" },
       ],
