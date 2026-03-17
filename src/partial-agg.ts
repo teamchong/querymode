@@ -173,7 +173,7 @@ export function computePartialAggColumnar(
 
   if (!query.groupBy || query.groupBy.length === 0) {
     const states = initStates(aggregates);
-    for (const idx of indices) feedAggStates(states, aggregates, (_, i) => aggArrays[i] ? aggArrays[i]![idx] : undefined);
+    for (let ii = 0; ii < indices.length; ii++) { const idx = indices[ii]; feedAggStates(states, aggregates, (_, i) => aggArrays[i] ? aggArrays[i]![idx] : undefined); }
     return { states };
   }
 
@@ -181,7 +181,8 @@ export function computePartialAggColumnar(
   const groupCols = query.groupBy;
   const groupArrays = groupCols.map(c => batch.columns.get(c) ?? null);
 
-  for (const idx of indices) {
+  for (let ii = 0; ii < indices.length; ii++) {
+    const idx = indices[ii];
     const key = groupKeyFrom(groupCols.length, (g) => groupArrays[g] ? groupArrays[g]![idx] : null);
     let states = groups.get(key);
     if (!states) { states = initStates(aggregates); groups.set(key, states); }

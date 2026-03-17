@@ -68,14 +68,15 @@ export interface Operator {
 
 /** Materialize a ColumnarBatch into Row[] — used at pipeline boundaries. */
 export function materializeRows(batch: ColumnarBatch): Row[] {
-  const rows: Row[] = [];
   const indices = batch.selection ?? identityIndices(batch.rowCount);
-  for (const idx of indices) {
+  const rows: Row[] = new Array(indices.length);
+  for (let ii = 0; ii < indices.length; ii++) {
+    const idx = indices[ii];
     const row: Row = {};
     for (const [name, vals] of batch.columns) {
       row[name] = vals[idx] as Row[string] ?? null;
     }
-    rows.push(row);
+    rows[ii] = row;
   }
   return rows;
 }
@@ -1085,7 +1086,8 @@ export class DistinctOperator implements Operator {
       const kept: number[] = [];
       const cols = this.columns.length > 0 ? this.columns : Array.from(batch.columns.keys());
 
-      for (const idx of indices) {
+      for (let ii = 0; ii < indices.length; ii++) {
+        const idx = indices[ii];
         let key = "";
         for (let g = 0; g < cols.length; g++) {
           if (g > 0) key += "\x00";
@@ -1663,7 +1665,8 @@ export class TopKOperator implements Operator {
         const indices = batch.selection ?? identityIndices(batch.rowCount);
         const colEntries = Array.from(batch.columns.entries());
         const sortVals = batch.columns.get(col);
-        for (const idx of indices) {
+        for (let ii = 0; ii < indices.length; ii++) {
+          const idx = indices[ii];
           // Fast reject: if heap is full and this value can't beat the root, skip materialization
           if (sortVals && heap.length >= k) {
             const nv = sortVals[idx] as Row[string];

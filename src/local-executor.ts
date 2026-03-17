@@ -13,6 +13,8 @@ import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaTo
 import { assembleRows, canSkipPage } from "./decode.js";
 import { coalesceRanges, autoCoalesceGap } from "./coalesce.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+
+const textEncoder = new TextEncoder();
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
@@ -128,7 +130,7 @@ export class LocalExecutor implements QueryExecutor {
         for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as bigint;
         columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
       } else if (typeof sample === "string") {
-        const enc = new TextEncoder();
+        const enc = textEncoder;
         const parts: Uint8Array[] = [];
         let totalLen = 0;
         for (const row of rows) {

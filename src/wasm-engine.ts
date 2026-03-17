@@ -154,7 +154,7 @@ export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<W
       js_log: (ptr: number, len: number) => {
         try {
           if (mem) {
-            const msg = new TextDecoder().decode(new Uint8Array(mem.buffer, ptr, len));
+            const msg = textDecoder.decode(new Uint8Array(mem.buffer, ptr, len));
             console.log(`[WASM] ${msg}`);
           }
         } catch { /* ignore */ }
@@ -556,13 +556,12 @@ export class WasmEngine {
         return true;
       }
       case "utf8": {
-        const encoder = new TextEncoder();
         // Two passes: measure total string bytes, then pack
         let totalBytes = 0;
         const encoded: Uint8Array[] = [];
         for (let i = 0; i < rowCount; i++) {
           const s = values[i] != null ? String(values[i]) : "";
-          const bytes = encoder.encode(s);
+          const bytes = textEncoder.encode(s);
           encoded.push(bytes);
           totalBytes += bytes.byteLength;
         }
@@ -1101,7 +1100,8 @@ function parseWasmResult(memoryBuffer: ArrayBuffer, ptr: number, size: number): 
     columns.push({ name, type: buf[pos++] });
   }
 
-  const rows: Row[] = Array.from({ length: numRows }, () => ({}));
+  const rows: Row[] = new Array(numRows);
+  for (let i = 0; i < numRows; i++) rows[i] = {};
   let dp = dataStart;
   const end = size;
 

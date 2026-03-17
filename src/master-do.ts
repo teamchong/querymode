@@ -9,6 +9,8 @@ import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { resolveBucket } from "./bucket.js";
 import wasmModule from "./wasm-module.js";
 
+const textEncoder = new TextEncoder();
+
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
 export class MasterDO extends DurableObject<Env> {
   private broadcastFailures = new Map<string, number>(); // region → consecutive failure count
@@ -168,7 +170,7 @@ export class MasterDO extends DurableObject<Env> {
         columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
       } else if (typeof sampleValue === "string") {
         // Length-prefixed encoding
-        const enc = new TextEncoder();
+        const enc = textEncoder;
         const parts: Uint8Array[] = [];
         let totalLen = 0;
         for (const row of rows) {
@@ -299,7 +301,7 @@ export class MasterDO extends DurableObject<Env> {
     // Simple protobuf-like format matching parseManifest expectations
     // Version field (tag 1, varint): version number
     // Fragment fields (tag 2, length-delimited): each fragment
-    const enc = new TextEncoder();
+    const enc = textEncoder;
     const parts: Uint8Array[] = [];
 
     // Write version varint (field 1)
