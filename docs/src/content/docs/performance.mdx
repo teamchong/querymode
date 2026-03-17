@@ -1,0 +1,144 @@
+---
+title: Performance
+description: How to get the most out of QueryMode — pruning, budgets, operator selection.
+---
+
+## Query execution stages
+
+Every query flows through these stages. Each is an optimization opportunity:
+
+```
+1. Partition pruning  → skip entire files (O(1) catalog lookup)
+2. Min/max pruning    → skip files by column stats
+3. Page-level skip    → skip pages within a file by page stats
+4. WASM SIMD scan     → decode + filter in one pass (no Row[] intermediate)
+5. Columnar merge     → k-way merge on typed arrays (no Row[] until exit)
+6. Row materialization → only at final response boundary
+```
+
+The most expensive step is always I/O (R2 reads). Everything else optimizes around reducing I/O.
+
+## Partition pruning
+
+If your data is partitioned (e.g., by `region` or `date`), the partition catalog provides O(1) fragment lookup:
+
+```typescript
+// Hive-style partition — each region is a separate fragment
+await qm.table("events").append(rows, { partitionBy: "region" })
+
+// This query only scans the "us" fragment, skips all others
+await qm.table("events").filter("region", "eq", "us").collect()
+```
+
+Partition pruning is the single biggest performance lever. On a 1TB dataset with 100 partitions, an eq filter on the partition key reads ~10GB instead of 1TB.
+
+Supported filter ops for partition pruning: `eq`, `in`, `neq`, `not_in`. Range filters (`gt`, `between`) fall back to min/max pruning.
+
+## Memory budgets
+
+Operators that accumulate state accept a memory budget (bytes). When exceeded, they spill to R2.
+
+| Operator | Default budget | What it accumulates |
+|----------|---------------|-------------------|
+| `ExternalSortOperator` | 32 MB | All rows until sorted |
+| `HashJoinOperator` | 32 MB | Build side hash table |
+| `AggregateOperator` | unbounded | Group states (usually small) |
+| `DistinctOperator` | unbounded | Seen-values hash set |
+
+**Sizing guidance:**
+- **32 MB** works for most queries up to ~5M rows of numeric data
+- **128 MB** for string-heavy datasets or large joins
+- Cloudflare DO limit is 128 MB total — leave headroom for page buffers and WASM memory
+- Local mode (Node/Bun) has no practical limit — set budget to available RAM
+
+```typescript
+// Explicit budget — 64 MB for sort, R2 spill when exceeded
+const spill = new R2SpillBackend(env.DATA_BUCKET, "__spill/q-123")
+const sorted = new ExternalSortOperator(source, "amount", true, 0, 64 * 1024 * 1024, spill)
+```
+
+## Choosing operators
+
+### Sort: TopK vs ExternalSort vs InMemorySort
+
+| Scenario | Best operator | Why |
+|----------|--------------|-----|
+| Top 10 results | `TopKOperator` | Heap-based, O(n log k) — never sorts the full dataset |
+| Full sort, < 1M rows | `InMemorySortOperator` | No spill overhead |
+| Full sort, > 1M rows | `ExternalSortOperator` | Spills to R2 when budget exceeded |
+
+The DataFrame API picks automatically: `.sort().limit(k)` uses TopK when k is small relative to total rows.
+
+### Join: small vs large build side
+
+| Scenario | Strategy |
+|----------|----------|
+| Lookup join (small right side) | `HashJoinOperator` — build side fits in memory |
+| Large-large join | `HashJoinOperator` with R2 spill — Grace hash partitioning |
+| Semi-join filter | `SubqueryInOperator` — collects distinct values, pushes as IN filter |
+
+### Aggregation: with vs without GROUP BY
+
+| Scenario | What happens |
+|----------|-------------|
+| No GROUP BY | Single accumulator per aggregate — O(1) memory |
+| GROUP BY with few groups (< 10K) | Hash map of accumulators — fast |
+| GROUP BY with many groups (> 100K) | Memory grows with cardinality — consider pre-filtering |
+
+## Page-level skip
+
+Each Lance page stores min/max stats per column. The scan layer checks these before reading page data:
+
+```
+Page stats: min=100, max=500
+Filter: amount > 1000
+→ Skip entire page (no R2 read)
+```
+
+This is automatic — no configuration needed. Works for `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between`, `not_between`.
+
+String columns also have min/max stats (lexicographic). LIKE filters don't benefit from page skip.
+
+## WASM vs JS execution
+
+The scan layer pushes filter+decode to WASM SIMD when possible:
+
+| Column type | WASM SIMD | Notes |
+|-------------|-----------|-------|
+| int32, int64, float32, float64 | Yes | 4-wide or 2-wide SIMD |
+| bool | Yes | Packed bit operations |
+| utf8 (LIKE) | Yes | `filterStringLike` export |
+| utf8 (eq/in) | JS fallback | String comparison not SIMD-friendly |
+| fixed_size_list (vectors) | Yes | Cosine/L2/dot in WASM |
+
+WASM execution is ~3x faster than JS for numeric filters at scale. The JS fallback is correct but slower.
+
+## Columnar pipeline
+
+The columnar pipeline avoids `Row[]` materialization through the entire merge layer:
+
+```
+FragmentDO → QMCB ArrayBuffer (structured clone over RPC)
+QueryDO → columnarKWayMerge or concatColumnarBatches (typed arrays)
+Worker exit → columnarBatchToRows (once, at response boundary)
+```
+
+This eliminates the biggest cost in distributed queries: serializing millions of rows to JSON between DOs. QMCB transfers are ~10x faster than JSON for numeric data.
+
+See [Columnar Format](/querymode/columnar-format/) for the wire format details.
+
+## Benchmarks
+
+CI runs head-to-head benchmarks against DuckDB on every push. Typical results at 1M-5M rows:
+
+| Operation | QueryMode (Miniflare) | DuckDB (native) |
+|-----------|----------------------|-----------------|
+| Filter (numeric) | ~200ms | ~100ms |
+| GROUP BY + sum | ~300ms | ~150ms |
+| Hash join (1M × 500K) | ~1300ms | ~400ms |
+| External sort (5M) | ~25s | ~8s |
+| Window (row_number, 5M) | ~800ms | ~200ms |
+
+QueryMode runs in WASM on a single core. DuckDB runs native with SIMD. The ~2-3x gap is the WASM overhead — acceptable for edge deployment where the alternative is no local compute at all.
+
+For spill operations (sort, join at > budget), QueryMode uses R2 (network I/O) while DuckDB uses local disk. The gap widens to ~3-5x. This is the price of serverless — offset by the fact that you're running at the edge, not in a central data center.
