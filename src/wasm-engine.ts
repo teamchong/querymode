@@ -1067,7 +1067,7 @@ function queryToSql(query: QueryDescriptor): string {
 
   if (query.groupBy?.length) parts.push(`GROUP BY ${query.groupBy.map(quote).join(", ")}`);
   if (query.sortColumn) parts.push(`ORDER BY ${quote(query.sortColumn)} ${query.sortDirection?.toUpperCase() ?? "ASC"}`);
-  if (query.limit) parts.push(`LIMIT ${query.limit}`);
+  if (query.limit !== undefined) parts.push(`LIMIT ${query.limit}`);
   if (query.offset) parts.push(`OFFSET ${query.offset}`);
 
   return parts.join(" ");
