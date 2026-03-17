@@ -27,6 +27,7 @@ export default defineConfig({
         { label: "Formats", slug: "formats" },
         { label: "Architecture", slug: "architecture" },
         { label: "Columnar Format", slug: "columnar-format" },
+        { label: "Lazy Evaluation", slug: "lazy-evaluation" },
         { label: "Performance", slug: "performance" },
         { label: "Write Path", slug: "write-path" },
         { label: "Deployment", slug: "deployment" },

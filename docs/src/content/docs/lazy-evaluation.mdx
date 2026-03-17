@@ -1,0 +1,109 @@
+---
+title: Lazy Evaluation
+description: Execution model — when code runs, eager vs lazy, streaming iteration.
+---
+
+## Execution model
+
+DataFrame methods like `.filter()`, `.sort()`, `.limit()` do not execute anything. They build a `QueryDescriptor` — a plain object describing what to do. Execution happens when you call a **terminal method**.
+
+```typescript
+// Nothing executes here — just builds a descriptor
+const query = qm.table("events")
+  .filter("status", "eq", "active")
+  .sort("created_at", "desc")
+  .limit(100)
+
+// Execution happens HERE
+const result = await query.collect()
+```
+
+## Terminal methods
+
+| Method | What it does | When to use |
+|--------|-------------|-------------|
+| `.collect()` | Execute and return all matching rows | Default — most queries |
+| `.exec()` | Alias for `.collect()` | Same thing |
+| `.first()` | Return first matching row or null | Existence check or single lookup |
+| `.count()` | Return row count without materializing | Counting without data transfer |
+| `.exists()` | Return true if any row matches | Cheapest existence check |
+| `.lazy()` | Return a `LazyResultHandle` for paging | Large results, on-demand pages |
+| `.cursor()` | Return `AsyncIterable<Row[]>` for streaming | Process rows in batches without loading all |
+| `.explain()` | Return query plan without executing | Debugging, inspect pruning |
+
+## Lazy result handle
+
+`.lazy()` returns a `LazyResultHandle` that executes pages on demand:
+
+```typescript
+const handle = await qm.table("events")
+  .filter("status", "eq", "active")
+  .sort("created_at", "desc")
+  .lazy()
+
+// Fetch page 0 (rows 0-99)
+const page0 = await handle.page(0, 100)
+
+// Fetch page 3 (rows 300-399)
+const page3 = await handle.page(300, 100)
+
+// Fetch a single row
+const row42 = await handle.row(42)
+
+// Full materialization if needed
+const all = await handle.collect()
+```
+
+Each `.page()` call is a separate query execution with `offset` and `limit`. No state is held between pages — the handle re-executes the query each time. This means:
+- Pages can be fetched in any order
+- No memory accumulates between pages
+- Sorted results are consistent if data doesn't change
+
+## Streaming iteration
+
+`.stream()` on a lazy handle yields batches until exhausted:
+
+```typescript
+const handle = await qm.table("events").lazy()
+
+for await (const batch of handle.stream(500)) {
+  // batch is Row[] with up to 500 rows
+  process(batch)
+  // Break early to stop fetching
+  if (done) break
+}
+```
+
+## Cursor
+
+`.cursor()` is similar but works directly on the DataFrame without an intermediate handle:
+
+```typescript
+for await (const batch of qm.table("events").cursor({ batchSize: 1000 })) {
+  await processBatch(batch)
+}
+```
+
+Requires an executor with cursor support (e.g., edge mode). Throws if not available.
+
+## Keyset pagination
+
+For large sorted datasets, offset-based pagination gets slower as offset grows (the engine must skip N rows). Keyset pagination uses the last seen value to start the next page:
+
+```typescript
+// First page
+const page1 = await qm.table("events")
+  .sort("id", "asc")
+  .limit(50)
+  .collect()
+
+// Next page — starts after the last id
+const lastId = page1.rows[page1.rows.length - 1].id
+const page2 = await qm.table("events")
+  .sort("id", "asc")
+  .after(lastId)
+  .limit(50)
+  .collect()
+```
+
+`.after(value)` translates to a `gt` filter on the sort column, which benefits from page-level skip. Every page is equally fast regardless of depth.
