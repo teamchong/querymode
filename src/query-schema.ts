@@ -14,7 +14,7 @@ const filterOpSchema = z.object({
     z.number(),
     z.string(),
     z.array(z.union([z.number(), z.string()])),
-  ]),
+  ]).optional(), // optional for unary ops (is_null, is_not_null)
 });
 
 const aggregateOpSchema = z.object({
@@ -42,11 +42,12 @@ export const queryDescriptorSchema = z.object({
   sortColumn: z.string().optional(),
   sortDirection: z.enum(["asc", "desc"]).optional(),
   orderBy: z.object({ column: z.string(), desc: z.boolean().optional() }).optional(), // alias for sortColumn/sortDirection
-  limit: z.number().int().positive().optional(),
+  limit: z.number().int().nonnegative().optional(),
   offset: z.number().int().nonnegative().optional(),
   vectorSearch: vectorSearchSchema.optional(),
   aggregates: z.array(aggregateOpSchema).optional(),
   filterGroups: z.array(z.array(filterOpSchema)).optional(),
+  distinct: z.array(z.string()).optional(),
   groupBy: z.array(z.string()).optional(),
   cacheTTL: z.number().int().positive().optional(),
 });
@@ -59,7 +60,7 @@ export type ValidatedQuery = z.infer<typeof queryDescriptorSchema>;
  */
 export function parseAndValidateQuery(body: unknown): {
   table: string;
-  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "between" | "not_between" | "like" | "not_like" | "is_null" | "is_not_null"; value: number | string | (number | string)[] }[];
+  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "between" | "not_between" | "like" | "not_like" | "is_null" | "is_not_null"; value?: number | string | (number | string)[] }[];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";
@@ -67,7 +68,8 @@ export function parseAndValidateQuery(body: unknown): {
   offset?: number;
   vectorSearch?: { column: string; queryVector: number[] | Float32Array; topK: number };
   aggregates?: { fn: "sum" | "avg" | "min" | "max" | "count" | "count_distinct" | "stddev" | "variance" | "median" | "percentile"; column: string; alias?: string; percentileTarget?: number }[];
-  filterGroups?: { column: string; op: string; value: number | string | (number | string)[] }[][];
+  filterGroups?: { column: string; op: string; value?: number | string | (number | string)[] }[][];
+  distinct?: string[];
   groupBy?: string[];
   cacheTTL?: number;
 } {
@@ -99,6 +101,7 @@ export function parseAndValidateQuery(body: unknown): {
     offset: data.offset,
     vectorSearch: data.vectorSearch,
     aggregates: data.aggregates,
+    distinct: data.distinct,
     groupBy: data.groupBy,
     filterGroups: data.filterGroups,
     cacheTTL: data.cacheTTL,

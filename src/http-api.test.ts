@@ -205,8 +205,9 @@ describe("parseAndValidateQuery", () => {
     })).toThrow();
   });
 
-  it("rejects zero limit", () => {
-    expect(() => parseAndValidateQuery({ table: "t", limit: 0 })).toThrow();
+  it("accepts zero limit (returns empty set)", () => {
+    const q = parseAndValidateQuery({ table: "t", limit: 0 });
+    expect(q.limit).toBe(0);
   });
 
   it("rejects float limit", () => {
@@ -299,5 +300,30 @@ describe("parseAndValidateQuery", () => {
       table: "t",
       aggregates: [{ fn: "sum", column: "" }],
     })).toThrow();
+  });
+
+  it("accepts is_null filter without value", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      filters: [{ column: "name", op: "is_null" }],
+    });
+    expect(q.filters[0].op).toBe("is_null");
+    expect(q.filters[0].value).toBeUndefined();
+  });
+
+  it("accepts is_not_null filter without value", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      filters: [{ column: "name", op: "is_not_null" }],
+    });
+    expect(q.filters[0].op).toBe("is_not_null");
+  });
+
+  it("accepts distinct columns", () => {
+    const q = parseAndValidateQuery({
+      table: "t",
+      distinct: ["region", "category"],
+    });
+    expect(q.distinct).toEqual(["region", "category"]);
   });
 });
