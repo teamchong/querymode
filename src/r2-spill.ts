@@ -30,6 +30,7 @@
  */
 
 import type { Row } from "./types.js";
+import { QueryModeError } from "./errors.js";
 import { withRetry, withTimeout } from "./coalesce.js";
 import {
   QMCB_MAGIC,
@@ -311,7 +312,7 @@ export function* decodeColumnarRun(buf: ArrayBuffer): Generator<Row> {
   const bytes = new Uint8Array(buf);
 
   const magic = view.getUint32(0, true);
-  if (magic !== QMCB_MAGIC) throw new Error("Invalid spill file: bad magic");
+  if (magic !== QMCB_MAGIC) throw new QueryModeError("INVALID_FORMAT", "Invalid spill file: bad magic");
 
   const rowCount = view.getUint32(4, true);
   const columnCount = view.getUint16(8, true);
@@ -484,7 +485,7 @@ export class R2SpillBackend implements SpillBackend {
     const obj = await withRetry(() =>
       withTimeout(this.bucket.get(spillId), R2_SPILL_TIMEOUT_MS),
     );
-    if (!obj) throw new Error(`Spill object not found: ${spillId}`);
+    if (!obj) throw new QueryModeError("QUERY_FAILED", `Spill object not found: ${spillId}`);
 
     const buf = await obj.arrayBuffer();
     this.bytesRead += buf.byteLength;

@@ -6,6 +6,7 @@
 import type { Row, DataType, PageInfo, FilterOp } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { wasmResultToQMCB } from "./columnar.js";
+import { QueryModeError } from "./errors.js";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -182,50 +183,50 @@ export class WasmEngine {
   /** Decompress ZSTD data using the Zig std.compress.zstd implementation. */
   decompressZstd(compressed: Uint8Array): Uint8Array {
     const inPtr = this.safeAlloc(compressed.length);
-    if (!inPtr) throw new Error("WASM OOM allocating zstd input");
+    if (!inPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating zstd input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
     const decompressedSize = this.exports.zstd_get_decompressed_size(inPtr, compressed.length);
     const capacity = decompressedSize || compressed.length * 4; // estimate if unknown
     const outPtr = this.safeAlloc(capacity);
-    if (!outPtr) throw new Error("WASM OOM allocating zstd output");
+    if (!outPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating zstd output");
 
     const written = this.exports.zstd_decompress(inPtr, compressed.length, outPtr, capacity);
-    if (written === 0 && compressed.length > 0) throw new Error("zstd decompression failed");
+    if (written === 0 && compressed.length > 0) throw new QueryModeError("INVALID_FORMAT", "zstd decompression failed");
     return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
   }
 
   /** Decompress GZIP data using the Zig std.compress.gzip implementation. Retries with larger buffer if needed. */
   decompressGzip(compressed: Uint8Array): Uint8Array {
     const inPtr = this.safeAlloc(compressed.length);
-    if (!inPtr) throw new Error("WASM OOM allocating gzip input");
+    if (!inPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating gzip input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
     // Try increasing capacities: 4x, 16x, 64x (handles high compression ratios)
     for (const multiplier of [4, 16, 64]) {
       const capacity = compressed.length * multiplier;
       const outPtr = this.safeAlloc(capacity);
-      if (!outPtr) throw new Error("WASM OOM allocating gzip output");
+      if (!outPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating gzip output");
 
       const written = this.exports.gzip_decompress(inPtr, compressed.length, outPtr, capacity);
       if (written > 0) return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
       // written === 0 && capacity may have been too small — retry with larger buffer
       if (written === 0 && compressed.length === 0) return new Uint8Array(0);
     }
-    throw new Error("gzip decompression failed (output exceeds 64x compressed size)");
+    throw new QueryModeError("INVALID_FORMAT", "gzip decompression failed (output exceeds 64x compressed size)");
   }
 
   /** Decompress LZ4 block data (Parquet hadoop codec). */
   decompressLz4(compressed: Uint8Array, uncompressedSize: number): Uint8Array {
     const inPtr = this.safeAlloc(compressed.length);
-    if (!inPtr) throw new Error("WASM OOM allocating lz4 input");
+    if (!inPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating lz4 input");
     new Uint8Array(this.exports.memory.buffer, inPtr, compressed.length).set(compressed);
 
     const outPtr = this.safeAlloc(uncompressedSize);
-    if (!outPtr) throw new Error("WASM OOM allocating lz4 output");
+    if (!outPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating lz4 output");
 
     const written = this.exports.lz4_block_decompress(inPtr, compressed.length, outPtr, uncompressedSize);
-    if (written === 0 && compressed.length > 0) throw new Error("lz4 decompression failed");
+    if (written === 0 && compressed.length > 0) throw new QueryModeError("INVALID_FORMAT", "lz4 decompression failed");
     return new Uint8Array(this.exports.memory.buffer, outPtr, written).slice();
   }
 
@@ -498,7 +499,7 @@ export class WasmEngine {
       }
 
       default:
-        throw new Error(`Unsupported dtype for WASM registration: ${dtype}`);
+        throw new QueryModeError("SCHEMA_MISMATCH", `Unsupported dtype for WASM registration: ${dtype}`);
     }
   }
 
@@ -662,7 +663,7 @@ export class WasmEngine {
     const MAX_SQL_LENGTH = 64 * 1024; // 64KB — WASM SQL input buffer is fixed-size
     const sqlBytes = textEncoder.encode(queryToSql(query));
     if (sqlBytes.length > MAX_SQL_LENGTH) {
-      throw new Error(`SQL query too large (${sqlBytes.length} bytes, max ${MAX_SQL_LENGTH})`);
+      throw new QueryModeError("QUERY_FAILED", `SQL query too large (${sqlBytes.length} bytes, max ${MAX_SQL_LENGTH})`);
     }
     const sqlBufPtr = this.exports.getSqlInputBuffer();
     new Uint8Array(this.exports.memory.buffer, sqlBufPtr, sqlBytes.length).set(sqlBytes);
@@ -820,18 +821,18 @@ export class WasmEngine {
     const capacity = totalBytes + columns.length * 256 + 4096; // metadata overhead
 
     if (!this.exports.fragmentBegin(capacity)) {
-      throw new Error("WASM fragmentBegin failed — OOM or init error");
+      throw new QueryModeError("MEMORY_EXCEEDED", "WASM fragmentBegin failed — OOM or init error");
     }
 
     for (const col of columns) {
       const { ptr: namePtr, len: nameLen } = this.writeString(col.name);
-      if (!namePtr) throw new Error(`WASM OOM writing column name "${col.name}"`);
+      if (!namePtr) throw new QueryModeError("MEMORY_EXCEEDED", `WASM OOM writing column name "${col.name}"`);
 
       // Write null bitmap to WASM if present
       let nullablePtr = 0;
       if (col.nullBitmap) {
         nullablePtr = this.safeAlloc(col.nullBitmap.byteLength);
-        if (!nullablePtr) throw new Error("WASM OOM writing null bitmap");
+        if (!nullablePtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM writing null bitmap");
         new Uint8Array(this.exports.memory.buffer, nullablePtr, col.nullBitmap.byteLength)
           .set(col.nullBitmap);
       }
@@ -841,7 +842,7 @@ export class WasmEngine {
         case "int64": {
           const i64 = new BigInt64Array(col.values);
           const dataPtr = this.safeAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           result = this.exports.fragmentAddInt64Column(namePtr, nameLen, dataPtr, i64.length, nullablePtr);
@@ -850,7 +851,7 @@ export class WasmEngine {
         case "int32": {
           const i32 = new Int32Array(col.values);
           const dataPtr = this.safeAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           result = this.exports.fragmentAddInt32Column(namePtr, nameLen, dataPtr, i32.length, nullablePtr);
@@ -859,7 +860,7 @@ export class WasmEngine {
         case "float64": {
           const f64 = new Float64Array(col.values);
           const dataPtr = this.safeAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           result = this.exports.fragmentAddFloat64Column(namePtr, nameLen, dataPtr, f64.length, nullablePtr);
@@ -868,7 +869,7 @@ export class WasmEngine {
         case "float32": {
           const f32 = new Float32Array(col.values);
           const dataPtr = this.safeAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           result = this.exports.fragmentAddFloat32Column(namePtr, nameLen, dataPtr, f32.length, nullablePtr);
@@ -902,11 +903,11 @@ export class WasmEngine {
           offsets[count] = strOff;
           // Copy raw string data to WASM
           const dataPtr = this.safeAlloc(totalStrBytes);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, totalStrBytes).set(rawStrData);
           // Copy offsets to WASM
           const offsetsPtr = this.safeAlloc(offsets.byteLength);
-          if (!offsetsPtr) throw new Error("WASM OOM");
+          if (!offsetsPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, offsetsPtr, offsets.byteLength)
             .set(new Uint8Array(offsets.buffer));
           result = this.exports.fragmentAddStringColumn(
@@ -916,7 +917,7 @@ export class WasmEngine {
         }
         case "bool": {
           const dataPtr = this.safeAlloc(col.values.byteLength);
-          if (!dataPtr) throw new Error("WASM OOM");
+          if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           const byteCount = col.values.byteLength;
@@ -926,17 +927,17 @@ export class WasmEngine {
           break;
         }
         default:
-          throw new Error(`Unsupported dtype for fragment building: ${col.dtype}`);
+          throw new QueryModeError("SCHEMA_MISMATCH", `Unsupported dtype for fragment building: ${col.dtype}`);
       }
 
-      if (!result) throw new Error(`WASM failed to add column "${col.name}" (dtype: ${col.dtype})`);
+      if (!result) throw new QueryModeError("QUERY_FAILED", `WASM failed to add column "${col.name}" (dtype: ${col.dtype})`);
     }
 
     const bytesWritten = this.exports.fragmentEnd();
-    if (!bytesWritten) throw new Error("WASM fragmentEnd failed");
+    if (!bytesWritten) throw new QueryModeError("QUERY_FAILED", "WASM fragmentEnd failed");
 
     const bufPtr = this.exports.writerGetBuffer();
-    if (!bufPtr) throw new Error("WASM writerGetBuffer returned null");
+    if (!bufPtr) throw new QueryModeError("QUERY_FAILED", "WASM writerGetBuffer returned null");
 
     return new Uint8Array(this.exports.memory.buffer, bufPtr, bytesWritten).slice();
   }
@@ -946,10 +947,10 @@ export class WasmEngine {
   /** Load a serialized IVF-PQ index into WASM. Returns a handle (>0) or throws on failure. */
   loadIvfPqIndex(indexData: ArrayBuffer): number {
     const ptr = this.safeAlloc(indexData.byteLength);
-    if (!ptr) throw new Error("WASM OOM allocating IVF-PQ index data");
+    if (!ptr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating IVF-PQ index data");
     new Uint8Array(this.exports.memory.buffer, ptr, indexData.byteLength).set(new Uint8Array(indexData));
     const handle = this.exports.ivfPqLoadIndex(ptr, indexData.byteLength);
-    if (!handle) throw new Error("Failed to load IVF-PQ index — invalid format or no free slots");
+    if (!handle) throw new QueryModeError("INVALID_FORMAT", "Failed to load IVF-PQ index — invalid format or no free slots");
     return handle;
   }
 

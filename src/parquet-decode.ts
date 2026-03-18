@@ -2,6 +2,7 @@ import type { PageEncoding, DataType } from "./types.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { readVarint } from "./footer.js";
 import { ThriftReader } from "./parquet.js";
+import { QueryModeError } from "./errors.js";
 
 const textDecoder = new TextDecoder();
 
@@ -12,7 +13,7 @@ function decompressPage(data: Uint8Array, compression: string | undefined, uncom
     case "ZSTD": return wasm.decompressZstd(data);
     case "GZIP": return wasm.decompressGzip(data);
     case "LZ4": case "LZ4_RAW": return wasm.decompressLz4(data, uncompressedSize || data.length * 4);
-    default: throw new Error(`Unknown Parquet compression codec: ${compression}`);
+    default: throw new QueryModeError("INVALID_FORMAT", `Unknown Parquet compression codec: ${compression}`);
   }
 }
 

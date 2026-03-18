@@ -20,6 +20,7 @@ import type { Operator, RowBatch } from "./operators.js";
 import { rowPassesFilters, bigIntReplacer } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { descriptorToCode } from "./descriptor-to-code.js";
+import { QueryModeError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Progress callback for collect()
@@ -274,19 +275,19 @@ export class DataFrame<T extends Row = Row> {
 
   /** Limit the number of returned rows. Enables early termination. */
   limit(n: number): DataFrame<T> {
-    if (n < 0) throw new Error("limit() must be non-negative");
+    if (n < 0) throw new QueryModeError("QUERY_FAILED", "limit() must be non-negative");
     return this.derive({ limit: n });
   }
 
   /** Skip the first N rows. Enables offset-based pagination. */
   offset(n: number): DataFrame<T> {
-    if (n < 0) throw new Error("offset() must be non-negative");
+    if (n < 0) throw new QueryModeError("QUERY_FAILED", "offset() must be non-negative");
     return this.derive({ offset: n });
   }
 
   /** Keyset pagination: fetch rows after the given cursor value. Requires sort(). */
   after(value: FilterOp["value"]): DataFrame<T> {
-    if (!this._sortColumn) throw new Error("after() requires sort()");
+    if (!this._sortColumn) throw new QueryModeError("QUERY_FAILED", "after() requires sort()");
     const op = this._sortDirection === "desc" ? "lt" : "gt";
     return this.derive({ filters: [...this._filters, { column: this._sortColumn, op, value }] });
   }
@@ -320,7 +321,7 @@ export class DataFrame<T extends Row = Row> {
   ): DataFrame<T> {
     if (typeof queryVector === "string") {
       if (!opts?.encoder) {
-        throw new Error("vector() with a string query requires opts.encoder to convert text to Float32Array");
+        throw new QueryModeError("QUERY_FAILED", "vector() with a string query requires opts.encoder to convert text to Float32Array");
       }
       // Store the encoder and text — encoding happens at collect() time
       return this.derive({
@@ -625,13 +626,13 @@ export class DataFrame<T extends Row = Row> {
 
   /** Add a column to the table schema. Existing rows get the default value. */
   async addColumn(column: string, dtype: string, defaultValue: unknown = null): Promise<import("./types.js").SchemaEvolutionResult> {
-    if (!this._executor.addColumn) throw new Error("addColumn not supported by this executor");
+    if (!this._executor.addColumn) throw new QueryModeError("QUERY_FAILED", "addColumn not supported by this executor");
     return this._executor.addColumn(this._table, column, dtype, defaultValue);
   }
 
   /** Drop a column from the table schema. Data is not rewritten. */
   async dropColumn(column: string): Promise<import("./types.js").SchemaEvolutionResult> {
-    if (!this._executor.dropColumn) throw new Error("dropColumn not supported by this executor");
+    if (!this._executor.dropColumn) throw new QueryModeError("QUERY_FAILED", "dropColumn not supported by this executor");
     return this._executor.dropColumn(this._table, column);
   }
 
@@ -756,7 +757,7 @@ export class DataFrame<T extends Row = Row> {
    */
   async materializeAs(tableName: string, options?: AppendOptions): Promise<DataFrame> {
     if (!this._executor.append) {
-      throw new Error("materializeAs() requires an executor with write support");
+      throw new QueryModeError("QUERY_FAILED", "materializeAs() requires an executor with write support");
     }
     const result = await this.collect();
     if (result.rows.length > 0) {
@@ -768,10 +769,10 @@ export class DataFrame<T extends Row = Row> {
   /** Iterate over results in batches. Processes pages lazily — stops when consumer breaks. */
   cursor(opts?: { batchSize?: number }): AsyncIterable<Row[]> {
     if (!this._executor.cursor) {
-      throw new Error("cursor() requires an executor with cursor support");
+      throw new QueryModeError("QUERY_FAILED", "cursor() requires an executor with cursor support");
     }
     if (this._deferredSubqueries.length > 0 || this._vectorEncoder) {
-      throw new Error("cursor() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
+      throw new QueryModeError("QUERY_FAILED", "cursor() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
     }
     return this._executor.cursor(this.toDescriptor(), opts?.batchSize ?? 1000);
   }
@@ -781,7 +782,7 @@ export class DataFrame<T extends Row = Row> {
    *  Pass options.metadata to attach lineage info (source tables, pipeline ID, TTL). */
   async append(rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!this._executor.append) {
-      throw new Error("append() requires an executor with write support");
+      throw new QueryModeError("QUERY_FAILED", "append() requires an executor with write support");
     }
     return this._executor.append(this._table, rows, options);
   }
@@ -790,7 +791,7 @@ export class DataFrame<T extends Row = Row> {
    *  Use for cleanup after pipeline completion or TTL expiry. */
   async dropTable(): Promise<DropResult> {
     if (!this._executor.drop) {
-      throw new Error("dropTable() requires an executor with write support");
+      throw new QueryModeError("QUERY_FAILED", "dropTable() requires an executor with write support");
     }
     return this._executor.drop(this._table);
   }
@@ -798,10 +799,10 @@ export class DataFrame<T extends Row = Row> {
   /** Execute and return a columnar binary stream of rows. Only works with RemoteExecutor. */
   async execStream(): Promise<ReadableStream<Row>> {
     if (!this._executor.executeStream) {
-      throw new Error("execStream() requires a remote executor with streaming support");
+      throw new QueryModeError("QUERY_FAILED", "execStream() requires a remote executor with streaming support");
     }
     if (this._deferredSubqueries.length > 0 || this._vectorEncoder) {
-      throw new Error("execStream() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
+      throw new QueryModeError("QUERY_FAILED", "execStream() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
     }
     return this._executor.executeStream(this.toDescriptor());
   }
@@ -815,7 +816,7 @@ export class DataFrame<T extends Row = Row> {
    */
   async toOperator(): Promise<Operator> {
     if (!this._executor.toOperator) {
-      throw new Error("toOperator() requires an executor with operator pipeline support");
+      throw new QueryModeError("QUERY_FAILED", "toOperator() requires an executor with operator pipeline support");
     }
     const desc = await this.resolveDeferred();
     return this._executor.toOperator(desc);
