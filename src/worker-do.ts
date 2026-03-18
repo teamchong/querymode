@@ -3,6 +3,8 @@ import type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 import { decodeColumnarRun, encodeColumnarRun } from "./r2-spill.js";
 import type { Row } from "./types.js";
 import { rowComparator, NULL_SENTINEL } from "./types.js";
+import { withTimeout } from "./coalesce.js";
+import { QueryModeError } from "./errors.js";
 
 interface WorkerEnv {
   DATA_BUCKET: R2Bucket;
@@ -29,7 +31,7 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
 
   /** Read all rows from an R2 partition key */
   private async readPartition(key: string): Promise<Row[]> {
-    const obj = await this.bucket.get(key);
+    const obj = await withTimeout(this.bucket.get(key), 10_000);
     if (!obj) return [];
     const buf = await obj.arrayBuffer();
     const rows: Row[] = [];
@@ -42,7 +44,7 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
   /** Write rows to R2 and return partition metadata */
   private async writePartition(key: string, rows: Row[]): Promise<R2Partition> {
     const buf = encodeColumnarRun(rows);
-    await this.bucket.put(key, buf);
+    await withTimeout(this.bucket.put(key, buf), 10_000);
     return {
       key,
       rowCount: rows.length,
@@ -64,7 +66,7 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
       case "distinct_partition":
         return this.distinctPartition(partitionKey, params, resultKeyPrefix);
       default:
-        throw new Error(`Unknown task: ${taskName}`);
+        throw new QueryModeError("QUERY_FAILED", `Unknown worker task: ${taskName}`);
     }
   }
 

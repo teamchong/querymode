@@ -258,7 +258,7 @@ class EdgeScanOperator implements Operator {
         pageInfos: this.columnPageInfos.get(col.name) ?? col.pages,
       }));
     if (!this.wasmEngine.registerColumns(fragTable, colEntries)) {
-      throw new Error(`WASM OOM: failed to register columns`);
+      throw new QueryModeError("MEMORY_EXCEEDED", `WASM OOM: failed to register columns`);
     }
 
     const decodeQuery: QueryDescriptor = {
@@ -271,7 +271,7 @@ class EdgeScanOperator implements Operator {
       join: undefined,
     };
     const rows = this.wasmEngine.executeQuery(decodeQuery);
-    if (!rows) throw new Error(`WASM query execution failed`);
+    if (!rows) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed`);
     this.wasmEngine.clearTable(fragTable);
     this.columnData.clear(); // Release page buffers immediately
     this.wasmExecMs += Date.now() - wasmStart;
@@ -633,7 +633,7 @@ export class QueryDO extends DurableObject<Env> {
     } else {
       // Lance invalidation — parse footer from raw ArrayBuffer (zero-copy via RPC)
       const parsed = parseFooter(body.footerRaw);
-      if (!parsed) throw new Error("Invalid footer");
+      if (!parsed) throw new QueryModeError("INVALID_FORMAT", "Invalid footer in invalidation payload");
       footer = parsed;
       columns = body.columns ?? await this.readColumnMeta(body.r2Key, parsed);
     }
@@ -853,7 +853,7 @@ export class QueryDO extends DurableObject<Env> {
 
     if (!fileData) {
       const obj = await this.r2(meta.r2Key).get(meta.r2Key);
-      if (!obj) throw new Error(`Failed to read Lance file: ${meta.r2Key}`);
+      if (!obj) throw new QueryModeError("TABLE_NOT_FOUND", `Failed to read Lance file: ${meta.r2Key}`);
       fileData = await obj.arrayBuffer();
       bytesRead = fileData.byteLength;
       this.wasmEngine.cacheSet(cacheKey, fileData);
@@ -865,19 +865,19 @@ export class QueryDO extends DurableObject<Env> {
 
     // Load fragment and extract columns via fragment reader
     const dataPtr = this.wasmEngine.exports.alloc(fileData.byteLength);
-    if (!dataPtr) throw new Error("WASM OOM allocating Lance file buffer");
+    if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating Lance file buffer");
     new Uint8Array(this.wasmEngine.exports.memory.buffer, dataPtr, fileData.byteLength)
       .set(new Uint8Array(fileData));
 
     const loadResult = this.wasmEngine.exports.fragmentLoad(dataPtr, fileData.byteLength);
-    if (loadResult === 0) throw new Error(`Failed to load Lance fragment (invalid file?)`);
+    if (loadResult === 0) throw new QueryModeError("INVALID_FORMAT", `Failed to load Lance fragment (invalid file?)`);
 
     // Parse Lance v2 column metadata using shared parser
     const dataset = this.datasetCache.get(query.table);
     const schema = dataset?.manifest.schema;
     const colInfos = parseLanceV2Columns(fileData, schema, meta.totalRows);
     if (!colInfos || colInfos.length === 0) {
-      throw new Error("Failed to parse Lance v2 column metadata");
+      throw new QueryModeError("INVALID_FORMAT", "Failed to parse Lance v2 column metadata");
     }
 
     this.log("info", "lance_fragment_parsed", {
@@ -1187,11 +1187,11 @@ export class QueryDO extends DurableObject<Env> {
         pageInfos: columnPageInfos.get(col.name) ?? col.pages,
       }));
     if (!this.wasmEngine.registerColumns(query.table, lanceColEntries)) {
-      throw new Error(`WASM OOM: failed to register columns for table "${query.table}"`);
+      throw new QueryModeError("MEMORY_EXCEEDED", `WASM OOM: failed to register columns for table "${query.table}"`);
     }
 
     const columnarData = this.wasmEngine.executeQueryColumnar(query);
-    if (!columnarData) throw new Error(`WASM query execution failed for table "${query.table}"`);
+    if (!columnarData) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed for table "${query.table}"`);
     this.wasmEngine.clearTable(query.table);
     const wasmExecMs = Date.now() - wasmStart;
     const rowCount = new DataView(columnarData).getUint32(4, true);
@@ -1840,7 +1840,7 @@ export class QueryDO extends DurableObject<Env> {
       }
 
       if (failures.length > 0) {
-        throw new Error(`${failures.length}/${settled.length} Fragment DOs failed: ${failures[0]}`);
+        throw new QueryModeError("QUERY_FAILED", `${failures.length}/${settled.length} Fragment DOs failed: ${failures[0]}`);
       }
 
       // ── Phase 2: Hierarchical reduction ──
@@ -1914,7 +1914,7 @@ export class QueryDO extends DurableObject<Env> {
           }
         }
         if (failures.length > 0) {
-          throw new Error(`Reducer tier ${tier}: ${failures.length} failures: ${failures[0]}`);
+          throw new QueryModeError("QUERY_FAILED", `Reducer tier ${tier}: ${failures.length} failures: ${failures[0]}`);
         }
 
         current = results;
@@ -2038,10 +2038,10 @@ export class QueryDO extends DurableObject<Env> {
   async registerIcebergRpc(body: unknown): Promise<unknown> {
     await this.ensureReady();
     const { table, metadataKey } = body as { table: string; metadataKey: string };
-    if (!table || !metadataKey) throw new Error("Missing table or metadataKey");
+    if (!table || !metadataKey) throw new QueryModeError("QUERY_FAILED", "Missing table or metadataKey");
 
     const result = await this.loadIcebergByKey(table, metadataKey);
-    if (!result) throw new Error("Failed to load Iceberg metadata");
+    if (!result) throw new QueryModeError("INVALID_FORMAT", `Failed to load Iceberg metadata for "${table}"`);
     return { registered: true, table, totalRows: result.totalRows, files: result.parquetFiles.length };
   }
 
