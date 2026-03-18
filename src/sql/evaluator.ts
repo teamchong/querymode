@@ -121,10 +121,7 @@ function evaluateBinary(op: string, leftExpr: SqlExpr, rightExpr: SqlExpr, row: 
     case "add": return numericOp(left, right, (a, b) => a + b, (a, b) => a + b);
     case "subtract": return numericOp(left, right, (a, b) => a - b, (a, b) => a - b);
     case "multiply": return numericOp(left, right, (a, b) => a * b, (a, b) => a * b);
-    case "divide": {
-      const divisor = toNumber(right);
-      return divisor === 0 ? null : toNumber(left) / divisor;
-    }
+    case "divide": return numericDiv(left, right);
     case "concat": return String(left) + String(right);
     case "like": return matchLike(String(left), String(right));
     default: return null;
@@ -195,6 +192,19 @@ function numericOp(
   if (lb && typeof right === "number" && Number.isInteger(right)) return bigFn(left as bigint, BigInt(right));
   if (rb && typeof left === "number" && Number.isInteger(left)) return bigFn(BigInt(left), right as bigint);
   return numFn(toNumber(left), toNumber(right));
+}
+
+/** Division with bigint precision preservation and zero-guard. */
+function numericDiv(left: unknown, right: unknown): number | bigint | null {
+  const lb = typeof left === "bigint";
+  const rb = typeof right === "bigint";
+  if (lb && rb) return right === 0n ? null : (left as bigint) / (right as bigint);
+  if (lb && typeof right === "number" && Number.isInteger(right))
+    return right === 0 ? null : (left as bigint) / BigInt(right);
+  if (rb && typeof left === "number" && Number.isInteger(left))
+    return right === 0n ? null : BigInt(left) / (right as bigint);
+  const d = toNumber(right);
+  return d === 0 ? null : toNumber(left) / d;
 }
 
 function matchLike(value: string, pattern: string): boolean {

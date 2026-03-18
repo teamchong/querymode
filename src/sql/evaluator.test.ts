@@ -189,6 +189,21 @@ describe("rewriteAggregatesAsColumns", () => {
     expect(evaluateExpr(expr, r)).toBe(9007199254740993n);
   });
 
+  it("bigint division preserves precision", () => {
+    const bigRow = { a: 9007199254740993n, b: 3n };
+    const aCol: SqlExpr = { kind: "column", name: "a" };
+    const bCol: SqlExpr = { kind: "column", name: "b" };
+    // bigint / bigint → bigint (integer division, truncated)
+    // Float64 would give 3002399751580330.5, bigint gives 3002399751580331n
+    expect(evaluateExpr(bin("divide", aCol, bCol), bigRow)).toBe(3002399751580331n);
+    // bigint / number(int) → bigint
+    const three: SqlExpr = { kind: "value", value: { type: "integer", value: 3 } };
+    expect(evaluateExpr(bin("divide", aCol, three), bigRow)).toBe(3002399751580331n);
+    // bigint / 0 → null
+    const zero: SqlExpr = { kind: "value", value: { type: "integer", value: 0 } };
+    expect(evaluateExpr(bin("divide", aCol, zero), bigRow)).toBe(null);
+  });
+
   it("LIKE is case-sensitive via evaluator", () => {
     expect(evaluateExpr(bin("like", val("Alice"), val("Ali%")), row)).toBe(true);
     expect(evaluateExpr(bin("like", val("alice"), val("Ali%")), row)).toBe(false);
