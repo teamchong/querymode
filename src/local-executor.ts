@@ -301,17 +301,17 @@ export class LocalExecutor implements QueryExecutor {
       };
     }
     const fsMod = await import("node:fs/promises");
+    let cachedHandle: import("node:fs/promises").FileHandle | null = null;
     return {
       columns: projectedColumns,
       async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
-        const handle = await fsMod.open(table, "r");
-        try {
-          const buf = Buffer.alloc(page.byteLength);
-          await handle.read(buf, 0, page.byteLength, Number(page.byteOffset));
-          return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-        } finally {
-          await handle.close();
-        }
+        if (!cachedHandle) cachedHandle = await fsMod.open(table, "r");
+        const buf = Buffer.alloc(page.byteLength);
+        await cachedHandle.read(buf, 0, page.byteLength, Number(page.byteOffset));
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      },
+      async close(): Promise<void> {
+        if (cachedHandle) { await cachedHandle.close(); cachedHandle = null; }
       },
     };
   }
@@ -899,17 +899,17 @@ export class LocalExecutor implements QueryExecutor {
       const projectedColumns = meta.columns.filter(c => neededCols.has(c.name));
       const filePath = meta.r2Key;
 
+      let cachedHandle: import("node:fs/promises").FileHandle | null = null;
       fragments.push({
         columns: projectedColumns,
         async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
-          const handle = await fsMod.open(filePath, "r");
-          try {
-            const buf = Buffer.alloc(page.byteLength);
-            await handle.read(buf, 0, page.byteLength, Number(page.byteOffset));
-            return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-          } finally {
-            await handle.close();
-          }
+          if (!cachedHandle) cachedHandle = await fsMod.open(filePath, "r");
+          const buf = Buffer.alloc(page.byteLength);
+          await cachedHandle.read(buf, 0, page.byteLength, Number(page.byteOffset));
+          return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        },
+        async close(): Promise<void> {
+          if (cachedHandle) { await cachedHandle.close(); cachedHandle = null; }
         },
       });
     }

@@ -90,6 +90,8 @@ export interface FragmentSource {
   columns: ColumnMeta[];
   /** Read page data from the file. */
   readPage(col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer>;
+  /** Optional: release resources (e.g., file handles) when scanning is complete. */
+  close?(): Promise<void>;
 }
 
 /** Check if a page can be skipped by checking ALL filter columns' min/max stats.
@@ -383,7 +385,9 @@ export class ScanOperator implements Operator {
     return materializeRows(batch);
   }
 
-  async close(): Promise<void> { /* no-op */ }
+  async close(): Promise<void> {
+    for (const frag of this.fragments) await frag.close?.();
+  }
 }
 
 // ---------------------------------------------------------------------------
