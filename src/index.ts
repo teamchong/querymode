@@ -163,12 +163,12 @@ export class QueryMode {
   }
 
   /** List all known tables with column names and row counts (edge mode only). */
-  async tables(): Promise<{ name: string; columns: string[]; totalRows: number }[]> {
+  async tables(): Promise<{ name: string; columns: string[]; totalRows: number; updatedAt?: number; accessCount?: number }[]> {
     if (!(this.executor instanceof RemoteExecutor)) {
       throw new Error("tables() is only available in edge mode. Use .table(path).describe() for local files.");
     }
     const result = await (this.executor as RemoteExecutor).listTables();
-    return result.tables as { name: string; columns: string[]; totalRows: number }[];
+    return result.tables as { name: string; columns: string[]; totalRows: number; updatedAt?: number; accessCount?: number }[];
   }
 }
 

@@ -2,7 +2,7 @@
  * CSV/TSV/PSV Reader — streaming delimiter-separated values parser.
  *
  * Supports:
- *   - Comma, tab, and pipe delimiters (auto-detected from first line)
+ *   - Comma, tab, pipe, and semicolon delimiters (auto-detected from first line)
  *   - Quoted fields with escaped quotes ("")
  *   - Type inference from the first N rows (number, boolean, string)
  *   - Proper ColumnMeta + PageInfo generation (single synthetic page per column)

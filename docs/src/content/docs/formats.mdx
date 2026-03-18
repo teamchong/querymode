@@ -92,7 +92,7 @@ const df = await qm.table("./data/events.ndjson").collect()  // newline-delimite
 const df = await qm.table("./data/events.csv").collect()     // CSV/TSV/PSV (auto-detect delimiter)
 ```
 
-CSV auto-detects delimiter (comma, tab, pipe) and infers column types from the data. JSON supports both `[{...}, {...}]` arrays and NDJSON (`{...}\n{...}`) based on the first non-whitespace byte.
+CSV auto-detects delimiter (comma, tab, pipe, semicolon) and infers column types from the data. JSON supports both `[{...}, {...}]` arrays and NDJSON (`{...}\n{...}`) based on the first non-whitespace byte.
 
 These materialize all data in memory. Use Parquet or Lance for large datasets.
 
