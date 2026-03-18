@@ -49,77 +49,80 @@ function countUnquoted(line: string, char: string): number {
 /**
  * Parse a single CSV line into fields, respecting quoted fields.
  * Handles fields that contain delimiters, newlines (if pre-joined), and escaped quotes ("").
+ * Uses index tracking (slice) instead of per-character string concatenation for O(n) perf.
  */
 function parseLine(line: string, delimiter: string): string[] {
   const fields: string[] = [];
-  let current = "";
-  let inQuotes = false;
   let i = 0;
 
   while (i < line.length) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        // Check for escaped quote
-        if (i + 1 < line.length && line[i + 1] === '"') {
-          current += '"';
-          i += 2;
+    if (line[i] === '"') {
+      // Quoted field — scan for closing quote
+      i++; // skip opening quote
+      const qStart = i;
+      let hasEscape = false;
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            hasEscape = true;
+            i += 2;
+          } else {
+            break;
+          }
         } else {
-          inQuotes = false;
           i++;
         }
-      } else {
-        current += ch;
-        i++;
+      }
+      fields.push(hasEscape ? line.slice(qStart, i).replace(/""/g, '"') : line.slice(qStart, i));
+      if (i < line.length) i++; // skip closing quote
+      if (i < line.length && line[i] === delimiter) {
+        i++; // skip delimiter
+        // Trailing delimiter means there's an empty field after it
+        if (i === line.length) fields.push("");
       }
     } else {
-      if (ch === '"') {
-        inQuotes = true;
-        i++;
-      } else if (ch === delimiter) {
-        fields.push(current);
-        current = "";
-        i++;
-      } else {
-        current += ch;
-        i++;
+      // Unquoted field — scan for delimiter
+      const start = i;
+      while (i < line.length && line[i] !== delimiter) i++;
+      fields.push(line.slice(start, i));
+      if (i < line.length) {
+        i++; // skip delimiter
+        // Trailing delimiter means there's an empty field after it
+        if (i === line.length) fields.push("");
       }
     }
   }
-  fields.push(current);
+  if (line.length === 0) fields.push("");
   return fields;
 }
 
 /**
  * Split a CSV text into lines, handling quoted fields that contain newlines.
  * Returns an array of complete logical lines (joined across physical newlines
- * when inside quotes).
+ * when inside quotes). Uses index tracking for O(n) perf.
  */
 function splitCsvLines(text: string): string[] {
   const lines: string[] = [];
-  let current = "";
+  let start = 0;
   let inQuotes = false;
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === '"') {
       inQuotes = !inQuotes;
-      current += ch;
     } else if (!inQuotes && (ch === "\n" || ch === "\r")) {
+      if (i > start) {
+        lines.push(text.slice(start, i));
+      }
       // Handle \r\n
       if (ch === "\r" && i + 1 < text.length && text[i + 1] === "\n") {
         i++;
       }
-      if (current.length > 0) {
-        lines.push(current);
-      }
-      current = "";
-    } else {
-      current += ch;
+      start = i + 1;
     }
   }
-  if (current.length > 0) {
-    lines.push(current);
+  if (start < text.length) {
+    lines.push(text.slice(start));
   }
   return lines;
 }
