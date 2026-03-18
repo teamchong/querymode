@@ -164,10 +164,11 @@ export function readyForQuery(status: "I" | "T" | "E" = "I"): Uint8Array {
 
 /** 'T' — RowDescription */
 export function rowDescription(columns: { name: string; oid: number }[]): Uint8Array {
-  // Calculate total size
+  // Pre-encode column names once (avoids double textEncoder.encode per column)
+  const encodedNames = columns.map(col => textEncoder.encode(col.name));
   let bodyLen = 2; // field count (Int16)
-  for (const col of columns) {
-    bodyLen += textEncoder.encode(col.name).length + 1 + 18;
+  for (let i = 0; i < columns.length; i++) {
+    bodyLen += encodedNames[i].length + 1 + 18;
     // name + null + tableOid(4) + colAttrNum(2) + typeOid(4) + typeLen(2) + typeMod(4) + format(2)
   }
   const buf = new Uint8Array(1 + 4 + bodyLen);
@@ -177,12 +178,12 @@ export function rowDescription(columns: { name: string; oid: number }[]): Uint8A
   dv.setInt16(5, columns.length);
 
   let pos = 7;
-  for (const col of columns) {
-    const nameBytes = textEncoder.encode(col.name);
+  for (let i = 0; i < columns.length; i++) {
+    const nameBytes = encodedNames[i];
     buf.set(nameBytes, pos); pos += nameBytes.length; buf[pos++] = 0;
     dv.setInt32(pos, 0); pos += 4;      // table OID
     dv.setInt16(pos, 0); pos += 2;      // column attr number
-    dv.setInt32(pos, col.oid); pos += 4; // type OID
+    dv.setInt32(pos, columns[i].oid); pos += 4; // type OID
     dv.setInt16(pos, -1); pos += 2;     // type length (-1 = variable)
     dv.setInt32(pos, -1); pos += 4;     // type modifier
     dv.setInt16(pos, 0); pos += 2;      // format code (0 = text)
