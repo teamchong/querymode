@@ -209,8 +209,9 @@ export default {
       let status = 500;
       if (err instanceof QueryModeError) {
         if (err.code === "TABLE_NOT_FOUND" || err.code === "COLUMN_NOT_FOUND") status = 404;
-        else if (err.code === "INVALID_FILTER" || err.code === "INVALID_FORMAT" || err.code === "INVALID_AGGREGATE") status = 400;
+        else if (err.code === "INVALID_FILTER" || err.code === "INVALID_FORMAT" || err.code === "INVALID_AGGREGATE" || err.code === "SCHEMA_MISMATCH") status = 400;
         else if (err.code === "QUERY_TIMEOUT" || err.code === "NETWORK_TIMEOUT") status = 504;
+        else if (err.code === "MEMORY_EXCEEDED") status = 503;
       } else if (msg.includes("CAS failed")) {
         status = 409;
       } else if (msg.includes("not found")) {

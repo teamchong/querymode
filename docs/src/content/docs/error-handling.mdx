@@ -61,6 +61,31 @@ try {
 
 Already-wrapped `QueryModeError` instances pass through unchanged.
 
+## HTTP status codes
+
+When using the HTTP API (`/query`, `/write`, etc.), error codes map to HTTP status codes:
+
+| Error code | HTTP status | Meaning |
+|-----------|-------------|---------|
+| `TABLE_NOT_FOUND` | 404 | Table doesn't exist in R2 |
+| `COLUMN_NOT_FOUND` | 404 | Column not in schema |
+| `INVALID_FILTER` | 400 | Malformed filter op or value |
+| `INVALID_FORMAT` | 400 | File can't be parsed |
+| `INVALID_AGGREGATE` | 400 | Bad aggregate function |
+| `SCHEMA_MISMATCH` | 400 | Column type doesn't match operation |
+| `MEMORY_EXCEEDED` | 503 | Operator exceeded memory budget |
+| `QUERY_TIMEOUT` | 504 | Total query time exceeded |
+| `NETWORK_TIMEOUT` | 504 | R2 or RPC call timed out |
+| `QUERY_FAILED` | 500 | Unclassified error |
+| *(SyntaxError)* | 400 | Malformed JSON request body |
+| *(CAS conflict)* | 409 | Concurrent write conflict |
+
+The response body always includes `{ error: string }` and, for `QueryModeError`, `{ code: string }`:
+
+```json
+{ "error": "Column not found in events: foo", "code": "SCHEMA_MISMATCH" }
+```
+
 ## SQL errors
 
 SQL syntax errors throw `SqlParseError` or `SqlLexerError` (not `QueryModeError`) with a `position` field indicating where the error occurred:
