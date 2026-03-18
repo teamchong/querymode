@@ -64,6 +64,25 @@ The partition catalog is built automatically during ingest (when `partitionBy` i
 
 For tables ingested without `partitionBy`, QueryMode auto-detects the best partition column from page-level min/max stats on the first multi-fragment query. Auto-detection uses ratio-based scoring to pick columns with good cardinality (e.g., `region` with 50 values) over near-unique columns (e.g., `timestamp` with 10K values).
 
+## Null handling
+
+Null and undefined values are preserved through the write path. Each column that contains nulls gets a validity bitmap in the Lance fragment — nulls are **not** silently coerced to 0 or empty string.
+
+```typescript
+await qm.table("users").append([
+  { id: 1, name: "Alice", score: 95 },
+  { id: 2, name: "Bob",   score: null },  // score stored as null
+  { id: 3, name: null,    score: 80 },    // name stored as null
+])
+
+const result = await qm.table("users")
+  .filter("score", "is_null")
+  .collect()
+// [{ id: 2, name: "Bob", score: null }]
+```
+
+Type inference uses the first non-null value per column. Columns where **all** values are null are skipped (no type to infer).
+
 ## Drop tables
 
 Delete a table — removes all Lance fragments from R2 and clears DO metadata:
