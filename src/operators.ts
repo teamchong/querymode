@@ -896,6 +896,13 @@ export class SubqueryInOperator implements Operator {
 
 import type { WindowSpec } from "./types.js";
 
+/** Apply window functions to a Row[] in place. Shared by WindowOperator and MaterializedExecutor. */
+export function applyWindowsToRows(rows: Row[], windows: WindowSpec[]): void {
+  for (const win of windows) {
+    evaluateWindow(rows, win);
+  }
+}
+
 export class WindowOperator implements Operator {
   private upstream: Operator;
   private windows: WindowSpec[];
@@ -920,253 +927,251 @@ export class WindowOperator implements Operator {
 
     if (allRows.length === 0) return null;
 
-    for (const win of this.windows) {
-      this.evaluateWindow(allRows, win);
-    }
+    applyWindowsToRows(allRows, this.windows);
 
     return allRows;
-  }
-
-  private evaluateWindow(rows: Row[], win: WindowSpec): void {
-    // Group by partitionBy keys
-    const partitions = new Map<string, number[]>();
-    for (let i = 0; i < rows.length; i++) {
-      const key = win.partitionBy.length > 0 ? groupKey(rows[i], win.partitionBy) : "__all__";
-      const indices = partitions.get(key);
-      if (indices) indices.push(i);
-      else partitions.set(key, [i]);
-    }
-
-    // Process each partition
-    for (const indices of partitions.values()) {
-      // Sort indices by orderBy
-      if (win.orderBy.length > 0) {
-        indices.sort((a, b) => {
-          for (const ob of win.orderBy) {
-            const av = rows[a][ob.column], bv = rows[b][ob.column];
-            if (av === null && bv === null) continue;
-            if (av === null) return 1;  // nulls-last regardless of direction
-            if (bv === null) return -1;
-            if (av < bv) return ob.direction === "asc" ? -1 : 1;
-            if (av > bv) return ob.direction === "asc" ? 1 : -1;
-          }
-          return 0;
-        });
-      }
-
-      this.applyWindowFn(rows, indices, win);
-    }
-  }
-
-  private applyWindowFn(rows: Row[], indices: number[], win: WindowSpec): void {
-    const { fn, alias, orderBy } = win;
-
-    switch (fn) {
-      case "row_number":
-        for (let i = 0; i < indices.length; i++) {
-          rows[indices[i]][alias] = i + 1;
-        }
-        break;
-
-      case "rank": {
-        let rank = 1;
-        for (let i = 0; i < indices.length; i++) {
-          if (i > 0 && !this.orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
-            rank = i + 1;
-          }
-          rows[indices[i]][alias] = rank;
-        }
-        break;
-      }
-
-      case "dense_rank": {
-        let rank = 1;
-        for (let i = 0; i < indices.length; i++) {
-          if (i > 0 && !this.orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
-            rank++;
-          }
-          rows[indices[i]][alias] = rank;
-        }
-        break;
-      }
-
-      case "lag": {
-        const offset = win.args?.offset ?? 1;
-        const defaultVal = win.args?.default_ ?? null;
-        const lagCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
-        for (let i = 0; i < indices.length; i++) {
-          const srcIdx = i - offset;
-          if (srcIdx >= 0 && srcIdx < indices.length && lagCol) {
-            rows[indices[i]][alias] = rows[indices[srcIdx]][lagCol] as Row[string];
-          } else {
-            rows[indices[i]][alias] = defaultVal as Row[string];
-          }
-        }
-        break;
-      }
-
-      case "lead": {
-        const offset = win.args?.offset ?? 1;
-        const defaultVal = win.args?.default_ ?? null;
-        const leadCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
-        for (let i = 0; i < indices.length; i++) {
-          const srcIdx = i + offset;
-          if (srcIdx >= 0 && srcIdx < indices.length && leadCol) {
-            rows[indices[i]][alias] = rows[indices[srcIdx]][leadCol] as Row[string];
-          } else {
-            rows[indices[i]][alias] = defaultVal as Row[string];
-          }
-        }
-        break;
-      }
-
-      case "sum": case "avg": case "min": case "max": case "count": {
-        const col = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
-        this.applyAggregateWindow(rows, indices, win, col);
-        break;
-      }
-    }
-  }
-
-  private applyAggregateWindow(rows: Row[], indices: number[], win: WindowSpec, col: string): void {
-    const { fn, alias, frame } = win;
-    const frameStart = frame?.start ?? "unbounded";
-    const frameEnd = frame?.end ?? "current";
-
-    // Detect if column contains bigint values (int64) — use BigInt accumulators to preserve precision
-    let useBigInt = false;
-    if (col !== "*") {
-      for (let i = 0; i < indices.length; i++) {
-        const v = rows[indices[i]][col];
-        if (v !== null && v !== undefined) { useBigInt = typeof v === "bigint"; break; }
-      }
-    }
-
-    if (useBigInt) {
-      this.applyAggWindowBigInt(rows, indices, fn, alias, col, frameStart, frameEnd);
-    } else {
-      this.applyAggWindowNumber(rows, indices, fn, alias, col, frameStart, frameEnd);
-    }
-  }
-
-  private applyAggWindowNumber(
-    rows: Row[], indices: number[], fn: string, alias: string, col: string,
-    frameStart: string | number, frameEnd: string | number,
-  ): void {
-    // Fast path: "unbounded preceding ... current row" uses O(n) running accumulators
-    if (frameStart === "unbounded" && frameEnd === "current") {
-      let runSum = 0, runCount = 0, runMin = Infinity, runMax = -Infinity;
-      for (let i = 0; i < indices.length; i++) {
-        const val = col === "*" ? 1 : rows[indices[i]][col];
-        if (val !== null && val !== undefined) {
-          const n = typeof val === "number" ? val : 0;
-          runSum += n;
-          runCount++;
-          if (n < runMin) runMin = n;
-          if (n > runMax) runMax = n;
-        }
-        switch (fn) {
-          case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
-          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : runSum / runCount; break;
-          case "min": rows[indices[i]][alias] = runMin === Infinity ? null : runMin; break;
-          case "max": rows[indices[i]][alias] = runMax === -Infinity ? null : runMax; break;
-          case "count": rows[indices[i]][alias] = runCount; break;
-        }
-      }
-      return;
-    }
-
-    // General path for custom frames
-    for (let i = 0; i < indices.length; i++) {
-      const [start, end] = this.frameRange(i, indices.length, frameStart, frameEnd);
-      let sum = 0, count = 0, min = Infinity, max = -Infinity;
-      for (let j = start; j <= end; j++) {
-        const val = col === "*" ? 1 : rows[indices[j]][col];
-        if (val === null || val === undefined) continue;
-        const n = typeof val === "number" ? val : 0;
-        sum += n;
-        count++;
-        if (n < min) min = n;
-        if (n > max) max = n;
-      }
-      switch (fn) {
-        case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
-        case "avg": rows[indices[i]][alias] = count === 0 ? null : sum / count; break;
-        case "min": rows[indices[i]][alias] = min === Infinity ? null : min; break;
-        case "max": rows[indices[i]][alias] = max === -Infinity ? null : max; break;
-        case "count": rows[indices[i]][alias] = count; break;
-      }
-    }
-  }
-
-  /** BigInt accumulation path — preserves int64 precision for SUM/MIN/MAX. */
-  private applyAggWindowBigInt(
-    rows: Row[], indices: number[], fn: string, alias: string, col: string,
-    frameStart: string | number, frameEnd: string | number,
-  ): void {
-    if (frameStart === "unbounded" && frameEnd === "current") {
-      let runSum = 0n, runCount = 0;
-      let runMin: bigint | undefined, runMax: bigint | undefined;
-      for (let i = 0; i < indices.length; i++) {
-        const val = rows[indices[i]][col];
-        if (val !== null && val !== undefined) {
-          const n = typeof val === "bigint" ? val : safeBigInt(val as number);
-          runSum += n;
-          runCount++;
-          if (runMin === undefined || n < runMin) runMin = n;
-          if (runMax === undefined || n > runMax) runMax = n;
-        }
-        switch (fn) {
-          case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
-          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : bigIntAvg(runSum, runCount); break;
-          case "min": rows[indices[i]][alias] = runMin ?? null; break;
-          case "max": rows[indices[i]][alias] = runMax ?? null; break;
-          case "count": rows[indices[i]][alias] = runCount; break;
-        }
-      }
-      return;
-    }
-
-    for (let i = 0; i < indices.length; i++) {
-      const [start, end] = this.frameRange(i, indices.length, frameStart, frameEnd);
-      let sum = 0n, count = 0;
-      let min: bigint | undefined, max: bigint | undefined;
-      for (let j = start; j <= end; j++) {
-        const val = rows[indices[j]][col];
-        if (val === null || val === undefined) continue;
-        const n = typeof val === "bigint" ? val : safeBigInt(val as number);
-        sum += n;
-        count++;
-        if (min === undefined || n < min) min = n;
-        if (max === undefined || n > max) max = n;
-      }
-      switch (fn) {
-        case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
-        case "avg": rows[indices[i]][alias] = count === 0 ? null : bigIntAvg(sum, count); break;
-        case "min": rows[indices[i]][alias] = min ?? null; break;
-        case "max": rows[indices[i]][alias] = max ?? null; break;
-        case "count": rows[indices[i]][alias] = count; break;
-      }
-    }
-  }
-
-  private frameRange(i: number, len: number, frameStart: string | number, frameEnd: string | number): [number, number] {
-    const start = frameStart === "unbounded" ? 0 : frameStart === "current" ? i : Math.max(0, i + (frameStart as number));
-    const end = frameEnd === "unbounded" ? len - 1 : frameEnd === "current" ? i : Math.min(len - 1, i + (frameEnd as number));
-    return [start, end];
-  }
-
-  private orderByEqual(rows: Row[], idx1: number, idx2: number, orderBy: WindowSpec["orderBy"]): boolean {
-    for (const ob of orderBy) {
-      const a = rows[idx1][ob.column], b = rows[idx2][ob.column];
-      if (a !== b) return false;
-    }
-    return true;
   }
 
   async close(): Promise<void> {
     await this.upstream.close();
   }
+}
+
+function evaluateWindow(rows: Row[], win: WindowSpec): void {
+  // Group by partitionBy keys
+  const partitions = new Map<string, number[]>();
+  for (let i = 0; i < rows.length; i++) {
+    const key = win.partitionBy.length > 0 ? groupKey(rows[i], win.partitionBy) : "__all__";
+    const indices = partitions.get(key);
+    if (indices) indices.push(i);
+    else partitions.set(key, [i]);
+  }
+
+  // Process each partition
+  for (const indices of partitions.values()) {
+    // Sort indices by orderBy
+    if (win.orderBy.length > 0) {
+      indices.sort((a, b) => {
+        for (const ob of win.orderBy) {
+          const av = rows[a][ob.column], bv = rows[b][ob.column];
+          if (av === null && bv === null) continue;
+          if (av === null) return 1;  // nulls-last regardless of direction
+          if (bv === null) return -1;
+          if (av < bv) return ob.direction === "asc" ? -1 : 1;
+          if (av > bv) return ob.direction === "asc" ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+
+    applyWindowFn(rows, indices, win);
+  }
+}
+
+function applyWindowFn(rows: Row[], indices: number[], win: WindowSpec): void {
+  const { fn, alias, orderBy } = win;
+
+  switch (fn) {
+    case "row_number":
+      for (let i = 0; i < indices.length; i++) {
+        rows[indices[i]][alias] = i + 1;
+      }
+      break;
+
+    case "rank": {
+      let rank = 1;
+      for (let i = 0; i < indices.length; i++) {
+        if (i > 0 && !orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
+          rank = i + 1;
+        }
+        rows[indices[i]][alias] = rank;
+      }
+      break;
+    }
+
+    case "dense_rank": {
+      let rank = 1;
+      for (let i = 0; i < indices.length; i++) {
+        if (i > 0 && !orderByEqual(rows, indices[i], indices[i - 1], orderBy)) {
+          rank++;
+        }
+        rows[indices[i]][alias] = rank;
+      }
+      break;
+    }
+
+    case "lag": {
+      const offset = win.args?.offset ?? 1;
+      const defaultVal = win.args?.default_ ?? null;
+      const lagCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
+      for (let i = 0; i < indices.length; i++) {
+        const srcIdx = i - offset;
+        if (srcIdx >= 0 && srcIdx < indices.length && lagCol) {
+          rows[indices[i]][alias] = rows[indices[srcIdx]][lagCol] as Row[string];
+        } else {
+          rows[indices[i]][alias] = defaultVal as Row[string];
+        }
+      }
+      break;
+    }
+
+    case "lead": {
+      const offset = win.args?.offset ?? 1;
+      const defaultVal = win.args?.default_ ?? null;
+      const leadCol = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
+      for (let i = 0; i < indices.length; i++) {
+        const srcIdx = i + offset;
+        if (srcIdx >= 0 && srcIdx < indices.length && leadCol) {
+          rows[indices[i]][alias] = rows[indices[srcIdx]][leadCol] as Row[string];
+        } else {
+          rows[indices[i]][alias] = defaultVal as Row[string];
+        }
+      }
+      break;
+    }
+
+    case "sum": case "avg": case "min": case "max": case "count": {
+      const col = win.column ?? (orderBy.length > 0 ? orderBy[0].column : "");
+      applyAggregateWindow(rows, indices, win, col);
+      break;
+    }
+  }
+}
+
+function applyAggregateWindow(rows: Row[], indices: number[], win: WindowSpec, col: string): void {
+  const { fn, alias, frame } = win;
+  const frameStart = frame?.start ?? "unbounded";
+  const frameEnd = frame?.end ?? "current";
+
+  // Detect if column contains bigint values (int64) — use BigInt accumulators to preserve precision
+  let useBigInt = false;
+  if (col !== "*") {
+    for (let i = 0; i < indices.length; i++) {
+      const v = rows[indices[i]][col];
+      if (v !== null && v !== undefined) { useBigInt = typeof v === "bigint"; break; }
+    }
+  }
+
+  if (useBigInt) {
+    applyAggWindowBigInt(rows, indices, fn, alias, col, frameStart, frameEnd);
+  } else {
+    applyAggWindowNumber(rows, indices, fn, alias, col, frameStart, frameEnd);
+  }
+}
+
+function applyAggWindowNumber(
+  rows: Row[], indices: number[], fn: string, alias: string, col: string,
+  frameStart: string | number, frameEnd: string | number,
+): void {
+  // Fast path: "unbounded preceding ... current row" uses O(n) running accumulators
+  if (frameStart === "unbounded" && frameEnd === "current") {
+    let runSum = 0, runCount = 0, runMin = Infinity, runMax = -Infinity;
+    for (let i = 0; i < indices.length; i++) {
+      const val = col === "*" ? 1 : rows[indices[i]][col];
+      if (val !== null && val !== undefined) {
+        const n = typeof val === "number" ? val : 0;
+        runSum += n;
+        runCount++;
+        if (n < runMin) runMin = n;
+        if (n > runMax) runMax = n;
+      }
+      switch (fn) {
+        case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
+        case "avg": rows[indices[i]][alias] = runCount === 0 ? null : runSum / runCount; break;
+        case "min": rows[indices[i]][alias] = runMin === Infinity ? null : runMin; break;
+        case "max": rows[indices[i]][alias] = runMax === -Infinity ? null : runMax; break;
+        case "count": rows[indices[i]][alias] = runCount; break;
+      }
+    }
+    return;
+  }
+
+  // General path for custom frames
+  for (let i = 0; i < indices.length; i++) {
+    const [start, end] = frameRange(i, indices.length, frameStart, frameEnd);
+    let sum = 0, count = 0, min = Infinity, max = -Infinity;
+    for (let j = start; j <= end; j++) {
+      const val = col === "*" ? 1 : rows[indices[j]][col];
+      if (val === null || val === undefined) continue;
+      const n = typeof val === "number" ? val : 0;
+      sum += n;
+      count++;
+      if (n < min) min = n;
+      if (n > max) max = n;
+    }
+    switch (fn) {
+      case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
+      case "avg": rows[indices[i]][alias] = count === 0 ? null : sum / count; break;
+      case "min": rows[indices[i]][alias] = min === Infinity ? null : min; break;
+      case "max": rows[indices[i]][alias] = max === -Infinity ? null : max; break;
+      case "count": rows[indices[i]][alias] = count; break;
+    }
+  }
+}
+
+/** BigInt accumulation path — preserves int64 precision for SUM/MIN/MAX. */
+function applyAggWindowBigInt(
+  rows: Row[], indices: number[], fn: string, alias: string, col: string,
+  frameStart: string | number, frameEnd: string | number,
+): void {
+  if (frameStart === "unbounded" && frameEnd === "current") {
+    let runSum = 0n, runCount = 0;
+    let runMin: bigint | undefined, runMax: bigint | undefined;
+    for (let i = 0; i < indices.length; i++) {
+      const val = rows[indices[i]][col];
+      if (val !== null && val !== undefined) {
+        const n = typeof val === "bigint" ? val : safeBigInt(val as number);
+        runSum += n;
+        runCount++;
+        if (runMin === undefined || n < runMin) runMin = n;
+        if (runMax === undefined || n > runMax) runMax = n;
+      }
+      switch (fn) {
+        case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
+        case "avg": rows[indices[i]][alias] = runCount === 0 ? null : bigIntAvg(runSum, runCount); break;
+        case "min": rows[indices[i]][alias] = runMin ?? null; break;
+        case "max": rows[indices[i]][alias] = runMax ?? null; break;
+        case "count": rows[indices[i]][alias] = runCount; break;
+      }
+    }
+    return;
+  }
+
+  for (let i = 0; i < indices.length; i++) {
+    const [start, end] = frameRange(i, indices.length, frameStart, frameEnd);
+    let sum = 0n, count = 0;
+    let min: bigint | undefined, max: bigint | undefined;
+    for (let j = start; j <= end; j++) {
+      const val = rows[indices[j]][col];
+      if (val === null || val === undefined) continue;
+      const n = typeof val === "bigint" ? val : safeBigInt(val as number);
+      sum += n;
+      count++;
+      if (min === undefined || n < min) min = n;
+      if (max === undefined || n > max) max = n;
+    }
+    switch (fn) {
+      case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
+      case "avg": rows[indices[i]][alias] = count === 0 ? null : bigIntAvg(sum, count); break;
+      case "min": rows[indices[i]][alias] = min ?? null; break;
+      case "max": rows[indices[i]][alias] = max ?? null; break;
+      case "count": rows[indices[i]][alias] = count; break;
+    }
+  }
+}
+
+function frameRange(i: number, len: number, frameStart: string | number, frameEnd: string | number): [number, number] {
+  const start = frameStart === "unbounded" ? 0 : frameStart === "current" ? i : Math.max(0, i + (frameStart as number));
+  const end = frameEnd === "unbounded" ? len - 1 : frameEnd === "current" ? i : Math.min(len - 1, i + (frameEnd as number));
+  return [start, end];
+}
+
+function orderByEqual(rows: Row[], idx1: number, idx2: number, orderBy: WindowSpec["orderBy"]): boolean {
+  for (const ob of orderBy) {
+    const a = rows[idx1][ob.column], b = rows[idx2][ob.column];
+    if (a !== b) return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

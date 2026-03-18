@@ -661,7 +661,7 @@ export function columnarKWayMerge(
   const indices: number[] = new Array(batches.length).fill(0);
   const heap: MergeHeapEntry[] = [];
   for (let i = 0; i < batches.length; i++) {
-    if (batches[i].rowCount > 0) {
+    if (batches[i].rowCount > 0 && sortColIndices[i] >= 0) {
       const sci = sortColIndices[i];
       heap.push({ batchIdx: i, rowIdx: 0, value: readColumnValue(batches[i].columns[sci], 0) });
       indices[i] = 1;
@@ -796,7 +796,7 @@ export function sliceColumnarBatch(batch: ColumnarBatch, offset: number, limit?:
   const start = Math.min(offset, batch.rowCount);
   const end = limit !== undefined ? Math.min(start + limit, batch.rowCount) : batch.rowCount;
   const rowCount = end - start;
-  if (rowCount <= 0) return { columns: batch.columns.map(c => ({ ...c, rowCount: 0, data: new ArrayBuffer(0) })), rowCount: 0 };
+  if (rowCount <= 0) return { columns: batch.columns.map(c => ({ ...c, rowCount: 0, data: new ArrayBuffer(0), nullBitmap: undefined })), rowCount: 0 };
   if (start === 0 && end === batch.rowCount) return batch;
 
   const columns: ColumnarColumn[] = [];

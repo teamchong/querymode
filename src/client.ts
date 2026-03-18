@@ -15,8 +15,9 @@ import type {
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
-import { NULL_SENTINEL, rowComparator } from "./types.js";
+import { NULL_SENTINEL, rowComparator, groupKey } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
+import { applyWindowsToRows } from "./operators.js";
 import { rowPassesFilters, bigIntReplacer } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { descriptorToCode } from "./descriptor-to-code.js";
@@ -979,9 +980,25 @@ export class MaterializedExecutor implements QueryExecutor {
       });
     }
 
+    // Apply window functions (before filters, same order as operator pipeline)
+    if (query.windows && query.windows.length > 0) {
+      applyWindowsToRows(rows, query.windows);
+    }
+
     // Apply filters (AND + OR groups)
     if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
       rows = rows.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
+    }
+
+    // Apply distinct
+    if (query.distinct) {
+      const seen = new Set<string>();
+      rows = rows.filter(row => {
+        const key = groupKey(row, query.distinct!);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     }
 
     // Apply aggregation
