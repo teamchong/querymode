@@ -11,8 +11,8 @@ All errors thrown by QueryMode are `QueryModeError` instances with a structured 
 |------|------|----------------|
 | `TABLE_NOT_FOUND` | File doesn't exist, R2 key missing | "Table not found: events.lance" |
 | `COLUMN_NOT_FOUND` | Column name not in schema | "Column not found: foo" |
-| `INVALID_FORMAT` | File can't be parsed as any supported format | "Invalid table format: data.xyz. Supported formats: .lance, .parquet, .csv, ..." |
-| `SCHEMA_MISMATCH` | Column exists but type doesn't match operation | "Column not found in events: age" |
+| `INVALID_FORMAT` | File can't be parsed, decompression fails, bad binary format | "Invalid table format: data.xyz. Supported formats: .lance, .parquet, .csv, ..." |
+| `SCHEMA_MISMATCH` | Column type doesn't match operation, unsupported dtype | "Column not found in events: age" |
 | `INVALID_FILTER` | Bad filter op or value type | "Invalid filter: unknown op 'regex'" |
 | `INVALID_AGGREGATE` | Bad aggregate function or missing column | "Invalid aggregate: sum requires numeric column" |
 | `MEMORY_EXCEEDED` | Operator exceeds memory budget | "Memory budget exceeded querying events" |
@@ -84,6 +84,28 @@ The response body always includes `{ error: string }` and, for `QueryModeError`,
 
 ```json
 { "error": "Column not found in events: foo", "code": "SCHEMA_MISMATCH" }
+```
+
+## DataFrame validation errors
+
+The DataFrame API validates arguments eagerly and throws `QueryModeError` with `QUERY_FAILED`:
+
+```typescript
+qm.table("events").limit(-1)
+// QueryModeError: QUERY_FAILED — "limit() must be non-negative"
+
+qm.table("events").after(100)
+// QueryModeError: QUERY_FAILED — "after() requires sort()"
+
+await qm.table("events").append(rows)
+// QueryModeError: QUERY_FAILED — "append() requires an executor with write support"
+// (when using a read-only executor)
+```
+
+WASM out-of-memory errors throw `MEMORY_EXCEEDED`:
+
+```typescript
+// QueryModeError: MEMORY_EXCEEDED — "WASM OOM allocating zstd output"
 ```
 
 ## SQL errors
