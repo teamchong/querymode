@@ -148,8 +148,8 @@ export function descriptorToCode(
     const vecStr = `new Float32Array([${[...vs.queryVector].join(", ")}])`;
     const optsparts: string[] = [];
     if (vs.metric && vs.metric !== "cosine") optsparts.push(`metric: ${str(vs.metric)}`);
-    if (vs.nprobe) optsparts.push(`nprobe: ${vs.nprobe}`);
-    if (vs.efSearch) optsparts.push(`efSearch: ${vs.efSearch}`);
+    if (vs.nprobe !== undefined) optsparts.push(`nprobe: ${vs.nprobe}`);
+    if (vs.efSearch !== undefined) optsparts.push(`efSearch: ${vs.efSearch}`);
     const optsStr = optsparts.length > 0 ? `, { ${optsparts.join(", ")} }` : "";
     chains.push(`.vector(${str(vs.column)}, ${vecStr}, ${vs.topK}${optsStr})`);
   }
