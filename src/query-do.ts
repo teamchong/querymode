@@ -51,6 +51,48 @@ const RESULT_VIP_THRESHOLD = 2; // Accesses needed for VIP result cache
 const EDGE_MEMORY_BUDGET = 32 * 1024 * 1024; // 32MB — DO has 128MB total, need room for WASM + caches
 
 /**
+ * Fetch and prepend a Parquet dictionary page to a data page buffer.
+ * Returns the (possibly prepended) buffer and any extra bytes read from R2.
+ */
+async function prependDictPage(
+  chunkBuf: ArrayBuffer,
+  encoding: { dictionaryPageOffset?: number | bigint; dictionaryPageLength?: number; compression?: string },
+  pageByteOffset: number | bigint,
+  r2Key: string,
+  bucket: R2Bucket,
+  wasmEngine: WasmEngine,
+): Promise<{ buf: ArrayBuffer; extraBytes: number }> {
+  if (encoding.dictionaryPageOffset === undefined || !encoding.dictionaryPageLength) {
+    return { buf: chunkBuf, extraBytes: 0 };
+  }
+  const dictOffset = Number(encoding.dictionaryPageOffset);
+  const pageOffset = Number(pageByteOffset);
+  if (dictOffset >= pageOffset) {
+    return { buf: chunkBuf, extraBytes: 0 };
+  }
+  const dictKey = `${r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
+  let dictBuf = wasmEngine.cacheGet(dictKey);
+  let extraBytes = 0;
+  if (!dictBuf) {
+    const dictObj = await withTimeout(bucket.get(r2Key, {
+      range: { offset: dictOffset, length: encoding.dictionaryPageLength },
+    }), R2_TIMEOUT_MS);
+    if (dictObj) {
+      dictBuf = await dictObj.arrayBuffer();
+      wasmEngine.cacheSet(dictKey, dictBuf);
+      extraBytes = dictBuf.byteLength;
+    }
+  }
+  if (dictBuf) {
+    const combined = new Uint8Array(dictBuf.byteLength + chunkBuf.byteLength);
+    combined.set(new Uint8Array(dictBuf), 0);
+    combined.set(new Uint8Array(chunkBuf), dictBuf.byteLength);
+    return { buf: combined.buffer, extraBytes };
+  }
+  return { buf: chunkBuf, extraBytes: 0 };
+}
+
+/**
  * EdgeScanOperator — yields RowBatch per page from R2, using 3-tier cache.
  * Wraps the same I/O logic as scanPages() but as a pull-based Operator.
  * WASM handles per-page decoding; TypeScript operators handle cross-page orchestration.
@@ -301,30 +343,9 @@ class EdgeScanOperator implements Operator {
       const pageInfo = keptPageInfos[pi];
       const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" as const };
 
-      if (encoding.dictionaryPageOffset !== undefined && encoding.dictionaryPageLength) {
-        const dictOffset = Number(encoding.dictionaryPageOffset);
-        const pageOffset = Number(pageInfo.byteOffset);
-        if (dictOffset < pageOffset) {
-          const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
-          let dictBuf = this.wasmEngine.cacheGet(dictKey);
-          if (!dictBuf) {
-            const dictObj = await withTimeout(this.bucket.get(meta.r2Key, {
-              range: { offset: dictOffset, length: encoding.dictionaryPageLength },
-            }), R2_TIMEOUT_MS);
-            if (dictObj) {
-              dictBuf = await dictObj.arrayBuffer();
-              this.wasmEngine.cacheSet(dictKey, dictBuf);
-              this.bytesRead += dictBuf.byteLength;
-            }
-          }
-          if (dictBuf) {
-            const combined = new Uint8Array(dictBuf.byteLength + chunkBuf.byteLength);
-            combined.set(new Uint8Array(dictBuf), 0);
-            combined.set(new Uint8Array(chunkBuf), dictBuf.byteLength);
-            chunkBuf = combined.buffer;
-          }
-        }
-      }
+      const dict = await prependDictPage(chunkBuf, encoding, pageInfo.byteOffset, meta.r2Key, this.bucket, this.wasmEngine);
+      chunkBuf = dict.buf;
+      this.bytesRead += dict.extraBytes;
 
       const decoded = decodeParquetColumnChunk(
         chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
@@ -1094,35 +1115,9 @@ export class QueryDO extends DurableObject<Env> {
 
           // Include dictionary page if present: fetch it from R2 and prepend
           let chunkBuf = pages[pi];
-          if (encoding.dictionaryPageOffset !== undefined && encoding.dictionaryPageLength) {
-            // Dictionary page is at a different offset — check if it's already included
-            // If the fetched range starts at dataPageOffset (not dictionaryPageOffset),
-            // we need to fetch the dictionary page separately
-            const dictOffset = Number(encoding.dictionaryPageOffset);
-            const pageOffset = Number(pageInfo.byteOffset);
-            if (dictOffset < pageOffset) {
-              // Dictionary page is before data page — try to get from cache or R2
-              const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
-              let dictBuf = this.wasmEngine.cacheGet(dictKey);
-              if (!dictBuf) {
-                const dictObj = await withTimeout(this.r2(meta.r2Key).get(meta.r2Key, {
-                  range: { offset: dictOffset, length: encoding.dictionaryPageLength },
-                }), R2_TIMEOUT_MS);
-                if (dictObj) {
-                  dictBuf = await dictObj.arrayBuffer();
-                  this.wasmEngine.cacheSet(dictKey, dictBuf);
-                  bytesRead += dictBuf.byteLength;
-                }
-              }
-              if (dictBuf) {
-                // Prepend dictionary page to data page
-                const combined = new Uint8Array(dictBuf.byteLength + chunkBuf.byteLength);
-                combined.set(new Uint8Array(dictBuf), 0);
-                combined.set(new Uint8Array(chunkBuf), dictBuf.byteLength);
-                chunkBuf = combined.buffer;
-              }
-            }
-          }
+          const dict = await prependDictPage(chunkBuf, encoding, pageInfo.byteOffset, meta.r2Key, this.r2(meta.r2Key), this.wasmEngine);
+          chunkBuf = dict.buf;
+          bytesRead += dict.extraBytes;
 
           const decoded = decodeParquetColumnChunk(
             chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,

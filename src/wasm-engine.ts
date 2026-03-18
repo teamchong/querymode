@@ -657,7 +657,8 @@ export class WasmEngine {
     };
   }
 
-  executeQuery(query: QueryDescriptor): Row[] | null {
+  /** Write SQL into WASM input buffer and execute. Returns {resultPtr, resultSize} or null. */
+  private runSql(query: QueryDescriptor): { resultPtr: number; resultSize: number } | null {
     const MAX_SQL_LENGTH = 64 * 1024; // 64KB — WASM SQL input buffer is fixed-size
     const sqlBytes = textEncoder.encode(queryToSql(query));
     if (sqlBytes.length > MAX_SQL_LENGTH) {
@@ -671,8 +672,13 @@ export class WasmEngine {
     if (!resultPtr) return null;
     const resultSize = this.exports.getResultSize();
     if (!resultSize) return null;
+    return { resultPtr, resultSize };
+  }
 
-    const rows = parseWasmResult(this.exports.memory.buffer, resultPtr, resultSize);
+  executeQuery(query: QueryDescriptor): Row[] | null {
+    const result = this.runSql(query);
+    if (!result) return null;
+    const rows = parseWasmResult(this.exports.memory.buffer, result.resultPtr, result.resultSize);
     this.exports.resetResult();
     return rows;
   }
@@ -683,22 +689,10 @@ export class WasmEngine {
    * in a single pass (memcpy for numeric columns).
    */
   executeQueryColumnar(query: QueryDescriptor): ArrayBuffer | null {
-    const MAX_SQL_LENGTH = 64 * 1024;
-    const sqlBytes = textEncoder.encode(queryToSql(query));
-    if (sqlBytes.length > MAX_SQL_LENGTH) {
-      throw new Error(`SQL query too large (${sqlBytes.length} bytes, max ${MAX_SQL_LENGTH})`);
-    }
-    const sqlBufPtr = this.exports.getSqlInputBuffer();
-    new Uint8Array(this.exports.memory.buffer, sqlBufPtr, sqlBytes.length).set(sqlBytes);
-    this.exports.setSqlInputLength(sqlBytes.length);
-
-    const resultPtr = this.exports.executeSql();
-    if (!resultPtr) return null;
-    const resultSize = this.exports.getResultSize();
-    if (!resultSize) return null;
-
+    const result = this.runSql(query);
+    if (!result) return null;
     // Convert directly from WASM memory to QMCB — no Row[] intermediate
-    const qmcb = wasmResultToQMCB(this.exports.memory.buffer, resultPtr, resultSize);
+    const qmcb = wasmResultToQMCB(this.exports.memory.buffer, result.resultPtr, result.resultSize);
     this.exports.resetResult();
     return qmcb;
   }
