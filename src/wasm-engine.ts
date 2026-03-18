@@ -1072,18 +1072,21 @@ export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentCol
       result.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
     } else if (typeof sample === "string") {
       const enc = textEncoder;
-      const parts: Uint8Array[] = [];
+      const encoded: Uint8Array[] = new Array(rows.length);
       let totalLen = 0;
-      for (const row of rows) {
-        const str = enc.encode(String(row[colName] ?? ""));
-        const header = new Uint8Array(4);
-        new DataView(header.buffer).setUint32(0, str.length, true);
-        parts.push(header, str);
-        totalLen += 4 + str.length;
+      for (let i = 0; i < rows.length; i++) {
+        encoded[i] = enc.encode(String(rows[i][colName] ?? ""));
+        totalLen += 4 + encoded[i].length;
       }
       const buf = new Uint8Array(totalLen);
+      const dv = new DataView(buf.buffer);
       let off = 0;
-      for (const p of parts) { buf.set(p, off); off += p.length; }
+      for (let i = 0; i < rows.length; i++) {
+        dv.setUint32(off, encoded[i].length, true);
+        off += 4;
+        buf.set(encoded[i], off);
+        off += encoded[i].length;
+      }
       result.push({ name: colName, dtype: "utf8", values: buf.buffer });
     }
   }
