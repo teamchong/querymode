@@ -11,7 +11,7 @@ All errors thrown by QueryMode are `QueryModeError` instances with a structured 
 |------|------|----------------|
 | `TABLE_NOT_FOUND` | File doesn't exist, R2 key missing | "Table not found: events.lance" |
 | `COLUMN_NOT_FOUND` | Column name not in schema | "Column not found: foo" |
-| `INVALID_FORMAT` | File can't be parsed as any supported format | "Invalid table format: data.xyz" |
+| `INVALID_FORMAT` | File can't be parsed as any supported format | "Invalid table format: data.xyz. Supported formats: .lance, .parquet, .csv, ..." |
 | `SCHEMA_MISMATCH` | Column exists but type doesn't match operation | "Column not found in events: age" |
 | `INVALID_FILTER` | Bad filter op or value type | "Invalid filter: unknown op 'regex'" |
 | `INVALID_AGGREGATE` | Bad aggregate function or missing column | "Invalid aggregate: sum requires numeric column" |
@@ -61,15 +61,23 @@ try {
 
 Already-wrapped `QueryModeError` instances pass through unchanged.
 
-## SQL parse errors
+## SQL errors
 
-SQL syntax errors throw standard `Error` (not `QueryModeError`) with the parse position:
+SQL syntax errors throw `SqlParseError` or `SqlLexerError` (not `QueryModeError`) with a `position` field indicating where the error occurred:
 
 ```typescript
+import { SqlParseError, SqlLexerError } from "querymode"
+
 try {
   await qm.sql("SELECT FROM").collect()
 } catch (err) {
-  // "Expected column or expression at position 7"
-  console.log(err.message)
+  if (err instanceof SqlParseError) {
+    console.log(err.message)   // "Expected column or expression at position 7"
+    console.log(err.position)  // 7
+  }
+  if (err instanceof SqlLexerError) {
+    console.log(err.message)   // "Unexpected character at position 12"
+    console.log(err.position)  // 12
+  }
 }
 ```
