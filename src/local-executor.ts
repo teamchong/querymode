@@ -18,7 +18,7 @@ import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-eng
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
-import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, canSkipPageMultiCol, type FragmentSource, type PipelineOptions } from "./operators.js";
+import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, buildKeptPageIndices, type FragmentSource, type PipelineOptions } from "./operators.js";
 
 /**
  * Executor for local mode (Node/Bun).
@@ -181,16 +181,12 @@ export class LocalExecutor implements QueryExecutor {
     const ranges: { column: string; offset: number; length: number }[] = [];
     const colDetails: ExplainResult["columns"] = [];
 
-    // Uniform page-level skip across all columns to match actual query behavior
+    const { kept: keptArr, skipped: skipCount } = buildKeptPageIndices(
+      projectedColumns, query.filters, query.filterGroups, { skipPruning: !!query.vectorSearch },
+    );
+    pagesSkipped += skipCount;
+    const keptPages = new Set(keptArr);
     const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
-    const keptPages = new Set<number>();
-    for (let pi = 0; pi < maxPages; pi++) {
-      if (!query.vectorSearch && canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
-        pagesSkipped += projectedColumns.length;
-      } else {
-        keptPages.add(pi);
-      }
-    }
     pagesTotal = maxPages * projectedColumns.length;
 
     const firstCol = projectedColumns[0];
@@ -471,15 +467,10 @@ export class LocalExecutor implements QueryExecutor {
     let pagesSkipped = 0;
 
     // Uniform page-level skip: decide once per page index across all columns to avoid row misalignment.
-    const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
-    const keptPageIndices: number[] = [];
-    for (let pi = 0; pi < maxPages; pi++) {
-      if (canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
-        pagesSkipped += projectedColumns.length;
-        continue;
-      }
-      keptPageIndices.push(pi);
-    }
+    const { kept: keptPageIndices, skipped } = buildKeptPageIndices(
+      projectedColumns, query.filters, query.filterGroups,
+    );
+    pagesSkipped += skipped;
     for (const col of projectedColumns) {
       for (const pi of keptPageIndices) {
         const page = col.pages[pi];

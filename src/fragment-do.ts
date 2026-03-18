@@ -8,7 +8,7 @@ import { R2SpillBackend } from "./r2-spill.js";
 import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline,
-  canSkipPageMultiCol,
+  buildKeptPageIndices,
 } from "./operators.js";
 import { mergeQueryResults } from "./merge.js";
 import { resolveBucket } from "./bucket.js";
@@ -79,16 +79,10 @@ export class FragmentDO extends DurableObject<Env> {
       let cols = effectiveMeta.columns.filter(c => neededNames.has(c.name));
 
       // Build byte ranges for each page, skipping uniformly across all columns.
-      // Uses canSkipPageMultiCol which handles both AND filters and OR filterGroups.
-      const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
-      const keptPageIndices: number[] = [];
-      for (let pi = 0; pi < maxPages; pi++) {
-        if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
-          totalPagesSkipped += cols.length;
-          continue;
-        }
-        keptPageIndices.push(pi);
-      }
+      const { kept: keptPageIndices, skipped } = buildKeptPageIndices(
+        cols, query.filters, query.filterGroups, { skipPruning: !!query.vectorSearch },
+      );
+      totalPagesSkipped += skipped;
 
       const ranges: { column: string; offset: number; length: number }[] = [];
       for (const col of cols) {

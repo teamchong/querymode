@@ -17,7 +17,7 @@ import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline, estimateRowSize,
   FilterOperator, HashJoinOperator, ProjectOperator,
-  canSkipPageMultiCol, DEFAULT_MEMORY_BUDGET,
+  buildKeptPageIndices, DEFAULT_MEMORY_BUDGET,
 } from "./operators.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
@@ -114,17 +114,10 @@ class EdgeScanOperator implements Operator {
     let cols = meta.columns.filter(c => neededNames.has(c.name));
     this.cols = cols;
 
-    // Determine which pages to keep — must be uniform across all columns to avoid row misalignment.
-    // Uses canSkipPageMultiCol which handles both AND filters and OR filterGroups.
-    const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
-    const keptPageIndices: number[] = [];
-    for (let pi = 0; pi < maxPages; pi++) {
-      if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
-        this.pagesSkipped += cols.length;
-        continue;
-      }
-      keptPageIndices.push(pi);
-    }
+    const { kept: keptPageIndices, skipped } = buildKeptPageIndices(
+      cols, query.filters, query.filterGroups, { skipPruning: !!query.vectorSearch },
+    );
+    this.pagesSkipped += skipped;
 
     for (const col of cols) {
       this.columnPageInfos.set(col.name, keptPageIndices.map(pi => col.pages[pi]).filter(Boolean));
@@ -687,15 +680,12 @@ export class QueryDO extends DurableObject<Env> {
     const colDetails: ExplainResult["columns"] = [];
 
     // Uniform page-level skip across all columns to match actual query behavior
+    const { kept: keptArr, skipped: skipCount } = buildKeptPageIndices(
+      projectedColumns, query.filters, query.filterGroups, { skipPruning: !!query.vectorSearch },
+    );
+    pagesSkipped += skipCount;
+    const keptPages = new Set(keptArr);
     const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
-    const keptPages = new Set<number>();
-    for (let pi = 0; pi < maxPages; pi++) {
-      if (!query.vectorSearch && canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
-        pagesSkipped += projectedColumns.length;
-      } else {
-        keptPages.add(pi);
-      }
-    }
     const pagesTotal = maxPages * projectedColumns.length;
 
     for (const col of projectedColumns) {
@@ -940,15 +930,10 @@ export class QueryDO extends DurableObject<Env> {
     const columnPageInfos = new Map<string, typeof cols[0]["pages"]>();
     let pagesSkipped = 0;
 
-    const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
-    const keptPageIndices: number[] = [];
-    for (let pi = 0; pi < maxPages; pi++) {
-      if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
-        pagesSkipped += cols.length;
-        continue;
-      }
-      keptPageIndices.push(pi);
-    }
+    const { kept: keptPageIndices, skipped } = buildKeptPageIndices(
+      cols, query.filters, query.filterGroups, { skipPruning: !!query.vectorSearch },
+    );
+    pagesSkipped += skipped;
 
     for (const col of cols) {
       const keptPages = keptPageIndices.map(pi => col.pages[pi]).filter(Boolean);

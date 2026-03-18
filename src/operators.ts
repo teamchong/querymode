@@ -121,6 +121,25 @@ export function canSkipPageMultiCol(
   return false;
 }
 
+/** Build array of page indices that survive min/max pruning.
+ *  Uniform across all columns to prevent row misalignment. */
+export function buildKeptPageIndices(
+  columns: ColumnMeta[], filters: FilterOp[], filterGroups?: FilterOp[][],
+  opts?: { skipPruning?: boolean },
+): { kept: number[]; skipped: number } {
+  const maxPages = columns.reduce((m, c) => Math.max(m, c.pages.length), 0);
+  const kept: number[] = [];
+  let skipped = 0;
+  for (let pi = 0; pi < maxPages; pi++) {
+    if (!opts?.skipPruning && canSkipPageMultiCol(columns, pi, filters, filterGroups)) {
+      skipped += columns.length;
+    } else {
+      kept.push(pi);
+    }
+  }
+  return { kept, skipped };
+}
+
 /** Linear column lookup — faster than Map build for typical column counts (<30). */
 function findCol(columns: ColumnMeta[], name: string): ColumnMeta | undefined {
   for (let i = 0; i < columns.length; i++) if (columns[i].name === name) return columns[i];
