@@ -1,6 +1,6 @@
 ---
 title: Formats
-description: Parquet, Lance v2, Iceberg, CSV, JSON, Arrow — same API regardless of format.
+description: Parquet, Lance, Iceberg, CSV, JSON/NDJSON, Arrow — same API regardless of format.
 ---
 
 QueryMode reads columnar and row-oriented formats with the same API. Format detection is automatic based on file magic bytes.
@@ -10,10 +10,10 @@ QueryMode reads columnar and row-oriented formats with the same API. Format dete
 | Format | Type | Page skip | Compression | Status |
 |--------|------|-----------|-------------|--------|
 | **Parquet** | Columnar | Min/max stats | Snappy, ZSTD, GZIP, LZ4 | Full support |
-| **Lance v2** | Columnar | Min/max stats | None (raw pages) | Full support |
+| **Lance v1/v2** | Columnar | Min/max stats | None (raw pages) | Full support |
 | **Iceberg** | Table format | Via Parquet | Via Parquet | Metadata + Parquet data |
 | **CSV** | Row | No | No | Via `fromCSV()` |
-| **JSON** | Row | No | No | Via `fromJSON()` |
+| **JSON / NDJSON** | Row | No | No | Via `fromJSON()` or file path |
 | **Arrow** | Columnar | No | No | In-memory only |
 
 ## Parquet
@@ -45,9 +45,9 @@ const result = await qm
 
 Snappy decompression is pure TypeScript. ZSTD, GZIP, and LZ4 use the WASM engine.
 
-## Lance v2
+## Lance v1 / v2
 
-Native Lance v2 format reader. Parses the 40-byte footer, column metadata protobuf, and page data.
+Native Lance format reader supporting both v1 and v2 layouts. Parses the 40-byte footer, column metadata protobuf, and page data.
 
 ```typescript
 const result = await qm
@@ -75,7 +75,7 @@ const result = await qm
 
 Supports Iceberg v1 and v2 metadata, type mapping from Iceberg schema to QueryMode types.
 
-## CSV and JSON
+## CSV, JSON, and NDJSON
 
 In-memory materialization for small datasets:
 
@@ -85,7 +85,14 @@ const df = await QueryMode.fromCSV(csvString, "my_table")
 
 // From JSON array
 const df = QueryMode.fromJSON(jsonArray, "my_table")
+
+// From file — auto-detected by extension and content
+const df = await qm.table("./data/events.json").collect()   // JSON array
+const df = await qm.table("./data/events.ndjson").collect()  // newline-delimited JSON
+const df = await qm.table("./data/events.csv").collect()     // CSV/TSV/PSV (auto-detect delimiter)
 ```
+
+CSV auto-detects delimiter (comma, tab, pipe) and infers column types from the data. JSON supports both `[{...}, {...}]` arrays and NDJSON (`{...}\n{...}`) based on the first non-whitespace byte.
 
 These materialize all data in memory. Use Parquet or Lance for large datasets.
 

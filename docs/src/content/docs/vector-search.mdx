@@ -1,9 +1,9 @@
 ---
 title: Vector Search
-description: Similarity search with SIMD acceleration, IVF-PQ indexes, and text-to-vector encoding.
+description: Similarity search with SIMD acceleration, HNSW and IVF-PQ indexes, and text-to-vector encoding.
 ---
 
-QueryMode supports vector similarity search on embedding columns stored in Lance format. Searches use WASM SIMD for acceleration and IVF-PQ indexes when available.
+QueryMode supports vector similarity search on embedding columns stored in Lance format. Searches use WASM SIMD for acceleration and HNSW or IVF-PQ indexes when available.
 
 ## DataFrame API
 
@@ -60,14 +60,14 @@ The `NEAR` operator performs vector similarity search. `TOPK` limits results to 
 
 Without an index, QueryMode performs brute-force SIMD-accelerated distance computation across all vectors. Fast for datasets under ~100K vectors.
 
-### IVF-PQ
+### IVF-PQ (load pre-built)
 
-For larger datasets, create an IVF-PQ (Inverted File with Product Quantization) index:
+IVF-PQ (Inverted File with Product Quantization) indexes can be loaded from R2 for search:
 
 - **IVF** partitions vectors into clusters. At query time, only `nprobe` clusters are searched.
 - **PQ** compresses vectors into compact codes, reducing memory and I/O.
 
-IVF-PQ indexes are stored alongside data in R2 and loaded on first query.
+IVF-PQ indexes must be built externally (e.g. with LanceDB or FAISS) and stored in R2 alongside the data. QueryMode loads and searches them via the WASM engine. For indexes you can build directly in QueryMode, use HNSW.
 
 ### HNSW
 
@@ -128,7 +128,8 @@ const results = restored.search(queryVec, 10)
 | **Speed** | Fast (quantized distances) | Fast (graph traversal) |
 | **Memory** | Low (compressed codes) | High (full vectors + graph) |
 | **Recall** | Good with enough probes | Excellent |
-| **Build time** | Requires training (k-means) | Incremental (add one at a time) |
+| **Build time** | External (k-means training) | Incremental (add one at a time) |
+| **Build in QueryMode** | No (load pre-built) | Yes (`HnswIndex`) |
 | **Best for** | Large datasets (&gt;1M vectors) | Medium datasets (&lt;1M vectors) |
 
 ## Combining with filters
