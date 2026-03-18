@@ -95,9 +95,36 @@ Filter: amount > 1000
 → Skip entire page (no R2 read)
 ```
 
-This is automatic — no configuration needed. Works for `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `between`, `not_between`.
+This is automatic — no configuration needed. Supported filter ops:
 
-String columns also have min/max stats (lexicographic). LIKE filters don't benefit from page skip.
+| Op | Skip condition |
+|----|---------------|
+| `eq` | Value outside [min, max] range |
+| `neq` | Uniform page (min = max) equals filter value |
+| `gt`, `gte`, `lt`, `lte` | Entire range on wrong side of threshold |
+| `in` | All IN values outside [min, max] range |
+| `not_in` | Uniform page (min = max) appears in NOT IN list |
+| `between` | Page range and filter range don't overlap |
+| `not_between` | Entire page range inside the excluded range |
+
+String columns also have min/max stats (lexicographic). `like` and `not_like` filters don't benefit from page skip.
+
+### OR filters and page skip
+
+OR filters (`filterGroups`) use different pruning logic than AND filters:
+
+- **AND filters**: a page is skipped if **any single** AND filter eliminates it
+- **OR groups**: a page is skipped only if **every** OR group eliminates it
+
+```typescript
+// AND: skip if amount > 1000 OR region < 'a' eliminates the page
+.filter("amount", "gt", 500).filter("region", "eq", "us")
+
+// OR: both branches must independently eliminate the page to skip it
+.where("amount > 1000 OR region = 'us'")
+```
+
+Page skip decisions are made uniformly across all columns — the same pages are skipped for every column to avoid row misalignment between columns.
 
 ## WASM vs JS execution
 
