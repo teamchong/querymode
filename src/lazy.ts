@@ -215,7 +215,9 @@ export function queryHashKey(desc: QueryDescriptor): string {
   // Vector search
   if (desc.vectorSearch) {
     const vs = desc.vectorSearch;
-    parts.push(`v:${vs.column}:${vs.topK}:${Array.from(vs.queryVector).join(",")}`);
+    let vecStr = "";
+    for (let i = 0; i < vs.queryVector.length; i++) { if (i > 0) vecStr += ","; vecStr += vs.queryVector[i]; }
+    parts.push(`v:${vs.column}:${vs.topK}:${vecStr}`);
   }
 
   // Windows
