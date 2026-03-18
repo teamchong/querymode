@@ -47,6 +47,18 @@ export function dotDistance(a: Float32Array, b: Float32Array): number {
   return -dot;
 }
 
+/** Validate that a vector contains only finite values. */
+function validateVector(vec: Float32Array, dim: number, label: string): void {
+  if (vec.length !== dim) {
+    throw new Error(`${label}: expected dimension ${dim}, got ${vec.length}`);
+  }
+  for (let i = 0; i < vec.length; i++) {
+    if (!Number.isFinite(vec[i])) {
+      throw new Error(`${label} contains non-finite value at index ${i}: ${vec[i]}`);
+    }
+  }
+}
+
 type DistanceFn = (a: Float32Array, b: Float32Array) => number;
 
 function getDistanceFn(metric: "cosine" | "l2" | "dot"): DistanceFn {
@@ -64,6 +76,16 @@ function getDistanceFn(metric: "cosine" | "l2" | "dot"): DistanceFn {
 interface HeapItem {
   dist: number;
   id: number;
+}
+
+/** NaN-safe comparator: sorts by ascending distance, NaN sorts last. */
+function heapCmp(a: HeapItem, b: HeapItem): number {
+  const aN = a.dist !== a.dist; // true if NaN
+  const bN = b.dist !== b.dist;
+  if (aN && bN) return 0;
+  if (aN) return 1;
+  if (bN) return -1;
+  return a.dist - b.dist;
 }
 
 /** Min-heap ordered by dist (smallest distance at top). */
@@ -309,6 +331,7 @@ export class HnswIndex {
         visited.add(neighborId);
 
         const dist = this.distFn(query, this.vectors[neighborId]);
+        if (dist !== dist) continue; // skip NaN distances (defense-in-depth)
         const worstResult = results.peek()!;
 
         if (results.length < ef || dist < worstResult.dist) {
@@ -329,7 +352,7 @@ export class HnswIndex {
    * Sorts by distance and takes the first M.
    */
   private selectNeighbors(candidates: HeapItem[], M: number): number[] {
-    candidates.sort((a, b) => a.dist - b.dist);
+    candidates.sort(heapCmp);
     const result: number[] = [];
     for (let i = 0; i < Math.min(candidates.length, M); i++) {
       result.push(candidates[i].id);
@@ -343,9 +366,7 @@ export class HnswIndex {
 
   /** Add a vector to the index. The id must equal the current size (sequential). */
   add(id: number, vector: Float32Array): void {
-    if (vector.length !== this.dim) {
-      throw new Error(`Vector dimension mismatch: expected ${this.dim}, got ${vector.length}`);
-    }
+    validateVector(vector, this.dim, "add() vector");
 
     // Store vector
     if (id !== this._size) {
@@ -375,7 +396,7 @@ export class HnswIndex {
     for (let l = this.maxLevel; l > nodeLevel; l--) {
       const results = this.searchLayer(vector, ep, 1, l);
       // Pick the closest as new entry point
-      results.sort((a, b) => a.dist - b.dist);
+      results.sort(heapCmp);
       ep = [results[0]];
     }
 
@@ -407,7 +428,7 @@ export class HnswIndex {
       }
 
       // Update entry points for next layer down
-      results.sort((a, b) => a.dist - b.dist);
+      results.sort(heapCmp);
       ep = [results[0]];
     }
 
@@ -445,6 +466,7 @@ export class HnswIndex {
     if (this._size === 0) {
       return { indices: new Uint32Array(0), scores: new Float32Array(0) };
     }
+    validateVector(query, this.dim, "search() query");
 
     const ef = Math.max(efSearch ?? topK, topK);
 
@@ -453,7 +475,7 @@ export class HnswIndex {
     // Greedy descent from top layer to layer 1
     for (let l = this.maxLevel; l >= 1; l--) {
       const results = this.searchLayer(query, ep, 1, l);
-      results.sort((a, b) => a.dist - b.dist);
+      results.sort(heapCmp);
       ep = [results[0]];
     }
 
@@ -461,7 +483,7 @@ export class HnswIndex {
     const results = this.searchLayer(query, ep, ef, 0);
 
     // Sort by distance, take topK
-    results.sort((a, b) => a.dist - b.dist);
+    results.sort(heapCmp);
     const k = Math.min(topK, results.length);
     const indices = new Uint32Array(k);
     const scores = new Float32Array(k);

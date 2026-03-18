@@ -42,6 +42,7 @@ export default defineConfig({
       "src/partial-agg.test.ts",
       "src/umami-conformance.test.ts",
       "src/vip-cache.test.ts",
+      "src/hnsw.test.ts",
     ],
     hookTimeout: 300_000,
     testTimeout: 300_000,
