@@ -71,6 +71,16 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (min >= lo && max <= hi) return true;
         break;
       }
+      // like: skip when the fixed prefix doesn't overlap the page's string range
+      case "like": {
+        if (typeof filter.value !== "string" || typeof min !== "string") break;
+        const prefix = extractLikePrefix(filter.value);
+        if (!prefix) break;
+        // Page max < prefix or page min >= prefix + '\uffff' → no match possible
+        const prefixEnd = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+        if ((max as string) < prefix || (min as string) >= prefixEnd) return true;
+        break;
+      }
     }
   }
   return false;
@@ -545,6 +555,18 @@ export function rowPassesFilters(row: Row, filters: FilterOp[], filterGroups?: F
     );
   }
   return true;
+}
+
+/** Extract the fixed prefix from a LIKE pattern (before the first wildcard). Returns null if no useful prefix. */
+function extractLikePrefix(pattern: string): string | null {
+  let prefix = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "%" || ch === "_") break;
+    if (ch === "\\" && i + 1 < pattern.length) { prefix += pattern[++i]; continue; }
+    prefix += ch;
+  }
+  return prefix.length > 0 ? prefix : null;
 }
 
 /** Cache compiled LIKE regexes — avoids re-compilation per row. */

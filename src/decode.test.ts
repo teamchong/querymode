@@ -199,6 +199,25 @@ describe("canSkipPage", () => {
     const withNulls: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 5, minValue: 10, maxValue: 90 };
     expect(canSkipPage(withNulls, [{ column: "x", op: "is_not_null", value: 0 }], "x")).toBe(false);
   });
+
+  it("skips page with LIKE prefix when range doesn't overlap", () => {
+    const strPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
+    // Prefix "car" is entirely above [apple, banana]
+    expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "car%" }], "x")).toBe(true);
+    // Prefix "aa" is entirely below [apple, banana]
+    expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "aa%" }], "x")).toBe(true);
+  });
+
+  it("does not skip page with LIKE prefix when range overlaps", () => {
+    const strPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
+    expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "ba%" }], "x")).toBe(false);
+    expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "app%" }], "x")).toBe(false);
+  });
+
+  it("does not skip page with LIKE pattern starting with wildcard", () => {
+    const strPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
+    expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "%xyz%" }], "x")).toBe(false);
+  });
 });
 
 describe("assembleRows", () => {
