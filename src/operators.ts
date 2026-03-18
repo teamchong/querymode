@@ -1962,7 +1962,7 @@ export class WasmAggregateOperator implements Operator {
     const filterGroups = this.query.filterGroups;
     const hasFilters = filters.length > 0 || (filterGroups && filterGroups.length > 0);
     // Accumulator per aggregate
-    const acc: { sum: number; count: number; min: number; max: number }[] =
+    const acc: { sum: number; count: number; min: number; max: number; bigSum?: bigint; bigMin?: bigint; bigMax?: bigint }[] =
       aggregates.map(() => ({ sum: 0, count: 0, min: Infinity, max: -Infinity }));
 
     const scanStart = Date.now();
@@ -2067,9 +2067,9 @@ export class WasmAggregateOperator implements Operator {
               if (agg.fn === "min") { const v = this.wasm.minFloat64(buf); if (v < acc[ai].min) acc[ai].min = v; }
               if (agg.fn === "max") { const v = this.wasm.maxFloat64(buf); if (v > acc[ai].max) acc[ai].max = v; }
             } else if (col.dtype === "int64") {
-              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += Number(this.wasm.sumInt64(buf));
-              if (agg.fn === "min") { const v = Number(this.wasm.minInt64(buf)); if (v < acc[ai].min) acc[ai].min = v; }
-              if (agg.fn === "max") { const v = Number(this.wasm.maxInt64(buf)); if (v > acc[ai].max) acc[ai].max = v; }
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].bigSum = (acc[ai].bigSum ?? 0n) + this.wasm.sumInt64(buf);
+              if (agg.fn === "min") { const v = this.wasm.minInt64(buf); if (acc[ai].bigMin === undefined || v < acc[ai].bigMin!) acc[ai].bigMin = v; }
+              if (agg.fn === "max") { const v = this.wasm.maxInt64(buf); if (acc[ai].bigMax === undefined || v > acc[ai].bigMax!) acc[ai].bigMax = v; }
             }
           } else {
             // Filtered: use indexed aggregates on matching rows only
@@ -2083,9 +2083,9 @@ export class WasmAggregateOperator implements Operator {
               if (agg.fn === "min") { const v = this.wasm.exports.minFloat64Indexed(dataPtr, indicesPtr, matchCount); if (v < acc[ai].min) acc[ai].min = v; }
               if (agg.fn === "max") { const v = this.wasm.exports.maxFloat64Indexed(dataPtr, indicesPtr, matchCount); if (v > acc[ai].max) acc[ai].max = v; }
             } else if (col.dtype === "int64") {
-              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].sum += Number(this.wasm.exports.sumInt64Indexed(dataPtr, indicesPtr, matchCount));
-              if (agg.fn === "min") { const v = Number(this.wasm.exports.minInt64Indexed(dataPtr, indicesPtr, matchCount)); if (v < acc[ai].min) acc[ai].min = v; }
-              if (agg.fn === "max") { const v = Number(this.wasm.exports.maxInt64Indexed(dataPtr, indicesPtr, matchCount)); if (v > acc[ai].max) acc[ai].max = v; }
+              if (agg.fn === "sum" || agg.fn === "avg") acc[ai].bigSum = (acc[ai].bigSum ?? 0n) + this.wasm.exports.sumInt64Indexed(dataPtr, indicesPtr, matchCount);
+              if (agg.fn === "min") { const v = this.wasm.exports.minInt64Indexed(dataPtr, indicesPtr, matchCount); if (acc[ai].bigMin === undefined || v < acc[ai].bigMin!) acc[ai].bigMin = v; }
+              if (agg.fn === "max") { const v = this.wasm.exports.maxInt64Indexed(dataPtr, indicesPtr, matchCount); if (acc[ai].bigMax === undefined || v > acc[ai].bigMax!) acc[ai].bigMax = v; }
             }
           }
         }
@@ -2098,12 +2098,14 @@ export class WasmAggregateOperator implements Operator {
     for (let i = 0; i < aggregates.length; i++) {
       const agg = aggregates[i];
       const alias = agg.alias ?? `${agg.fn}_${agg.column}`;
+      const a = acc[i];
+      const hasBig = a.bigSum !== undefined || a.bigMin !== undefined || a.bigMax !== undefined;
       switch (agg.fn) {
-        case "sum": row[alias] = acc[i].count === 0 ? null : acc[i].sum; break;
-        case "avg": row[alias] = acc[i].count === 0 ? null : acc[i].sum / acc[i].count; break;
-        case "min": row[alias] = acc[i].count === 0 ? null : acc[i].min; break;
-        case "max": row[alias] = acc[i].count === 0 ? null : acc[i].max; break;
-        case "count": row[alias] = acc[i].count; break;
+        case "sum": row[alias] = a.count === 0 ? null : (hasBig ? a.bigSum! : a.sum); break;
+        case "avg": row[alias] = a.count === 0 ? null : (hasBig ? Number(a.bigSum!) / a.count : a.sum / a.count); break;
+        case "min": row[alias] = a.count === 0 ? null : (a.bigMin !== undefined ? a.bigMin : a.min); break;
+        case "max": row[alias] = a.count === 0 ? null : (a.bigMax !== undefined ? a.bigMax : a.max); break;
+        case "count": row[alias] = a.count; break;
       }
     }
 

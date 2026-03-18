@@ -222,7 +222,9 @@ export function mergeStates(
     if (target[i].m2 !== undefined && source[i].m2 !== undefined) {
       const nA = target[i].count, nB = source[i].count;
       if (nA > 0 && nB > 0) {
-        const delta = (source[i].sum / nB) - (target[i].sum / nA);
+        const meanA = target[i].bigSum !== undefined ? Number(target[i].bigSum!) / nA : target[i].sum / nA;
+        const meanB = source[i].bigSum !== undefined ? Number(source[i].bigSum!) / nB : source[i].sum / nB;
+        const delta = meanB - meanA;
         target[i].m2 = target[i].m2! + source[i].m2! + delta * delta * nA * nB / (nA + nB);
       } else {
         target[i].m2! += source[i].m2!;
