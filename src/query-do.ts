@@ -555,46 +555,52 @@ export class QueryDO extends DurableObject<Env> {
       const cached = this.footerCache.get(table);
       if (cached && cached.updatedAt >= updatedAt) continue;
 
-      // Stale or missing — re-read footer from R2
-      const head = await this.r2(r2Key).head(r2Key);
-      if (!head) continue;
+      // Stale or missing — re-read footer from R2 (with timeout to avoid hanging init)
+      try {
+        await withTimeout((async () => {
+          const head = await this.r2(r2Key).head(r2Key);
+          if (!head) return;
 
-      const fileSize = BigInt(head.size);
-      const tailSize = Math.min(Number(fileSize), 40);
-      const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
-      if (!obj) continue;
+          const fileSize = BigInt(head.size);
+          const tailSize = Math.min(Number(fileSize), 40);
+          const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(fileSize) - tailSize, length: tailSize } });
+          if (!obj) return;
 
-      const tailBuf = await obj.arrayBuffer();
-      const fmt = detectFormat(tailBuf);
+          const tailBuf = await obj.arrayBuffer();
+          const fmt = detectFormat(tailBuf);
 
-      let meta: TableMeta;
-      if (fmt === "parquet") {
-        const footerLen = getParquetFooterLength(tailBuf);
-        if (!footerLen) continue;
-        const footerObj = await this.r2(r2Key).get(r2Key, {
-          range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
-        });
-        if (!footerObj) continue;
-        const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
-        if (!parquetMeta) continue;
-        meta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
-        meta.name = table;
-        meta.updatedAt = updatedAt;
-      } else {
-        const footer = parseFooter(tailBuf);
-        if (!footer) continue;
-        const columns = await this.readColumnMeta(r2Key, footer);
-        meta = {
-          name: table, footer, format: "lance", columns,
-          totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
-          fileSize, r2Key, updatedAt,
-        };
+          let meta: TableMeta;
+          if (fmt === "parquet") {
+            const footerLen = getParquetFooterLength(tailBuf);
+            if (!footerLen) return;
+            const footerObj = await this.r2(r2Key).get(r2Key, {
+              range: { offset: Number(fileSize) - footerLen - 8, length: footerLen },
+            });
+            if (!footerObj) return;
+            const parquetMeta = parseParquetFooter(await footerObj.arrayBuffer());
+            if (!parquetMeta) return;
+            meta = parquetMetaToTableMeta(parquetMeta, r2Key, fileSize);
+            meta.name = table;
+            meta.updatedAt = updatedAt;
+          } else {
+            const footer = parseFooter(tailBuf);
+            if (!footer) return;
+            const columns = await this.readColumnMeta(r2Key, footer);
+            meta = {
+              name: table, footer, format: "lance", columns,
+              totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+              fileSize, r2Key, updatedAt,
+            };
+          }
+
+          this.footerCache.set(table, meta);
+          this.wasmEngine.clearTable(table);
+          this.wasmEngine.cacheClear();
+          await this.ctx.storage.put(`table:${table}`, meta);
+        })(), R2_TIMEOUT_MS);
+      } catch {
+        this.log("warn", "refresh_stale_table_failed", { table, r2Key });
       }
-
-      this.footerCache.set(table, meta);
-      this.wasmEngine.clearTable(table);
-      this.wasmEngine.cacheClear();
-      await this.ctx.storage.put(`table:${table}`, meta);
     }
   }
 

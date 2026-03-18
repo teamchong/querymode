@@ -7,6 +7,7 @@ import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaTo
 import type { QueryDORpc } from "./types.js";
 import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
 import { resolveBucket } from "./bucket.js";
+import { withTimeout } from "./coalesce.js";
 import wasmModule from "./wasm-module.js";
 
 const textEncoder = new TextEncoder();
@@ -336,15 +337,15 @@ export class MasterDO extends DurableObject<Env> {
     parsed?: Footer; raw: ArrayBuffer; fileSize: bigint; columns: ColumnMeta[];
     format: "lance" | "parquet";
   } | null> {
-    const head = await resolveBucket(this.env, r2Key).head(r2Key);
+    const head = await withTimeout(resolveBucket(this.env, r2Key).head(r2Key), 10_000);
     if (!head) return null;
 
     const fileSize = BigInt(head.size);
     // Read last 40 bytes — enough for Lance footer or Parquet tail detection
     const tailSize = Math.min(Number(fileSize), FOOTER_SIZE);
-    const obj = await resolveBucket(this.env, r2Key).get(r2Key, {
+    const obj = await withTimeout(resolveBucket(this.env, r2Key).get(r2Key, {
       range: { offset: Number(fileSize) - tailSize, length: tailSize },
-    });
+    }), 10_000);
     if (!obj) return null;
 
     const raw = await obj.arrayBuffer();
@@ -356,9 +357,9 @@ export class MasterDO extends DurableObject<Env> {
 
       // Fetch full Parquet Thrift footer
       const footerOffset = Number(fileSize) - footerLen - 8;
-      const footerObj = await resolveBucket(this.env, r2Key).get(r2Key, {
+      const footerObj = await withTimeout(resolveBucket(this.env, r2Key).get(r2Key, {
         range: { offset: footerOffset, length: footerLen },
-      });
+      }), 10_000);
       if (!footerObj) return null;
 
       const footerBuf = await footerObj.arrayBuffer();
@@ -376,9 +377,9 @@ export class MasterDO extends DurableObject<Env> {
     let columns: ColumnMeta[] = [];
     const metaLen = Number(parsed.columnMetaOffsetsStart) - Number(parsed.columnMetaStart);
     if (metaLen > 0) {
-      const metaObj = await resolveBucket(this.env, r2Key).get(r2Key, {
+      const metaObj = await withTimeout(resolveBucket(this.env, r2Key).get(r2Key, {
         range: { offset: Number(parsed.columnMetaStart), length: metaLen },
-      });
+      }), 10_000);
       if (metaObj) columns = parseColumnMetaFromProtobuf(await metaObj.arrayBuffer(), parsed.numColumns);
     }
 
@@ -404,7 +405,7 @@ export class MasterDO extends DurableObject<Env> {
     await Promise.allSettled(Object.entries(regions).map(async ([region, doId]) => {
       try {
         const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId)) as unknown as QueryDORpc;
-        await queryDo.invalidateRpc(payload);
+        await withTimeout(queryDo.invalidateRpc(payload), 5_000);
         this.broadcastFailures.delete(region);
       } catch {
         const count = (this.broadcastFailures.get(region) ?? 0) + 1;
