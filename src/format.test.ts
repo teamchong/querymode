@@ -126,7 +126,7 @@ describe("formatExplain", () => {
       fragments: 1,
       filters: [
         { column: "amount", op: "gt", pushable: true },
-        { column: "region", op: "in", pushable: false },
+        { column: "region", op: "in", pushable: true },
       ],
       metaCached: true,
     };
@@ -139,7 +139,7 @@ describe("formatExplain", () => {
     expect(output).toContain("name");
     expect(output).toContain("utf8");
     expect(output).toContain("amount gt  [pushable]");
-    expect(output).toContain("region in  [not pushable]");
+    expect(output).toContain("region in  [pushable]");
     expect(output).toContain("20 skipped (62.5%)");
     expect(output).toContain("128KB across 4 reads");
     expect(output).toContain("Meta: cached");

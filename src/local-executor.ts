@@ -209,9 +209,22 @@ export class LocalExecutor implements QueryExecutor {
   async explain(query: QueryDescriptor): Promise<ExplainResult> {
     const meta = await this.getOrLoadMeta(query.table);
     const { columns } = meta;
-    const projectedColumns = query.projections.length > 0
-      ? columns.filter(c => query.projections.includes(c.name))
-      : columns;
+    const neededCols = new Set(query.projections.length > 0 ? query.projections : columns.map(c => c.name));
+    for (const f of query.filters) neededCols.add(f.column);
+    if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededCols.add(f.column);
+    if (query.sortColumn) neededCols.add(query.sortColumn);
+    if (query.groupBy) for (const g of query.groupBy) neededCols.add(g);
+    if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededCols.add(a.column);
+    if (query.distinct) for (const d of query.distinct) neededCols.add(d);
+    if (query.windows) for (const w of query.windows) {
+      if (w.column) neededCols.add(w.column);
+      for (const p of w.partitionBy) neededCols.add(p);
+      for (const o of w.orderBy) neededCols.add(o.column);
+    }
+    if (query.join) neededCols.add(query.join.leftKey);
+    if (query.subqueryIn) for (const sq of query.subqueryIn) neededCols.add(sq.column);
+    if (query.vectorSearch) neededCols.add(query.vectorSearch.column);
+    const projectedColumns = columns.filter(c => neededCols.has(c.name));
 
     let pagesTotal = 0;
     let pagesSkipped = 0;
@@ -267,11 +280,10 @@ export class LocalExecutor implements QueryExecutor {
       fragments: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
       fragmentsScanned: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
       fanOut: false,
-      filters: query.filters.map(f => ({
-        column: f.column,
-        op: f.op,
-        pushable: true,
-      })),
+      filters: [
+        ...query.filters.map(f => ({ column: f.column, op: f.op, pushable: true })),
+        ...(query.filterGroups ?? []).flatMap(g => g.map(f => ({ column: f.column, op: f.op, pushable: true }))),
+      ],
       metaCached: this.metaCache.has(query.table),
     };
   }
