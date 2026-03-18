@@ -182,10 +182,12 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     const cte = cteMap.get(desc.table);
     if (cte) {
       const base = cte.descriptor;
-      // Guard: CTEs with sort/limit/aggregates/groupBy/having can't be inlined —
-      // they change the result shape and need materialization first.
+      // Guard: CTEs with sort/limit/aggregates/groupBy/having/distinct/windows
+      // can't be inlined — they change the result shape and need materialization first.
       const canInline = !base.sortColumn && base.limit === undefined &&
         !base.aggregates && !base.groupBy && !cte.havingExpr && !cte.allOrderBy &&
+        !(base.distinct && base.distinct.length > 0) &&
+        !(base.windows && base.windows.length > 0) &&
         !(base.filterGroups && base.filterGroups.length > 0 && desc.filterGroups && desc.filterGroups.length > 0);
       if (canInline) {
         desc.table = base.table;

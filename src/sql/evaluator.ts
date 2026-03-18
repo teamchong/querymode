@@ -152,6 +152,8 @@ function evaluateUnary(op: string, operandExpr: SqlExpr, row: Row): unknown {
 }
 
 function looseEqual(a: unknown, b: unknown): boolean {
+  // SQL semantics: NULL is never equal to anything (including NULL)
+  if (a === null || a === undefined || b === null || b === undefined) return false;
   if (typeof a === "number" && typeof b === "number") return a === b;
   if (typeof a === "bigint" && typeof b === "bigint") return a === b;
   if (typeof a === "string" && typeof b === "string") return a === b;
