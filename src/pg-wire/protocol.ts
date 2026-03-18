@@ -269,13 +269,14 @@ function field(type: number, value: string): Uint8Array {
 /** Map QueryMode dtypes to Postgres type OIDs */
 export function dtypeToOid(dtype: string): number {
   switch (dtype) {
-    case "int8": case "int16": case "int32": return 23;    // INT4
-    case "int64": return 20;                                // INT8
-    case "float32": return 700;                             // FLOAT4
-    case "float64": return 701;                             // FLOAT8
-    case "utf8": case "string": return 25;                  // TEXT
-    case "bool": case "boolean": return 16;                 // BOOL
-    case "binary": case "blob": return 17;                  // BYTEA
-    default: return 25;                                     // TEXT fallback
+    case "int8": case "int16": case "uint8": case "uint16": return 21;  // INT2
+    case "int32": case "uint32": return 23;                              // INT4
+    case "int64": case "uint64": return 20;                              // INT8
+    case "float16": case "float32": return 700;                          // FLOAT4
+    case "float64": return 701;                                          // FLOAT8
+    case "utf8": case "string": return 25;                               // TEXT
+    case "bool": case "boolean": return 16;                              // BOOL
+    case "binary": case "blob": return 17;                               // BYTEA
+    default: return 25;                                                  // TEXT fallback
   }
 }
