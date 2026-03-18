@@ -102,7 +102,6 @@ QueryMode is the query/transform layer. These are catalog-layer responsibilities
 - **Lineage tracking** — which pipeline produced which table, dependency graphs
 - **Lifecycle management** — TTL enforcement, garbage collection schedules
 - **Access control** — who can read/write which tables
-- **Schema evolution** — column additions, type changes across versions
 - **Cross-table transactions** — atomically updating multiple tables
 
 The metadata you attach via `append()` gives the catalog layer the raw information it needs. QueryMode stores it but doesn't interpret it.
