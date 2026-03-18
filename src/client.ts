@@ -17,7 +17,7 @@ import type {
 } from "./types.js";
 import { NULL_SENTINEL, rowComparator } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
-import { rowPassesFilters } from "./decode.js";
+import { rowPassesFilters, bigIntReplacer } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { descriptorToCode } from "./descriptor-to-code.js";
 
@@ -682,7 +682,7 @@ export class DataFrame<T extends Row = Row> {
   /** Export collected rows as JSON string. */
   async toJSON(opts?: { pretty?: boolean }): Promise<string> {
     const result = await this.collect();
-    return JSON.stringify(result.rows, null, opts?.pretty ? 2 : undefined);
+    return JSON.stringify(result.rows, bigIntReplacer, opts?.pretty ? 2 : undefined);
   }
 
   /** Export collected rows as CSV string. */
