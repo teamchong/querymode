@@ -79,7 +79,7 @@ export default {
         if (url.searchParams.get("deep") === "true") {
           try {
             const { rpc, regionName } = getQueryDo(request, env);
-            rpc.setRegion(regionName).catch(() => {});
+            void rpc.setRegion(regionName).catch(() => {});
             const diagnostics = await rpc.diagnosticsRpc();
             return json({ ...base, diagnostics }, 200, headers);
           } catch (err) {
@@ -126,7 +126,7 @@ export default {
 
       if (url.pathname === "/query") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const result = await rpc.queryRpc(body);
         result.requestId = requestId;
@@ -135,7 +135,7 @@ export default {
 
       if (url.pathname === "/query/stream") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const stream = await rpc.streamRpc(body);
         return new Response(stream, {
@@ -145,7 +145,7 @@ export default {
 
       if (url.pathname === "/query/count") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const count = await rpc.countRpc(body);
         return json({ count }, 200, headers);
@@ -153,7 +153,7 @@ export default {
 
       if (url.pathname === "/query/exists") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const exists = await rpc.existsRpc(body);
         return json({ exists }, 200, headers);
@@ -161,7 +161,7 @@ export default {
 
       if (url.pathname === "/query/first") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const row = await rpc.firstRpc(body);
         return json({ row }, 200, headers);
@@ -169,7 +169,7 @@ export default {
 
       if (url.pathname === "/query/explain") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const result = await rpc.explainRpc(body);
         return json(result, 200, headers);
@@ -177,7 +177,7 @@ export default {
 
       if (url.pathname === "/tables") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const result = await rpc.listTablesRpc();
         return json(result, 200, headers);
       }
@@ -186,7 +186,7 @@ export default {
         const table = url.searchParams.get("table");
         if (!table) return json({ error: "Missing ?table= parameter" }, 400, headers);
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const meta = await rpc.getMetaRpc(table);
         if (!meta) return json({ error: `Table "${table}" not found` }, 404, headers);
         return json(meta, 200, headers);
@@ -194,7 +194,7 @@ export default {
 
       if (url.pathname === "/register-iceberg") {
         const { rpc, regionName } = getQueryDo(request, env);
-        rpc.setRegion(regionName).catch(() => {});
+        void rpc.setRegion(regionName).catch(() => {});
         const body = await request.json();
         const result = await rpc.registerIcebergRpc(body);
         return json(result, 200, headers);
