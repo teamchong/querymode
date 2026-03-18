@@ -240,21 +240,22 @@ export function encodeColumnBuffer(
     }
     case "utf8":
     case "binary": {
-      const parts: Uint8Array[] = [];
+      // Two-pass: first encode strings to measure total size, then write to output buffer.
+      // Avoids per-string Uint8Array(4) header allocation and intermediate parts[] array.
+      const encoded: Uint8Array[] = new Array(values.length);
       let totalLen = 0;
-      for (const v of values) {
-        const str = v === null ? "" : String(v);
-        const encoded = textEncoder.encode(str);
-        const header = new Uint8Array(4);
-        new DataView(header.buffer).setUint32(0, encoded.length, true);
-        parts.push(header, encoded);
-        totalLen += 4 + encoded.length;
+      for (let i = 0; i < values.length; i++) {
+        const str = values[i] === null ? "" : String(values[i]);
+        encoded[i] = textEncoder.encode(str);
+        totalLen += 4 + encoded[i].length;
       }
       const buf = new Uint8Array(totalLen);
+      const dv = new DataView(buf.buffer);
       let off = 0;
-      for (const p of parts) {
-        buf.set(p, off);
-        off += p.length;
+      for (let i = 0; i < encoded.length; i++) {
+        dv.setUint32(off, encoded[i].length, true);
+        buf.set(encoded[i], off + 4);
+        off += 4 + encoded[i].length;
       }
       return buf.buffer;
     }
