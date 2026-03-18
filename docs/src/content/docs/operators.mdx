@@ -108,6 +108,48 @@ For numeric columns, the `WasmAggregateOperator` uses Zig SIMD vector instructio
 
 The DataFrame API automatically selects WASM aggregates when available.
 
+## Columnar fast path (nextColumnar)
+
+Operators can optionally implement `nextColumnar()` alongside `next()` for zero-copy performance. When the pipeline detects a columnar-capable operator chain, it uses `nextColumnar()` to pass column data directly without creating `Row[]` objects.
+
+```typescript
+import type { Operator, RowBatch, ColumnarBatch, DecodedValue } from "querymode"
+
+class DoublingOperator implements Operator {
+  constructor(private source: Operator, private column: string) {}
+
+  // Standard path — always required
+  async next(): Promise<RowBatch | null> {
+    const batch = await this.source.next()
+    if (!batch) return null
+    for (const row of batch) row[this.column] = (row[this.column] as number) * 2
+    return batch
+  }
+
+  // Columnar path — optional, avoids Row[] creation
+  async nextColumnar(): Promise<ColumnarBatch | null> {
+    if (!this.source.nextColumnar) return null
+    const batch = await this.source.nextColumnar()
+    if (!batch) return null
+    const col = batch.columns.get(this.column)
+    if (col) {
+      for (let i = 0; i < col.length; i++) {
+        col[i] = ((col[i] as number) ?? 0) * 2
+      }
+    }
+    return batch
+  }
+
+  async close() { await this.source.close() }
+}
+```
+
+The pipeline `ColumnarBatch` (from `operators.ts`) uses `Map<string, DecodedValue[]>` for columns and an optional `selection?: Uint32Array` for post-filter row indices. This is distinct from the QMCB wire-format `ColumnarBatch` documented in [Columnar Format](/columnar-format/) — see that page for the distinction.
+
+When to implement `nextColumnar()`:
+- **Do**: numeric transforms on large datasets (avoids `Row[]` allocation)
+- **Skip**: operators that reshape data (joins, aggregates) or need random access across rows
+
 ## Why composable operators matter
 
 Traditional engines give you a fixed query language. You can't put a window function before a join, run custom logic between pipeline stages, or swap the sort implementation.
