@@ -72,7 +72,7 @@ export class FragmentDO extends DurableObject<Env> {
       const effectiveMeta = (cachedMeta && cachedMeta.updatedAt >= meta.updatedAt) ? cachedMeta : meta;
       if (!cachedMeta || cachedMeta.updatedAt < meta.updatedAt) {
         this.footerCache.set(r2Key, meta);
-        this.ctx.storage.put(`frag:${r2Key}`, meta);
+        void this.ctx.storage.put(`frag:${r2Key}`, meta).catch(() => {});
       }
 
       const neededNames = queryReferencedColumns(query, effectiveMeta.columns.map(c => c.name));

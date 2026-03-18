@@ -39,6 +39,7 @@ import {
 const R2_SPILL_TIMEOUT_MS = 10_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const EMPTY_U8 = new Uint8Array(0);
 
 /** Generic spill backend for sort/join operators. */
 export interface SpillBackend {
@@ -165,7 +166,7 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
         let strBytes = 0;
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          const enc = typeof val === "string" ? encoder.encode(val) : new Uint8Array(0);
+          const enc = typeof val === "string" ? encoder.encode(val) : EMPTY_U8;
           encoded.push(enc);
           strBytes += enc.length;
         }

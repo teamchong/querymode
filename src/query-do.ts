@@ -449,7 +449,7 @@ export class QueryDO extends DurableObject<Env> {
     if (partitionBy) {
       const catalog = PartitionCatalog.fromFragments(partitionBy, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
-      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
+      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize()).catch(() => {});
       this.log("info", "partition_catalog_built", { ...catalog.stats(), source: "explicit" });
       return;
     }
@@ -489,7 +489,7 @@ export class QueryDO extends DurableObject<Env> {
     if (bestColumn) {
       const catalog = PartitionCatalog.fromFragments(bestColumn, fragmentMetas);
       this.partitionCatalogs.set(tableName, catalog);
-      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize());
+      void this.ctx.storage.put(`pcatalog:${tableName}`, catalog.serialize()).catch(() => {});
       this.log("info", "partition_catalog_built", catalog.stats());
     }
   }

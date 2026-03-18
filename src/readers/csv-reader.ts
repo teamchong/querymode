@@ -135,11 +135,9 @@ function inferType(values: string[]): DataType {
 
   for (const v of values) {
     const trimmed = v.trim();
-    if (trimmed === "" || trimmed.toLowerCase() === "null" || trimmed.toLowerCase() === "na") continue;
-    samples++;
-
-    // Boolean check
     const lower = trimmed.toLowerCase();
+    if (trimmed === "" || lower === "null" || lower === "na") continue;
+    samples++;
     if (lower !== "true" && lower !== "false" && lower !== "0" && lower !== "1") {
       allBool = false;
     }
@@ -164,14 +162,13 @@ function inferType(values: string[]): DataType {
 /** Convert a string value to a typed JS value based on DataType. */
 function coerceValue(raw: string, dtype: DataType): number | bigint | string | boolean | null {
   const trimmed = raw.trim();
-  if (trimmed === "" || trimmed.toLowerCase() === "null" || trimmed.toLowerCase() === "na") {
+  const lower = trimmed.toLowerCase();
+  if (trimmed === "" || lower === "null" || lower === "na") {
     return null;
   }
   switch (dtype) {
-    case "bool": {
-      const lower = trimmed.toLowerCase();
+    case "bool":
       return lower === "true" || lower === "1";
-    }
     case "int64": {
       const n = Number(trimmed);
       if (!Number.isFinite(n)) return null;

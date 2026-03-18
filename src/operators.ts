@@ -15,6 +15,7 @@ import { canSkipPage, matchesFilter, rowPassesFilters, decodePage } from "./deco
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 
 const _textEncoder = new TextEncoder();
+const EMPTY_U8 = new Uint8Array(0);
 
 /** Cached identity index arrays to avoid repeated allocations on hot paths. */
 const _identityCache = new Map<number, Uint32Array>();
@@ -658,7 +659,7 @@ function wasmFilterLike(
     for (let i = 0; i < rowCount; i++) {
       offsets[i] = totalBytes;
       const v = values[i];
-      const encoded = typeof v === "string" ? encoder.encode(v) : new Uint8Array(0);
+      const encoded = typeof v === "string" ? encoder.encode(v) : EMPTY_U8;
       encodedStrings.push(encoded);
       totalBytes += encoded.length;
     }
