@@ -7,7 +7,7 @@
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
-import { queryReferencedColumns } from "./types.js";
+import { queryReferencedColumns, NULL_SENTINEL } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -409,11 +409,12 @@ export class LocalExecutor implements QueryExecutor {
     if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
     if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
     if (query.windows) for (const w of query.windows) {
-      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? ""); feed("\0");
+      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? NULL_SENTINEL); feed("\0");
       if (w.partitionBy) for (const p of w.partitionBy) { feed(p); feed("\0"); }
       if (w.orderBy) for (const o of w.orderBy) { feed(o.column); feed(o.direction); feed("\0"); }
       if (w.frame) { feed(w.frame.type); feed(String(w.frame.start)); feed(String(w.frame.end)); feed("\0"); }
       if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
+      if (w.args?.default_ !== undefined) { feed(String(w.args.default_)); feed("\0"); }
     }
     if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); }
     if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(this.queryCacheKey(query.setOperation.right)); feed("\0"); }
@@ -726,7 +727,8 @@ export class LocalExecutor implements QueryExecutor {
 
     const versionsDir = pathMod.join(table, "_versions");
     const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
-    const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
+    const manifests = entries.filter(e => e.endsWith(".manifest"))
+      .sort((a, b) => parseInt(a) - parseInt(b));
 
     const results: VersionInfo[] = [];
     for (const manifestFile of manifests) {
@@ -799,7 +801,8 @@ export class LocalExecutor implements QueryExecutor {
 
     const versionsDir = pathMod.join(table, "_versions");
     const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
-    const manifests = entries.filter(e => e.endsWith(".manifest")).sort();
+    const manifests = entries.filter(e => e.endsWith(".manifest"))
+      .sort((a, b) => parseInt(a) - parseInt(b));
     if (manifests.length === 0) {
       throw new Error(`No manifests found in ${versionsDir}`);
     }

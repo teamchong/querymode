@@ -169,9 +169,9 @@ function compare(a: unknown, b: unknown): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
   if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
   if (typeof a === "string" && typeof b === "string") return a.localeCompare(b);
-  // Cross-type bigint/number: prefer bigint when safe
-  if (typeof a === "bigint" && typeof b === "number" && Number.isSafeInteger(b)) { const bb = BigInt(b); return a < bb ? -1 : a > bb ? 1 : 0; }
-  if (typeof a === "number" && typeof b === "bigint" && Number.isSafeInteger(a)) { const ab = BigInt(a); return ab < b ? -1 : ab > b ? 1 : 0; }
+  // Cross-type bigint/number: convert number to bigint (safe for all finite integers)
+  if (typeof a === "bigint" && typeof b === "number") { if (!Number.isFinite(b)) return b === Infinity ? -1 : 1; const bb = BigInt(Math.trunc(b)); return a < bb ? -1 : a > bb ? 1 : 0; }
+  if (typeof a === "number" && typeof b === "bigint") { if (!Number.isFinite(a)) return a === Infinity ? 1 : -1; const ab = BigInt(Math.trunc(a)); return ab < b ? -1 : ab > b ? 1 : 0; }
   return toNumber(a) - toNumber(b);
 }
 
@@ -190,7 +190,7 @@ function matchLike(value: string, pattern: string): boolean {
 function castValue(val: unknown, targetType: string): unknown {
   if (val === null) return null;
   const t = targetType.toLowerCase();
-  if (t === "bigint") return BigInt(Math.trunc(toNumber(val)));
+  if (t === "bigint") return typeof val === "bigint" ? val : BigInt(Math.trunc(toNumber(val)));
   if (t === "int" || t === "integer") return Math.trunc(toNumber(val));
   if (t === "float" || t === "double" || t === "real" || t === "decimal" || t === "numeric") return toNumber(val);
   if (t === "text" || t === "varchar" || t === "string" || t === "char") return String(val);
