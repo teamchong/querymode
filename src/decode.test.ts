@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodePage, assembleRows, canSkipPage, canSkipFragment, matchesFilter, bigIntReplacer } from "./decode.js";
+import { decodePage, assembleRows, applySortAndLimit, canSkipPage, canSkipFragment, matchesFilter, bigIntReplacer } from "./decode.js";
 import type { ColumnMeta, PageInfo } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
@@ -439,6 +439,56 @@ describe("assembleRows", () => {
     const emb1 = rows[1].embedding as Float32Array;
     expect(emb1[0]).toBeCloseTo(4.0);
     expect(emb1[2]).toBeCloseTo(6.0);
+  });
+});
+
+describe("applySortAndLimit (topK null ordering)", () => {
+  it("sorts nulls last in ascending topK", () => {
+    const rows = [
+      { v: null }, { v: 3 }, { v: 1 }, { v: null }, { v: 2 }, { v: 5 }, { v: 4 },
+    ];
+    const query: QueryDescriptor = {
+      table: "t", filters: [], projections: ["v"],
+      sortColumn: "v", sortDirection: "asc", limit: 3,
+    };
+    const result = applySortAndLimit(rows, query);
+    expect(result.map(r => r.v)).toEqual([1, 2, 3]);
+  });
+
+  it("sorts nulls last in descending topK", () => {
+    const rows = [
+      { v: null }, { v: 3 }, { v: 1 }, { v: null }, { v: 2 }, { v: 5 }, { v: 4 },
+    ];
+    const query: QueryDescriptor = {
+      table: "t", filters: [], projections: ["v"],
+      sortColumn: "v", sortDirection: "desc", limit: 3,
+    };
+    const result = applySortAndLimit(rows, query);
+    expect(result.map(r => r.v)).toEqual([5, 4, 3]);
+  });
+
+  it("nulls appear at end when limit exceeds non-null count", () => {
+    const rows = [
+      { v: null }, { v: 2 }, { v: 1 },
+    ];
+    const query: QueryDescriptor = {
+      table: "t", filters: [], projections: ["v"],
+      sortColumn: "v", sortDirection: "asc", limit: 3,
+    };
+    const result = applySortAndLimit(rows, query);
+    expect(result.map(r => r.v)).toEqual([1, 2, null]);
+  });
+
+  it("full sort path also puts nulls last", () => {
+    const rows = [
+      { v: null }, { v: 3 }, { v: 1 }, { v: null }, { v: 2 },
+    ];
+    const query: QueryDescriptor = {
+      table: "t", filters: [], projections: ["v"],
+      sortColumn: "v", sortDirection: "asc",
+    };
+    const result = applySortAndLimit(rows, query);
+    expect(result.map(r => r.v)).toEqual([1, 2, 3, null, null]);
   });
 });
 

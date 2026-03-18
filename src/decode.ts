@@ -359,17 +359,18 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
 
   const cmp = (a: Row, b: Row): number => {
     const av = a[col], bv = b[col];
-    if (av === null && bv === null) return 0;
-    if (av === null) return -1;
-    if (bv === null) return 1;
+    // Nulls-last: null is "greatest" so it sits at the heap root and gets replaced first
+    if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
     const c = av < bv ? -1 : av > bv ? 1 : 0;
     return desc ? -c : c;
   };
 
   const shouldReplace = (row: Row): boolean => {
     const nv = row[col], rv = heap[0][col];
-    if (nv === null) return false;
-    if (rv === null) return true;
+    if (nv === null || nv === undefined) return false;
+    if (rv === null || rv === undefined) return true;
     return desc ? nv > rv : nv < rv;
   };
 
