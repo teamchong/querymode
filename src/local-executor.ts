@@ -10,7 +10,7 @@ import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, Pag
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
-import { assembleRows, canSkipPage } from "./decode.js";
+import { assembleRows } from "./decode.js";
 import { coalesceRanges, autoCoalesceGap } from "./coalesce.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 
@@ -18,7 +18,7 @@ const textEncoder = new TextEncoder();
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
-import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, type FragmentSource, type PipelineOptions } from "./operators.js";
+import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, canSkipPageMultiCol, type FragmentSource, type PipelineOptions } from "./operators.js";
 
 /**
  * Executor for local mode (Node/Bun).
@@ -219,22 +219,28 @@ export class LocalExecutor implements QueryExecutor {
     const ranges: { column: string; offset: number; length: number }[] = [];
     const colDetails: ExplainResult["columns"] = [];
 
-    // Use first column for row estimation (all columns have same page structure)
+    // Uniform page-level skip across all columns to match actual query behavior
+    const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
+    const keptPages = new Set<number>();
+    for (let pi = 0; pi < maxPages; pi++) {
+      if (!query.vectorSearch && canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
+        pagesSkipped += projectedColumns.length;
+      } else {
+        keptPages.add(pi);
+      }
+    }
+    pagesTotal = maxPages * projectedColumns.length;
+
     const firstCol = projectedColumns[0];
     for (const col of projectedColumns) {
       let colBytes = 0;
       let colPages = 0;
       for (let pi = 0; pi < col.pages.length; pi++) {
+        if (!keptPages.has(pi)) continue;
         const page = col.pages[pi];
-        pagesTotal++;
-        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-          pagesSkipped++;
-          continue;
-        }
         colPages++;
         colBytes += page.byteLength;
         ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
-        // Count estimated rows from first projected column's non-skipped pages
         if (col === firstCol) estimatedRows += page.rowCount;
       }
       colDetails.push({ name: col.name, dtype: col.dtype as DataType, pages: colPages, bytes: colBytes });
@@ -531,12 +537,20 @@ export class LocalExecutor implements QueryExecutor {
     const pageRanges: { column: string; offset: bigint; length: number }[] = [];
     let pagesSkipped = 0;
 
+    // Uniform page-level skip: decide once per page index across all columns to avoid row misalignment.
+    const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
+    const keptPageIndices: number[] = [];
+    for (let pi = 0; pi < maxPages; pi++) {
+      if (canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
+        pagesSkipped += projectedColumns.length;
+        continue;
+      }
+      keptPageIndices.push(pi);
+    }
     for (const col of projectedColumns) {
-      for (const page of col.pages) {
-        if (canSkipPage(page, query.filters, col.name)) {
-          pagesSkipped++;
-          continue;
-        }
+      for (const pi of keptPageIndices) {
+        const page = col.pages[pi];
+        if (!page) continue;
         pageRanges.push({ column: col.name, offset: page.byteOffset, length: page.byteLength });
       }
     }

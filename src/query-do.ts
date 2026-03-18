@@ -126,21 +126,14 @@ class EdgeScanOperator implements Operator {
     this.cols = cols;
 
     // Determine which pages to keep — must be uniform across all columns to avoid row misalignment.
-    // A page is skipped only if any AND filter eliminates it (same logic as canSkipPageMultiCol).
+    // Uses canSkipPageMultiCol which handles both AND filters and OR filterGroups.
     const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
     const keptPageIndices: number[] = [];
     for (let pi = 0; pi < maxPages; pi++) {
-      let skip = false;
-      if (!query.vectorSearch) {
-        for (const f of query.filters) {
-          const col = cols.find(c => c.name === f.column);
-          if (!col) continue;
-          const page = col.pages[pi];
-          if (!page) continue;
-          if (canSkipPage(page, [f], f.column)) { skip = true; break; }
-        }
+      if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
+        this.pagesSkipped += cols.length;
+        continue;
       }
-      if (skip) { this.pagesSkipped += cols.length; continue; }
       keptPageIndices.push(pi);
     }
 
@@ -1004,17 +997,10 @@ export class QueryDO extends DurableObject<Env> {
     const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
     const keptPageIndices: number[] = [];
     for (let pi = 0; pi < maxPages; pi++) {
-      let skip = false;
-      if (!query.vectorSearch) {
-        for (const f of query.filters) {
-          const col = cols.find(c => c.name === f.column);
-          if (!col) continue;
-          const page = col.pages[pi];
-          if (!page) continue;
-          if (canSkipPage(page, [f], f.column)) { skip = true; break; }
-        }
+      if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
+        pagesSkipped += cols.length;
+        continue;
       }
-      if (skip) { pagesSkipped += cols.length; continue; }
       keptPageIndices.push(pi);
     }
 
