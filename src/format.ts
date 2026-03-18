@@ -57,6 +57,14 @@ export function formatResultSummary(result: QueryResult & Partial<LocalTimingInf
     parts.push(`wasm: ${result.wasmExecMs.toFixed(1)}ms`);
   }
 
+  if ((result.cacheHits ?? 0) + (result.cacheMisses ?? 0) > 0) {
+    parts.push(`L1: ${result.cacheHits ?? 0}/${(result.cacheHits ?? 0) + (result.cacheMisses ?? 0)} hits`);
+  }
+
+  if ((result.edgeCacheHits ?? 0) + (result.edgeCacheMisses ?? 0) > 0) {
+    parts.push(`L2: ${result.edgeCacheHits ?? 0}/${(result.edgeCacheHits ?? 0) + (result.edgeCacheMisses ?? 0)} hits`);
+  }
+
   if (result.spillBytesWritten && result.spillBytesWritten > 0) {
     parts.push(`${formatBytes(result.spillBytesWritten)} spilled`);
   }

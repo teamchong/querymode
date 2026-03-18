@@ -94,6 +94,28 @@ describe("formatResultSummary", () => {
     expect(summary).toContain("meta: 2.0ms");
   });
 
+  it("includes L1 and L2 cache hit rates", () => {
+    const result: QueryResult = {
+      rows: [{}], rowCount: 1, columns: ["a"],
+      bytesRead: 1000, pagesSkipped: 0, durationMs: 5.0,
+      cacheHits: 8, cacheMisses: 2,
+      edgeCacheHits: 3, edgeCacheMisses: 7,
+    };
+    const summary = formatResultSummary(result);
+    expect(summary).toContain("L1: 8/10 hits");
+    expect(summary).toContain("L2: 3/10 hits");
+  });
+
+  it("omits cache stats when zero", () => {
+    const result: QueryResult = {
+      rows: [{}], rowCount: 1, columns: ["a"],
+      bytesRead: 0, pagesSkipped: 0, durationMs: 1.0,
+    };
+    const summary = formatResultSummary(result);
+    expect(summary).not.toContain("L1:");
+    expect(summary).not.toContain("L2:");
+  });
+
   it("singular row", () => {
     const result: QueryResult = {
       rows: [{}],
