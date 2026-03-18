@@ -12,9 +12,6 @@ import { type FormatReader, type DataSource, encodeColumnBuffer } from "../reade
 import type { ColumnMeta, DataType, PageInfo, Row } from "../types.js";
 import type { FragmentSource } from "../operators.js";
 
-/** Number of rows to sample for type inference. */
-const TYPE_INFERENCE_ROWS = 256;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -129,8 +126,8 @@ function inferSchema(objects: Record<string, unknown>[]): InferredSchema {
   const keySet = new Set<string>();
   const typeMap = new Map<string, DataType | null>();
 
-  const sampleSize = Math.min(objects.length, TYPE_INFERENCE_ROWS);
-  for (let i = 0; i < sampleSize; i++) {
+  // Iterate all objects to discover late-appearing keys and accurate types
+  for (let i = 0; i < objects.length; i++) {
     const obj = objects[i];
     for (const key of Object.keys(obj)) {
       if (!keySet.has(key)) {
@@ -161,7 +158,7 @@ interface ParsedJson {
   rowCount: number;
 }
 
-function parseJsonFull(text: string): ParsedJson {
+export function parseJsonFull(text: string): ParsedJson {
   const objects = parseJsonObjects(text);
   if (objects.length === 0) {
     return { schema: { names: [], types: [] }, columns: [], rowCount: 0 };

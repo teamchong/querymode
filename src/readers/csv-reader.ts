@@ -13,9 +13,6 @@ import { type FormatReader, type DataSource, encodeColumnBuffer } from "../reade
 import type { ColumnMeta, DataType, PageInfo, Row } from "../types.js";
 import type { FragmentSource } from "../operators.js";
 
-/** Number of rows to sample for type inference. */
-const TYPE_INFERENCE_ROWS = 256;
-
 // ---------------------------------------------------------------------------
 // CSV Parser Helpers
 // ---------------------------------------------------------------------------
@@ -217,10 +214,8 @@ export function parseCsvFull(text: string): ParsedCsv {
     }
   }
 
-  // Infer types from the first N rows
-  const types: DataType[] = rawCols.map(col =>
-    inferType(col.slice(0, TYPE_INFERENCE_ROWS)),
-  );
+  // Infer types from all rows (we already have the full dataset in memory)
+  const types: DataType[] = rawCols.map(col => inferType(col));
 
   // Convert to typed column-oriented storage
   const columns: (number | bigint | string | boolean | null)[][] = [];

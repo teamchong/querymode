@@ -43,6 +43,7 @@ export default defineConfig({
       "src/umami-conformance.test.ts",
       "src/vip-cache.test.ts",
       "src/hnsw.test.ts",
+      "src/readers/readers.test.ts",
     ],
     hookTimeout: 300_000,
     testTimeout: 300_000,
