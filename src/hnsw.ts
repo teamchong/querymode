@@ -9,6 +9,8 @@
  *   using Hierarchical Navigable Small World graphs", 2016.
  */
 
+import { QueryModeError } from "./errors.js";
+
 // ---------------------------------------------------------------------------
 // Distance functions
 // ---------------------------------------------------------------------------
@@ -50,11 +52,11 @@ export function dotDistance(a: Float32Array, b: Float32Array): number {
 /** Validate that a vector contains only finite values. */
 function validateVector(vec: Float32Array, dim: number, label: string): void {
   if (vec.length !== dim) {
-    throw new Error(`${label}: expected dimension ${dim}, got ${vec.length}`);
+    throw new QueryModeError("SCHEMA_MISMATCH", `${label}: expected dimension ${dim}, got ${vec.length}`);
   }
   for (let i = 0; i < vec.length; i++) {
     if (!Number.isFinite(vec[i])) {
-      throw new Error(`${label} contains non-finite value at index ${i}: ${vec[i]}`);
+      throw new QueryModeError("QUERY_FAILED", `${label} contains non-finite value at index ${i}: ${vec[i]}`);
     }
   }
 }
@@ -370,7 +372,7 @@ export class HnswIndex {
 
     // Store vector
     if (id !== this._size) {
-      throw new Error(`IDs must be sequential. Expected ${this._size}, got ${id}`);
+      throw new QueryModeError("QUERY_FAILED", `IDs must be sequential. Expected ${this._size}, got ${id}`);
     }
     this.vectors.push(vector);
 
@@ -442,7 +444,7 @@ export class HnswIndex {
   /** Batch add vectors from a contiguous Float32Array. */
   addBatch(vectors: Float32Array, dim: number): void {
     if (vectors.length % dim !== 0) {
-      throw new Error(`Vector buffer length ${vectors.length} is not divisible by dim ${dim}`);
+      throw new QueryModeError("SCHEMA_MISMATCH", `Vector buffer length ${vectors.length} is not divisible by dim ${dim}`);
     }
     const count = vectors.length / dim;
     const startId = this._size;
@@ -590,7 +592,7 @@ export class HnswIndex {
     // Header
     const magic = view.getUint32(offset, true); offset += 4;
     if (magic !== HNSW_MAGIC) {
-      throw new Error(`Invalid HNSW magic: 0x${magic.toString(16)}, expected 0x${HNSW_MAGIC.toString(16)}`);
+      throw new QueryModeError("INVALID_FORMAT", `Invalid HNSW magic: 0x${magic.toString(16)}, expected 0x${HNSW_MAGIC.toString(16)}`);
     }
 
     const dim = view.getUint32(offset, true); offset += 4;

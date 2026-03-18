@@ -9,6 +9,8 @@
  * Reference: https://www.postgresql.org/docs/current/protocol-message-formats.html
  */
 
+import { QueryModeError } from "../errors.js";
+
 // ── Frontend (client → server) messages ─────────────────────────────────
 
 export interface StartupMessage {
@@ -58,7 +60,7 @@ export function parseStartupMessage(buf: Uint8Array): FrontendMessage | null {
   }
 
   if (code !== PROTOCOL_VERSION_3) {
-    throw new Error(`Unsupported protocol version: ${code}`);
+    throw new QueryModeError("INVALID_FORMAT", `Unsupported Postgres protocol version: ${code}`);
   }
 
   const params = new Map<string, string>();
