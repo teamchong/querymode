@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodePage, assembleRows, canSkipPage, matchesFilter, bigIntReplacer } from "./decode.js";
+import { decodePage, assembleRows, canSkipPage, canSkipFragment, matchesFilter, bigIntReplacer } from "./decode.js";
 import type { ColumnMeta, PageInfo } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
@@ -240,6 +240,59 @@ describe("canSkipPage", () => {
     const mixedPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
     // Non-uniform page — can't determine if all values match, so don't skip
     expect(canSkipPage(mixedPage, [{ column: "x", op: "not_like", value: "app%" }], "x")).toBe(false);
+  });
+});
+
+describe("canSkipFragment", () => {
+  function makeFragment(columns: { name: string; pages: PageInfo[] }[]) {
+    return { columns: columns.map(c => ({ name: c.name, dataType: "utf8" as const, pages: c.pages })) };
+  }
+
+  const mkPage = (min: string, max: string, rows = 50): PageInfo =>
+    ({ byteOffset: 0n, byteLength: 100, rowCount: rows, nullCount: 0, minValue: min, maxValue: max });
+
+  it("skips fragment with LIKE prefix when aggregated string range doesn't overlap", () => {
+    // Two pages: [apple, banana] and [cherry, date] → fragment range [apple, date]
+    const frag = makeFragment([{ name: "x", pages: [mkPage("apple", "banana"), mkPage("cherry", "date")] }]);
+    // Prefix "zoo" is above [apple, date] → skip
+    expect(canSkipFragment(frag, [{ column: "x", op: "like", value: "zoo%" }])).toBe(true);
+    // Prefix "aa" is below [apple, date] → skip
+    expect(canSkipFragment(frag, [{ column: "x", op: "like", value: "aa%" }])).toBe(true);
+  });
+
+  it("does not skip fragment with LIKE prefix when range overlaps", () => {
+    const frag = makeFragment([{ name: "x", pages: [mkPage("apple", "banana"), mkPage("cherry", "date")] }]);
+    // Prefix "ch" overlaps [apple, date]
+    expect(canSkipFragment(frag, [{ column: "x", op: "like", value: "ch%" }])).toBe(false);
+    // Prefix "ban" overlaps [apple, date]
+    expect(canSkipFragment(frag, [{ column: "x", op: "like", value: "ban%" }])).toBe(false);
+  });
+
+  it("skips fragment with NOT LIKE when all pages are uniform with matching value", () => {
+    // All pages have the same single value "hello"
+    const frag = makeFragment([{ name: "x", pages: [mkPage("hello", "hello"), mkPage("hello", "hello")] }]);
+    // Fragment range: min=hello, max=hello (uniform) → "hel%" matches → NOT LIKE excludes all → skip
+    expect(canSkipFragment(frag, [{ column: "x", op: "not_like", value: "hel%" }])).toBe(true);
+  });
+
+  it("does not skip fragment with NOT LIKE when range is non-uniform", () => {
+    const frag = makeFragment([{ name: "x", pages: [mkPage("hello", "hello"), mkPage("world", "world")] }]);
+    // Fragment range: [hello, world] — not uniform, can't determine all match
+    expect(canSkipFragment(frag, [{ column: "x", op: "not_like", value: "hel%" }])).toBe(false);
+  });
+
+  it("skips fragment with IS NULL when total nullCount is 0", () => {
+    const frag = makeFragment([{ name: "x", pages: [mkPage("a", "b", 50), mkPage("c", "d", 50)] }]);
+    // Both pages have nullCount=0 → fragment total nullCount=0 → IS NULL finds nothing → skip
+    expect(canSkipFragment(frag, [{ column: "x", op: "is_null", value: null }])).toBe(true);
+  });
+
+  it("skips fragment with IS NOT NULL when all rows are null", () => {
+    const allNullPage = (rows: number): PageInfo =>
+      ({ byteOffset: 0n, byteLength: 100, rowCount: rows, nullCount: rows, minValue: undefined, maxValue: undefined });
+    const frag = makeFragment([{ name: "x", pages: [allNullPage(50), allNullPage(30)] }]);
+    // Total nullCount (80) = total rowCount (80) → IS NOT NULL finds nothing → skip
+    expect(canSkipFragment(frag, [{ column: "x", op: "is_not_null", value: null }])).toBe(true);
   });
 });
 
