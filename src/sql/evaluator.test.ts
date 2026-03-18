@@ -131,15 +131,17 @@ describe("SQL Evaluator", () => {
 });
 
 describe("isTruthy", () => {
-  it("returns false for null, undefined, false, 0", () => {
+  it("returns false for null, undefined, false, 0, 0n", () => {
     expect(isTruthy(null)).toBe(false);
     expect(isTruthy(undefined)).toBe(false);
     expect(isTruthy(false)).toBe(false);
     expect(isTruthy(0)).toBe(false);
+    expect(isTruthy(0n)).toBe(false);
   });
 
   it("returns true for truthy values", () => {
     expect(isTruthy(1)).toBe(true);
+    expect(isTruthy(1n)).toBe(true);
     expect(isTruthy("hello")).toBe(true);
     expect(isTruthy(true)).toBe(true);
   });

@@ -769,8 +769,8 @@ class Parser {
       throw this.error("Expected PRECEDING or FOLLOWING after UNBOUNDED");
     }
     if (this.match(TokenType.CURRENT)) {
-      // Accept both "CURRENT ROW" and just "CURRENT"
-      this.match(TokenType.IDENTIFIER); // consume ROW if present
+      // Accept both "CURRENT ROW" and just "CURRENT" — only consume ROW specifically
+      if (this.check(TokenType.IDENTIFIER) && this.current().lexeme.toUpperCase() === "ROW") this.advance();
       return { type: "current_row" };
     }
     // N PRECEDING / N FOLLOWING

@@ -82,7 +82,7 @@ export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
 }
 
 export function isTruthy(val: unknown): boolean {
-  return val !== null && val !== undefined && val !== false && val !== 0;
+  return val !== null && val !== undefined && val !== false && val !== 0 && val !== 0n;
 }
 
 function evaluateBinary(op: string, leftExpr: SqlExpr, rightExpr: SqlExpr, row: Row): unknown {
