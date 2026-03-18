@@ -1214,7 +1214,7 @@ export class QueryDO extends DurableObject<Env> {
       const scan = new EdgeScanOperator(
         this.r2(meta.r2Key), this.wasmEngine, meta, query, this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
-        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+        (r2Key, offset, length, data) => { void this.edgeCachePut(r2Key, offset, length, data); },
       );
 
       const outputColumns = query.projections.length > 0
@@ -1262,7 +1262,7 @@ export class QueryDO extends DurableObject<Env> {
         { ...query, sortColumn: undefined, limit: undefined, offset: undefined, aggregates: undefined, join: undefined },
         this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
-        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+        (r2Key, offset, length, data) => { void this.edgeCachePut(r2Key, offset, length, data); },
       );
       let leftPipeline: Operator = leftScan;
       if (query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0)) {
@@ -1281,7 +1281,7 @@ export class QueryDO extends DurableObject<Env> {
         this.r2(rightMeta.r2Key), this.wasmEngine, rightMeta, join.right,
         this.footerCache,
         (r2Key, offset, length) => this.edgeCacheGet(r2Key, offset, length),
-        (r2Key, offset, length, data) => { this.edgeCachePut(r2Key, offset, length, data); },
+        (r2Key, offset, length, data) => { void this.edgeCachePut(r2Key, offset, length, data); },
       );
       let rightPipeline: Operator = rightScan;
       if (join.right.filters.length > 0 || (join.right.filterGroups && join.right.filterGroups.length > 0)) {

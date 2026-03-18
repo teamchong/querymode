@@ -677,7 +677,7 @@ export class LocalExecutor implements QueryExecutor {
       const manifestBuf = await fs.readFile(pathMod.join(versionsDir, manifestFile));
       const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
       const manifest = parseManifest(ab);
-      if (!manifest) throw new Error(`Failed to parse manifest for version ${version}`);
+      if (!manifest) throw new QueryModeError("INVALID_FORMAT", `Failed to parse manifest for version ${version}`);
       return { paths: new Set(manifest.fragments.map(f => f.filePath)), manifest };
     };
 
@@ -720,14 +720,14 @@ export class LocalExecutor implements QueryExecutor {
     const manifests = entries.filter(e => e.endsWith(".manifest"))
       .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
     if (manifests.length === 0) {
-      throw new Error(`No manifests found in ${versionsDir}`);
+      throw new QueryModeError("TABLE_NOT_FOUND", `No manifests found in ${versionsDir}`);
     }
 
     let targetManifest: string;
     if (version != null) {
       targetManifest = `${version}.manifest`;
       if (!manifests.includes(targetManifest)) {
-        throw new Error(`Version ${version} not found in ${versionsDir}. Available: ${manifests.join(", ")}`);
+        throw new QueryModeError("TABLE_NOT_FOUND", `Version ${version} not found in ${versionsDir}. Available: ${manifests.join(", ")}`);
       }
     } else {
       targetManifest = manifests[manifests.length - 1];
@@ -735,7 +735,7 @@ export class LocalExecutor implements QueryExecutor {
     const manifestBuf = await fs.readFile(pathMod.join(versionsDir, targetManifest));
     const ab = manifestBuf.buffer.slice(manifestBuf.byteOffset, manifestBuf.byteOffset + manifestBuf.byteLength);
     const manifest = parseManifest(ab);
-    if (!manifest) throw new Error(`Failed to parse manifest ${targetManifest}`);
+    if (!manifest) throw new QueryModeError("INVALID_FORMAT", `Failed to parse manifest ${targetManifest}`);
 
     const fragmentMetas = new Map<number, TableMeta>();
     for (const frag of manifest.fragments) {
@@ -792,7 +792,7 @@ export class LocalExecutor implements QueryExecutor {
           updatedAt: Date.now(),
         });
       } catch (err) {
-        throw new Error(`Failed to load fragment ${frag.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+        throw QueryModeError.from(err, { table: frag.filePath, operation: "load fragment" });
       }
     }
 
@@ -1000,7 +1000,7 @@ export class LocalExecutor implements QueryExecutor {
     // Get file size
     const headResp = await fetch(url, { method: "HEAD" });
     const fileSize = Number(headResp.headers.get("content-length") ?? 0);
-    if (fileSize < 8) throw new Error(`File too small: ${url}`);
+    if (fileSize < 8) throw new QueryModeError("INVALID_FORMAT", `File too small: ${url}`);
 
     // Read tail for format detection (last 40 bytes)
     const tailSize = Math.min(fileSize, FOOTER_SIZE);
