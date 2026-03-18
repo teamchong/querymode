@@ -159,6 +159,10 @@ export class ScanOperator implements Operator {
   private prefetchFragIdx = -1;
   private prefetchSkipped = 0;
   private _filterColNames: Set<string> | null = null;
+  /** Cached per-fragment column splits (avoids .filter() per page on hot path). */
+  private _cachedFragIdx = -1;
+  private _cachedFilterCols: ColumnMeta[] = [];
+  private _cachedProjCols: ColumnMeta[] = [];
 
   constructor(fragments: FragmentSource[], query: QueryDescriptor, wasm: WasmEngine, applyFilters = false) {
     this.fragments = fragments;
@@ -286,8 +290,18 @@ export class ScanOperator implements Operator {
         const hasFilters = allFilters.length > 0 || (allFilterGroups && allFilterGroups.length > 0);
         if (this.filtersApplied && hasFilters) {
           const fcn = this._filterColNames!;
-          const filterCols = frag.columns.filter(c => fcn.has(c.name));
-          const projCols = frag.columns.filter(c => !fcn.has(c.name));
+          // Cache column splits per fragment (avoids repeated .filter() per page)
+          if (this._cachedFragIdx !== this.fragIdx) {
+            this._cachedFragIdx = this.fragIdx;
+            this._cachedFilterCols = [];
+            this._cachedProjCols = [];
+            for (const c of frag.columns) {
+              if (fcn.has(c.name)) this._cachedFilterCols.push(c);
+              else this._cachedProjCols.push(c);
+            }
+          }
+          const filterCols = this._cachedFilterCols;
+          const projCols = this._cachedProjCols;
 
           // Phase 1: Fetch + decode only filter columns
           let filterPageMap: Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>;
@@ -329,11 +343,12 @@ export class ScanOperator implements Operator {
             projDecoded = new Map<string, DecodedValue[]>();
           }
 
-          const allDecoded = new Map([...filterDecoded, ...projDecoded]);
+          // Merge proj columns into filter map (avoids Map spread allocation)
+          for (const [k, v] of projDecoded) filterDecoded.set(k, v);
           this.scanMs += Date.now() - scanStart;
 
           if (matchingIndices.length > 0) {
-            return { columns: allDecoded, rowCount, selection: matchingIndices };
+            return { columns: filterDecoded, rowCount, selection: matchingIndices };
           }
           continue;
         }
