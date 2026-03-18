@@ -11,7 +11,7 @@ The `DataFrame` is a lazy query builder. All methods return a new DataFrame (imm
 df.filter("age", "gt", 25)
 df.filter("status", "eq", "active")
 df.filter("id", "in", [1, 2, 3])
-df.filter("name", "like", "%alice%")
+df.filter("name", "like", "%Alice%")
 df.filter("amount", "between", [100, 500])
 df.whereNotNull("email")
 df.whereNull("deleted_at")
@@ -122,7 +122,7 @@ df.whereIn("status", ["active", "trial"]) // shorthand for in
 df.whereNotIn("role", ["banned"])          // shorthand for not_in
 df.whereBetween("score", 80, 100)         // shorthand for between
 df.whereNotBetween("age", 0, 17)          // shorthand for not_between
-df.whereLike("name", "%alice%")           // shorthand for like
+df.whereLike("name", "%Alice%")           // shorthand for like
 df.whereNotLike("email", "%spam%")        // shorthand for not_like
 df.filterIn("region", subquery)           // IN subquery (semi-join)
 ```
