@@ -150,6 +150,9 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
     totalSize += 2 + encodedNames[ci].length + 1 + 1; // nameLen + name + dtype + hasNulls
   }
 
+  // Pre-encode UTF8 strings once (reused in write pass to avoid double-encoding)
+  const preEncodedUtf8 = new Map<number, Uint8Array[]>();
+
   // Column data
   for (let ci = 0; ci < columnCount; ci++) {
     if (hasNulls[ci]) totalSize += bitmapBytes;
@@ -163,11 +166,15 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
         totalSize += 4; // totalLen
         totalSize += (rowCount + 1) * 4; // offsets
         const name = colNames[ci];
+        const encoded: Uint8Array[] = [];
         let strBytes = 0;
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          if (typeof val === "string") strBytes += encoder.encode(val).length;
+          const enc = typeof val === "string" ? encoder.encode(val) : new Uint8Array(0);
+          encoded.push(enc);
+          strBytes += enc.length;
         }
+        preEncodedUtf8.set(ci, encoded);
         totalSize += strBytes;
         break;
       }
@@ -243,15 +250,10 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
         break;
       }
       case DTYPE_UTF8: {
-        // Encode all strings, build offsets
-        const encodedStrs: Uint8Array[] = [];
+        // Reuse pre-encoded strings from size calculation pass
+        const encodedStrs = preEncodedUtf8.get(ci)!;
         let totalLen = 0;
-        for (let ri = 0; ri < rowCount; ri++) {
-          const val = rows[ri][name];
-          const encoded = typeof val === "string" ? encoder.encode(val) : new Uint8Array(0);
-          encodedStrs.push(encoded);
-          totalLen += encoded.length;
-        }
+        for (let ri = 0; ri < rowCount; ri++) totalLen += encodedStrs[ri].length;
 
         view.setUint32(offset, totalLen, true); offset += 4;
 
