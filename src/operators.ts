@@ -98,11 +98,9 @@ export function canSkipPageMultiCol(
   columns: ColumnMeta[], pageIdx: number, filters: QueryDescriptor["filters"],
   filterGroups?: FilterOp[][],
 ): boolean {
-  const colMap = new Map(columns.map(c => [c.name, c]));
-
   // Check AND filters: skip if ANY single filter eliminates the page
   for (const f of filters) {
-    const col = colMap.get(f.column);
+    const col = findCol(columns, f.column);
     if (!col) continue;
     const page = col.pages[pageIdx];
     if (!page) continue;
@@ -112,7 +110,7 @@ export function canSkipPageMultiCol(
   // Check OR groups: skip only if ALL groups eliminate the page
   if (filterGroups && filterGroups.length > 0) {
     const allGroupsSkip = filterGroups.every(group =>
-      canSkipAndGroup(colMap, pageIdx, group),
+      canSkipAndGroup(columns, pageIdx, group),
     );
     if (allGroupsSkip) return true;
   }
@@ -120,12 +118,18 @@ export function canSkipPageMultiCol(
   return false;
 }
 
+/** Linear column lookup — faster than Map build for typical column counts (<30). */
+function findCol(columns: ColumnMeta[], name: string): ColumnMeta | undefined {
+  for (let i = 0; i < columns.length; i++) if (columns[i].name === name) return columns[i];
+  return undefined;
+}
+
 /** Check if an AND-connected filter group can be proven to produce zero matches for a page. */
 function canSkipAndGroup(
-  colMap: Map<string, ColumnMeta>, pageIdx: number, filters: FilterOp[],
+  columns: ColumnMeta[], pageIdx: number, filters: FilterOp[],
 ): boolean {
   for (const f of filters) {
-    const col = colMap.get(f.column);
+    const col = findCol(columns, f.column);
     if (!col) continue;
     const page = col.pages[pageIdx];
     if (!page) continue;
