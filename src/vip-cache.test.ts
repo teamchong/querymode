@@ -89,4 +89,84 @@ describe("VipCache", () => {
     expect(entries[0][1].accessCount).toBe(3);
     expect(entries[0][1].lastAccess).toBeGreaterThan(0);
   });
+
+  it("acquire/release prevents eviction", () => {
+    const cache = new VipCache<string, number>(2, 10);
+    cache.set("a", 1);
+    cache.set("b", 2);
+
+    const val = cache.acquire("a");
+    expect(val).toBe(1);
+
+    // Insert 3rd — "a" has refCount=1, should not be evicted
+    cache.set("c", 3);
+    expect(cache.has("a")).toBe(true);
+    expect(cache.has("b")).toBe(false); // "b" evicted instead
+    expect(cache.has("c")).toBe(true);
+
+    cache.release("a");
+  });
+
+  it("delete with refCount>0 defers deletion", () => {
+    const cache = new VipCache<string, number>(10);
+    cache.set("a", 1);
+    cache.acquire("a");
+
+    cache.delete("a");
+    // Entry is pending eviction but still in map until release
+    expect(cache.size).toBe(1);
+
+    cache.release("a");
+    // Now actually removed
+    expect(cache.size).toBe(0);
+    expect(cache.has("a")).toBe(false);
+  });
+
+  it("invalidateByPrefix defers deletion for acquired entries", () => {
+    const cache = new VipCache<string, number>(10);
+    cache.set("tbl/a", 1);
+    cache.set("tbl/b", 2);
+    cache.set("other", 3);
+
+    cache.acquire("tbl/a");
+    const count = cache.invalidateByPrefix("tbl/");
+    expect(count).toBe(2);
+
+    // "tbl/b" deleted immediately, "tbl/a" deferred
+    expect(cache.has("tbl/b")).toBe(false);
+    expect(cache.size).toBe(2); // "tbl/a" (pending) + "other"
+
+    cache.release("tbl/a");
+    expect(cache.size).toBe(1); // only "other"
+  });
+
+  it("set() clears expiresAt from previous setWithTTL()", () => {
+    const cache = new VipCache<string, number>(10);
+    cache.setWithTTL("a", 1, 1); // 1ms TTL
+
+    // Overwrite with set() — should clear TTL
+    cache.set("a", 2);
+
+    // Wait past the original TTL
+    const start = Date.now();
+    while (Date.now() - start < 5) { /* spin */ }
+
+    // Entry should still be accessible (TTL cleared)
+    expect(cache.get("a")).toBe(2);
+  });
+
+  it("get() does not delete expired entry with refCount>0", () => {
+    const cache = new VipCache<string, number>(10);
+    cache.setWithTTL("a", 1, 1); // 1ms TTL
+    cache.acquire("a");
+
+    const start = Date.now();
+    while (Date.now() - start < 5) { /* spin */ }
+
+    // get() returns undefined (expired) but does not delete (refCount > 0)
+    expect(cache.get("a")).toBeUndefined();
+    expect(cache.size).toBe(1); // still in map
+
+    cache.release("a");
+  });
 });
