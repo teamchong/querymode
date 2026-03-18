@@ -46,7 +46,7 @@ const attribution = computeAttribution(result.rows, retention.retainedUsers)
 
 Three analyses on one result set. No SQL string construction, no JSON parsing, no round-trips. The intermediate results are live objects in memory — you inspect them, branch on them, and feed them into the next stage.
 
-> **What about memory?** `collect()` doesn't load a 50GB file into a V8 isolate. Filter pushdown already skipped irrelevant pages via min/max stats, aggregation already reduced rows to group summaries, projection already dropped unused columns. What lands in memory is the *result*, not the dataset. Operators are memory-bounded (default 32MB) and [spill to R2](/querymode/operators/#memory-bounded-with-r2-spill) when they exceed budget.
+> **What about memory?** `collect()` doesn't load a 50GB file into a V8 isolate. Filter pushdown already skipped irrelevant pages via min/max stats, aggregation already reduced rows to group summaries, projection already dropped unused columns. What lands in memory is the *result*, not the dataset. Operators are memory-bounded (default 256MB) and [spill to R2](/querymode/operators/#memory-bounded-with-r2-spill) when they exceed budget.
 
 ## Edge-native: survive the thundering herd
 

@@ -125,9 +125,10 @@ Filters are pushed as deep as possible — from the DataFrame/SQL layer down to 
 ```
 DataFrame .filter("age", "gt", 25)
   → QueryDescriptor.filters: [{ column: "age", op: "gt", value: 25 }]
-    → Partition catalog prune (skip fragments where age max < 25)
-      → Page-level skip (skip pages where page max < 25)
-        → WASM SIMD filter (process matching pages in one pass)
+    → Partition catalog prune (skip fragments by partition key)
+      → Fragment-level skip (skip fragments where age max < 25 across all pages)
+        → Page-level skip (skip pages where page max < 25)
+          → WASM SIMD filter (process matching pages in one pass)
 ```
 
 ### Filter operations

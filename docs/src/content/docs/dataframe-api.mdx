@@ -203,7 +203,7 @@ const json = await df.toJSON({ pretty: true })
 const csv = await df.toCSV({ delimiter: "\t" })
 ```
 
-These are all sugar over existing methods — `shape()` calls `explain()`, `valueCounts()` uses `groupBy().aggregate()`, `fillNull()` and `cast()` use `computed()`.
+These are all sugar over existing methods — `shape()` calls `describe()`, `valueCounts()` uses `groupBy().aggregate()`, `fillNull()` and `cast()` use `computed()`.
 
 ## Introspection
 
