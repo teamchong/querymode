@@ -440,6 +440,72 @@ describe("MaterializedExecutor", () => {
     });
   });
 
+  describe("distinct", () => {
+    it("removes duplicate rows by specified columns", async () => {
+      const result = await createFromJSON(data).distinct("region").collect();
+      const regions = result.rows.map(r => r.region);
+      expect(new Set(regions).size).toBe(regions.length);
+      expect(result.rowCount).toBe(3); // us, eu, asia
+    });
+
+    it("distinct with no args deduplicates on all columns", async () => {
+      const duped = [
+        { id: 1, name: "Alice" },
+        { id: 2, name: "Bob" },
+        { id: 1, name: "Alice" }, // exact duplicate
+        { id: 3, name: "Charlie" },
+      ];
+      const result = await createFromJSON(duped).distinct().collect();
+      expect(result.rowCount).toBe(3);
+    });
+
+    it("distinct with no args preserves rows with different values", async () => {
+      const result = await createFromJSON(data).distinct().collect();
+      expect(result.rowCount).toBe(5); // all rows are unique
+    });
+  });
+
+  describe("window functions", () => {
+    it("row_number partitioned by region", async () => {
+      const result = await createFromJSON(data)
+        .window({
+          fn: "row_number",
+          partitionBy: ["region"],
+          orderBy: [{ column: "amount", direction: "asc" }],
+          alias: "rn",
+        })
+        .collect();
+      expect(result.rowCount).toBe(5);
+      // Each partition should have row numbers starting at 1
+      for (const row of result.rows) {
+        expect(typeof row.rn).toBe("number");
+        expect(row.rn).toBeGreaterThanOrEqual(1);
+      }
+      // US partition: Alice(100)=1, Charlie(150)=2
+      const usRows = result.rows.filter(r => r.region === "us").sort((a, b) => (a.amount as number) - (b.amount as number));
+      expect(usRows[0].rn).toBe(1);
+      expect(usRows[1].rn).toBe(2);
+    });
+
+    it("sum window over all rows", async () => {
+      const result = await createFromJSON(data)
+        .window({
+          fn: "sum",
+          column: "amount",
+          partitionBy: [],
+          orderBy: [],
+          alias: "total",
+          frame: { type: "rows", start: "unbounded", end: "unbounded" },
+        })
+        .collect();
+      expect(result.rowCount).toBe(5);
+      // Every row should have total = 800
+      for (const row of result.rows) {
+        expect(row.total).toBe(800);
+      }
+    });
+  });
+
   describe("schema evolution", () => {
     it("addColumn adds column with default value to all rows", async () => {
       const df = createFromJSON(data);

@@ -990,11 +990,12 @@ export class MaterializedExecutor implements QueryExecutor {
       rows = rows.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
     }
 
-    // Apply distinct
+    // Apply distinct — empty array means "all columns" (same as DistinctOperator)
     if (query.distinct) {
       const seen = new Set<string>();
       rows = rows.filter(row => {
-        const key = groupKey(row, query.distinct!);
+        const cols = query.distinct!.length > 0 ? query.distinct! : Object.keys(row);
+        const key = groupKey(row, cols);
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
