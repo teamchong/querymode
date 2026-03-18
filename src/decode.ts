@@ -471,8 +471,8 @@ function vectorSearch(
  *  Returns coerced values via out parameter to avoid tuple allocation on hot path. */
 const _cmp: [unknown, unknown] = [null, null];
 function coerceCompare(a: unknown, b: unknown): [unknown, unknown] {
-  if (typeof a === "bigint" && typeof b === "number") { _cmp[0] = a; _cmp[1] = BigInt(Math.trunc(b)); }
-  else if (typeof a === "number" && typeof b === "bigint") { _cmp[0] = BigInt(Math.trunc(a as number)); _cmp[1] = b; }
+  if (typeof a === "bigint" && typeof b === "number") { _cmp[0] = a; _cmp[1] = Number.isFinite(b) ? BigInt(Math.trunc(b)) : b; }
+  else if (typeof a === "number" && typeof b === "bigint") { _cmp[0] = Number.isFinite(a) ? BigInt(Math.trunc(a)) : a; _cmp[1] = b; }
   else { _cmp[0] = a; _cmp[1] = b; }
   return _cmp;
 }
