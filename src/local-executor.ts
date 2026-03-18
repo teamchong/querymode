@@ -10,7 +10,7 @@ import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, Pag
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
-import { assembleRows } from "./decode.js";
+import { assembleRows, canSkipFragment } from "./decode.js";
 import { coalesceRanges, autoCoalesceGap } from "./coalesce.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 
@@ -266,6 +266,16 @@ export class LocalExecutor implements QueryExecutor {
     // Detect format from file
     const format = await this.detectFileFormat(query.table);
 
+    // Fragment-level pruning stats
+    const dataset = this.datasetCache.get(query.table);
+    const totalFragments = dataset ? dataset.fragmentMetas.size : 1;
+    let fragmentsSkipped = 0;
+    if (dataset) {
+      for (const fragMeta of dataset.fragmentMetas.values()) {
+        if (canSkipFragment(fragMeta, query.filters, query.filterGroups)) fragmentsSkipped++;
+      }
+    }
+
     return {
       table: query.table,
       format,
@@ -277,8 +287,9 @@ export class LocalExecutor implements QueryExecutor {
       estimatedBytes,
       estimatedR2Reads: coalesced.length,
       estimatedRows,
-      fragments: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
-      fragmentsScanned: this.datasetCache.get(query.table)?.fragmentMetas.size ?? 1,
+      fragments: totalFragments,
+      fragmentsSkipped,
+      fragmentsScanned: totalFragments - fragmentsSkipped,
       fanOut: false,
       filters: [
         ...query.filters.map(f => ({ column: f.column, op: f.op, pushable: true })),
