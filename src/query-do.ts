@@ -308,9 +308,9 @@ class EdgeScanOperator implements Operator {
           const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
           let dictBuf = this.wasmEngine.cacheGet(dictKey);
           if (!dictBuf) {
-            const dictObj = await this.bucket.get(meta.r2Key, {
+            const dictObj = await withTimeout(this.bucket.get(meta.r2Key, {
               range: { offset: dictOffset, length: encoding.dictionaryPageLength },
-            });
+            }), R2_TIMEOUT_MS);
             if (dictObj) {
               dictBuf = await dictObj.arrayBuffer();
               this.wasmEngine.cacheSet(dictKey, dictBuf);
@@ -852,7 +852,7 @@ export class QueryDO extends DurableObject<Env> {
     let cacheHit = !!fileData;
 
     if (!fileData) {
-      const obj = await this.r2(meta.r2Key).get(meta.r2Key);
+      const obj = await withTimeout(this.r2(meta.r2Key).get(meta.r2Key), R2_TIMEOUT_MS);
       if (!obj) throw new QueryModeError("TABLE_NOT_FOUND", `Failed to read Lance file: ${meta.r2Key}`);
       fileData = await obj.arrayBuffer();
       bytesRead = fileData.byteLength;
@@ -1105,9 +1105,9 @@ export class QueryDO extends DurableObject<Env> {
               const dictKey = `${meta.r2Key}:${dictOffset}:${encoding.dictionaryPageLength}`;
               let dictBuf = this.wasmEngine.cacheGet(dictKey);
               if (!dictBuf) {
-                const dictObj = await this.r2(meta.r2Key).get(meta.r2Key, {
+                const dictObj = await withTimeout(this.r2(meta.r2Key).get(meta.r2Key, {
                   range: { offset: dictOffset, length: encoding.dictionaryPageLength },
-                });
+                }), R2_TIMEOUT_MS);
                 if (dictObj) {
                   dictBuf = await dictObj.arrayBuffer();
                   this.wasmEngine.cacheSet(dictKey, dictBuf);
@@ -1350,7 +1350,7 @@ export class QueryDO extends DurableObject<Env> {
 
     if (!indexData) {
       // Try loading from R2
-      const indexObj = await this.r2(indexPath).get(indexPath);
+      const indexObj = await withTimeout(this.r2(indexPath).get(indexPath), R2_TIMEOUT_MS);
       if (!indexObj) return null; // No index → fall through to flat search
 
       indexData = await indexObj.arrayBuffer();
@@ -1401,7 +1401,7 @@ export class QueryDO extends DurableObject<Env> {
   private async readColumnMeta(r2Key: string, footer: Footer): Promise<ColumnMeta[]> {
     const len = Number(footer.columnMetaOffsetsStart) - Number(footer.columnMetaStart);
     if (len <= 0) return [];
-    const obj = await this.r2(r2Key).get(r2Key, { range: { offset: Number(footer.columnMetaStart), length: len } });
+    const obj = await withTimeout(this.r2(r2Key).get(r2Key, { range: { offset: Number(footer.columnMetaStart), length: len } }), R2_TIMEOUT_MS);
     if (!obj) return [];
     return parseColumnMetaFromProtobuf(await obj.arrayBuffer(), footer.numColumns);
   }
