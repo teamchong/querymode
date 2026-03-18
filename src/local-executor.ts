@@ -13,9 +13,8 @@ import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipFragment } from "./decode.js";
 import { coalesceRanges, autoCoalesceGap } from "./coalesce.js";
-import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
 
-const textEncoder = new TextEncoder();
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
@@ -109,51 +108,7 @@ export class LocalExecutor implements QueryExecutor {
     await fs.mkdir(versionsDir, { recursive: true });
 
     // Convert rows to column arrays
-    const columnNames = Object.keys(rows[0]);
-    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[] = [];
-
-    for (const colName of columnNames) {
-      const sample = rows.find(r => r[colName] != null)?.[colName];
-      if (sample === undefined) continue;
-
-      if (typeof sample === "number") {
-        if (Number.isInteger(sample)) {
-          const arr = new BigInt64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0))); }
-          columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
-        } else {
-          const arr = new Float64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as number : 0; }
-          columnArrays.push({ name: colName, dtype: "float64", values: arr.buffer });
-        }
-      } else if (typeof sample === "bigint") {
-        const arr = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as bigint : 0n; }
-        columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
-      } else if (typeof sample === "boolean") {
-        const byteCount = Math.ceil(rows.length / 8);
-        const boolBuf = new Uint8Array(byteCount);
-        for (let i = 0; i < rows.length; i++) {
-          if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
-        }
-        columnArrays.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
-      } else if (typeof sample === "string") {
-        const enc = textEncoder;
-        const parts: Uint8Array[] = [];
-        let totalLen = 0;
-        for (const row of rows) {
-          const str = enc.encode(String(row[colName] ?? ""));
-          const header = new Uint8Array(4);
-          new DataView(header.buffer).setUint32(0, str.length, true);
-          parts.push(header, str);
-          totalLen += 4 + str.length;
-        }
-        const buf = new Uint8Array(totalLen);
-        let off = 0;
-        for (const p of parts) { buf.set(p, off); off += p.length; }
-        columnArrays.push({ name: colName, dtype: "utf8", values: buf.buffer });
-      }
-    }
+    const columnArrays = rowsToColumnArrays(rows);
 
     // Build fragment via WASM
     const fragmentBytes = wasm.buildFragment(columnArrays);

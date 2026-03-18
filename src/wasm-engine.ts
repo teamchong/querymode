@@ -810,7 +810,7 @@ export class WasmEngine {
    * Build a Lance fragment file from column data.
    * Returns the raw Lance binary bytes ready to write to R2/disk.
    */
-  buildFragment(columns: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[]): Uint8Array {
+  buildFragment(columns: FragmentColumn[]): Uint8Array {
     // Estimate capacity: sum of all values plus overhead
     let totalBytes = 0;
     for (const col of columns) totalBytes += col.values.byteLength;
@@ -1025,6 +1025,69 @@ function filterToSql(f: FilterOp): string {
   if (f.op === "not_like") return `${quote(f.column)} NOT LIKE '${escapeSql(f.value as string)}'`;
   const val = typeof f.value === "string" ? `'${escapeSql(f.value)}'` : String(f.value);
   return `${quote(f.column)} ${COMPARISON_OP_MAP[f.op] ?? "="} ${val}`;
+}
+
+/** Column descriptor for buildFragment. */
+export interface FragmentColumn {
+  name: string;
+  dtype: string;
+  values: ArrayBufferLike;
+  /** Required for bool columns (byteCount*8 overestimates when rows%8!=0). */
+  rowCount?: number;
+}
+
+/**
+ * Convert Row[] to column arrays suitable for WasmEngine.buildFragment().
+ * Infers dtype from the first non-null value per column.
+ */
+export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentColumn[] {
+  if (rows.length === 0) return [];
+  const columnNames = Object.keys(rows[0]);
+  const result: FragmentColumn[] = [];
+
+  for (const colName of columnNames) {
+    const sample = rows.find(r => r[colName] != null)?.[colName];
+    if (sample === undefined) continue;
+
+    if (typeof sample === "number") {
+      if (Number.isInteger(sample)) {
+        const arr = new BigInt64Array(rows.length);
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = typeof v === "bigint" ? v as bigint : BigInt(Math.trunc(Number(v ?? 0))); }
+        result.push({ name: colName, dtype: "int64", values: arr.buffer });
+      } else {
+        const arr = new Float64Array(rows.length);
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as number : 0; }
+        result.push({ name: colName, dtype: "float64", values: arr.buffer });
+      }
+    } else if (typeof sample === "bigint") {
+      const arr = new BigInt64Array(rows.length);
+      for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as bigint : 0n; }
+      result.push({ name: colName, dtype: "int64", values: arr.buffer });
+    } else if (typeof sample === "boolean") {
+      const byteCount = Math.ceil(rows.length / 8);
+      const boolBuf = new Uint8Array(byteCount);
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
+      }
+      result.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
+    } else if (typeof sample === "string") {
+      const enc = textEncoder;
+      const parts: Uint8Array[] = [];
+      let totalLen = 0;
+      for (const row of rows) {
+        const str = enc.encode(String(row[colName] ?? ""));
+        const header = new Uint8Array(4);
+        new DataView(header.buffer).setUint32(0, str.length, true);
+        parts.push(header, str);
+        totalLen += 4 + str.length;
+      }
+      const buf = new Uint8Array(totalLen);
+      let off = 0;
+      for (const p of parts) { buf.set(p, off); off += p.length; }
+      result.push({ name: colName, dtype: "utf8", values: buf.buffer });
+    }
+  }
+  return result;
 }
 
 /** @internal — exported for testing */

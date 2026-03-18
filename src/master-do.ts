@@ -5,7 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import type { QueryDORpc } from "./types.js";
-import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
 import { resolveBucket } from "./bucket.js";
 import wasmModule from "./wasm-module.js";
 
@@ -147,53 +147,7 @@ export class MasterDO extends DurableObject<Env> {
     const wasm = await this.getWasm();
 
     // Convert row-major to column-major
-    const columnNames = Object.keys(rows[0]);
-    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[] = [];
-
-    for (const colName of columnNames) {
-      const sampleValue = rows.find(r => r[colName] != null)?.[colName];
-      if (sampleValue === undefined) continue;
-
-      if (typeof sampleValue === "number") {
-        if (Number.isInteger(sampleValue)) {
-          const i64 = new BigInt64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; i64[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0))); }
-          columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
-        } else {
-          const f64 = new Float64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; f64[i] = v != null ? v as number : 0; }
-          columnArrays.push({ name: colName, dtype: "float64", values: f64.buffer });
-        }
-      } else if (typeof sampleValue === "bigint") {
-        const i64 = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; i64[i] = v != null ? v as bigint : 0n; }
-        columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
-      } else if (typeof sampleValue === "string") {
-        // Length-prefixed encoding
-        const enc = textEncoder;
-        const parts: Uint8Array[] = [];
-        let totalLen = 0;
-        for (const row of rows) {
-          const str = enc.encode(String(row[colName] ?? ""));
-          const header = new Uint8Array(4);
-          new DataView(header.buffer).setUint32(0, str.length, true);
-          parts.push(header, str);
-          totalLen += 4 + str.length;
-        }
-        const buf = new Uint8Array(totalLen);
-        let off = 0;
-        for (const part of parts) { buf.set(part, off); off += part.length; }
-        columnArrays.push({ name: colName, dtype: "utf8", values: buf.buffer });
-      } else if (typeof sampleValue === "boolean") {
-        const byteCount = Math.ceil(rows.length / 8);
-        const boolBuf = new Uint8Array(byteCount);
-        for (let i = 0; i < rows.length; i++) {
-          if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
-        }
-        columnArrays.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
-      }
-    }
-
+    const columnArrays = rowsToColumnArrays(rows);
     if (columnArrays.length === 0) throw new Error("No valid columns found");
 
     // Build Lance fragment via WASM
