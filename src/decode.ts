@@ -86,26 +86,36 @@ export function canSkipFragment(
 ): boolean {
   if (filters.length === 0 && (!filterGroups || filterGroups.length === 0)) return false;
 
-  // Compute per-column min/max across all pages
-  const colStats = new Map<string, { min: number | bigint | string; max: number | bigint | string }>();
+  // Compute per-column min/max/nullCount/rowCount across all pages
+  const colStats = new Map<string, { min?: number | bigint | string; max?: number | bigint | string; nullCount: number; rowCount: number }>();
   for (const col of meta.columns) {
     let colMin: number | bigint | string | undefined;
     let colMax: number | bigint | string | undefined;
+    let hasStats = true;
+    let totalNulls = 0;
+    let totalRows = 0;
     for (const page of col.pages) {
-      if (page.minValue === undefined || page.maxValue === undefined) {
-        colMin = undefined;
-        break;
+      totalNulls += page.nullCount;
+      totalRows += page.rowCount;
+      if (hasStats) {
+        if (page.minValue === undefined || page.maxValue === undefined) {
+          hasStats = false;
+        } else {
+          if (colMin === undefined || page.minValue < colMin) colMin = page.minValue;
+          if (colMax === undefined || page.maxValue > colMax) colMax = page.maxValue;
+        }
       }
-      if (colMin === undefined || page.minValue < colMin) colMin = page.minValue;
-      if (colMax === undefined || page.maxValue > colMax) colMax = page.maxValue;
     }
-    if (colMin !== undefined && colMax !== undefined) {
-      colStats.set(col.name, { min: colMin, max: colMax });
-    }
+    colStats.set(col.name, {
+      min: hasStats ? colMin : undefined,
+      max: hasStats ? colMax : undefined,
+      nullCount: totalNulls,
+      rowCount: totalRows,
+    });
   }
 
-  const synthPage = (s: { min: number | bigint | string; max: number | bigint | string }): PageInfo =>
-    ({ byteOffset: 0n, byteLength: 0, rowCount: 0, nullCount: 0, minValue: s.min, maxValue: s.max });
+  const synthPage = (s: { min?: number | bigint | string; max?: number | bigint | string; nullCount: number; rowCount: number }): PageInfo =>
+    ({ byteOffset: 0n, byteLength: 0, rowCount: s.rowCount, nullCount: s.nullCount, minValue: s.min, maxValue: s.max });
 
   const filterSkips = (f: FilterOp): boolean => {
     const stats = colStats.get(f.column);
