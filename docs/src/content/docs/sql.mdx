@@ -48,7 +48,7 @@ SELECT COUNT(*), SUM(amount), AVG(score)
 WHERE age > 25
 WHERE status = 'active' AND amount >= 100
 WHERE dept = 'eng' OR age > 30
-WHERE name LIKE '%alice%'
+WHERE name LIKE '%Alice%'
 WHERE id IN (1, 2, 3)
 WHERE id NOT IN (4, 5)
 WHERE amount BETWEEN 100 AND 500
@@ -83,6 +83,7 @@ LIMIT 100 OFFSET 50
 
 ```sql
 SELECT salary / 1000 AS salary_k
+SELECT first_name || ' ' || last_name AS full_name
 SELECT CASE WHEN age > 30 THEN 'senior' ELSE 'junior' END AS level
 SELECT CAST(age AS text) AS age_str
 ```
@@ -123,7 +124,11 @@ SELECT id FROM orders EXCEPT SELECT id FROM refunds
 
 ```sql
 SELECT * FROM orders JOIN users ON orders.user_id = users.id
+SELECT * FROM orders INNER JOIN users ON orders.user_id = users.id
 SELECT * FROM orders LEFT JOIN users ON orders.user_id = users.id
+SELECT * FROM orders RIGHT JOIN users ON orders.user_id = users.id
+SELECT * FROM orders FULL JOIN users ON orders.user_id = users.id
+SELECT * FROM a CROSS JOIN b
 ```
 
 ### Vector search
@@ -196,8 +201,8 @@ From highest to lowest:
 
 1. Parentheses `()`
 2. Unary `NOT`, `-`
-3. Multiplication `*`, Division `/`, Modulo `%`
-4. Addition `+`, Subtraction `-`
+3. Multiplication `*`, Division `/`
+4. Addition `+`, Subtraction `-`, Concatenation `||`
 5. Comparison `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`
 6. `IS NULL`, `IS NOT NULL`, `BETWEEN`, `IN`, `LIKE`
 7. `AND`

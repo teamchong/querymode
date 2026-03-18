@@ -78,16 +78,16 @@ import {
 
 const spill = new R2SpillBackend(env.DATA_BUCKET, "__spill/query-123")
 
-// 32MB budget — spills to R2 via Grace hash partitioning
+// 64MB budget — spills to R2 via Grace hash partitioning
 const join = new HashJoinOperator(
   left, right, "user_id", "id", "inner",
-  32 * 1024 * 1024, spill,
+  64 * 1024 * 1024, spill,
 )
 
-// 32MB budget — spills to R2 via external merge sort
+// 64MB budget — spills to R2 via external merge sort
 const sorted = new ExternalSortOperator(
   join, "created_at", true, 0,
-  32 * 1024 * 1024, spill,
+  64 * 1024 * 1024, spill,
 )
 
 const rows = await drainPipeline(sorted)
