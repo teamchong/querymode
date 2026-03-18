@@ -174,7 +174,7 @@ export class WasmEngine {
   /** Alloc with i32 overflow guard — returns 0 if byte size exceeds WASM i32 range. */
   private safeAlloc(bytes: number): number {
     if (bytes > 0x7FFF_FFFF) return 0;
-    return this.safeAlloc(bytes);
+    return this.exports.alloc(bytes);
   }
 
   reset(): void { this.exports.resetResult(); }
