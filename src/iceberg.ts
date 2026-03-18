@@ -61,12 +61,15 @@ export function parseIcebergMetadata(json: string): {
   if (!Array.isArray(fields) || fields.length === 0) return null;
 
   const schema: IcebergSchema = {
-    fields: fields.map((f) => ({
-      name: f.name,
-      type: f.type,
-      required: !!f.required,
-    })),
+    fields: fields
+      .filter((f) => f.name && f.type)
+      .map((f) => ({
+        name: f.name,
+        type: f.type,
+        required: !!f.required,
+      })),
   };
+  if (schema.fields.length === 0) return null;
 
   // Find the current snapshot and its manifest-list
   const snapshots = meta["snapshots"] as

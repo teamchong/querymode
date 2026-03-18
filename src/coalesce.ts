@@ -18,7 +18,7 @@ export interface CoalescedRange {
  * Sparse layouts waste bandwidth with large gaps.
  * Returns a gap between 16KB (sparse) and 256KB (dense).
  */
-function computeGap(sorted: Range[]): number {
+export function autoCoalesceGap(sorted: Range[]): number {
   if (sorted.length < 2) return 64 * 1024;
   // Compute median gap between adjacent ranges
   const gaps: number[] = [];
@@ -38,7 +38,7 @@ function computeGap(sorted: Range[]): number {
 export function coalesceRanges(ranges: Range[], maxGap?: number): CoalescedRange[] {
   if (ranges.length === 0) return [];
   const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
-  const gap = maxGap ?? computeGap(sorted);
+  const gap = maxGap ?? autoCoalesceGap(sorted);
   const result: CoalescedRange[] = [];
   let cur: CoalescedRange = { offset: sorted[0].offset, length: sorted[0].length, ranges: [sorted[0]] };
 
