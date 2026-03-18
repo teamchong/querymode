@@ -217,10 +217,14 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
     const seen = new Set<string>();
     const unique: Row[] = [];
 
+    const keyColumns = columns ?? Object.keys(rows[0] ?? {});
     for (const row of rows) {
-      const key = columns
-        ? columns.map(c => { const v = row[c]; return v === null || v === undefined ? NULL_SENTINEL : String(v); }).join("\x00")
-        : Object.values(row).map(v => v === null || v === undefined ? NULL_SENTINEL : String(v)).join("\x00");
+      let key = "";
+      for (let i = 0; i < keyColumns.length; i++) {
+        if (i > 0) key += "\x00";
+        const v = row[keyColumns[i]];
+        key += v === null || v === undefined ? NULL_SENTINEL : String(v);
+      }
       if (!seen.has(key)) {
         seen.add(key);
         unique.push(row);
