@@ -865,6 +865,11 @@ export class DataFrame<T extends Row = Row> {
 
   /** Convert a QueryDescriptor back to fluent DataFrame builder code. */
   static descriptorToCode = descriptorToCode;
+
+  /** @internal Extract executor from a DataFrame (same-class private access for Pipeline). */
+  static _getExecutor(df: DataFrame): QueryExecutor {
+    return df._executor;
+  }
 }
 
 /** Backward-compatible alias */
@@ -1102,7 +1107,7 @@ export class Pipeline {
       // Cleanup all intermediate tables
       for (const name of intermediates) {
         try {
-          await new DataFrame(name, (this._input as any)._executor).dropTable();
+          await new DataFrame(name, DataFrame._getExecutor(this._input)).dropTable();
         } catch {
           // Best-effort cleanup — intermediate may not exist if stage failed early
         }
