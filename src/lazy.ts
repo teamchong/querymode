@@ -1,4 +1,5 @@
 import type { Row } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 
 export interface MaterializationCacheOptions {
@@ -220,10 +221,12 @@ export function queryHashKey(desc: QueryDescriptor): string {
   // Windows
   if (desc.windows && desc.windows.length > 0) {
     for (const w of desc.windows) {
-      let wp = `w:${w.fn}:${w.alias}:${w.column ?? ""}`;
+      let wp = `w:${w.fn}:${w.alias}:${w.column ?? NULL_SENTINEL}`;
       if (w.partitionBy?.length) wp += `:pb=${w.partitionBy.join(",")}`;
       if (w.orderBy?.length) wp += `:ob=${w.orderBy.map(o => o.column + o.direction).join(",")}`;
       if (w.frame) wp += `:fr=${w.frame.type}:${w.frame.start}:${w.frame.end}`;
+      if (w.args?.offset !== undefined) wp += `:ao=${w.args.offset}`;
+      if (w.args?.default_ !== undefined) wp += `:ad=${w.args.default_}`;
       parts.push(wp);
     }
   }
