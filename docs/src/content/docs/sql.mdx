@@ -100,6 +100,17 @@ SELECT name, LAG(amount, 1) OVER (ORDER BY created_at) AS prev_amount FROM order
 
 `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, and rolling `SUM`/`AVG`/`MIN`/`MAX`/`COUNT` with frame specification.
 
+### Common Table Expressions (CTEs)
+
+```sql
+WITH active_users AS (
+  SELECT * FROM users WHERE status = 'active'
+)
+SELECT * FROM active_users WHERE age > 25
+```
+
+Simple CTEs (no aggregation, no sort+limit) are inlined — their filters merge with the outer query for full pushdown. Complex CTEs are materialized as intermediate results.
+
 ### Set operations
 
 ```sql

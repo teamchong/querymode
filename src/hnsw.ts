@@ -233,7 +233,7 @@ export class HnswIndex {
   constructor(opts: HnswOptions) {
     this.dim = opts.dim;
     this.metric = opts.metric ?? "cosine";
-    this.M = opts.M ?? 16;
+    this.M = Math.max(opts.M ?? 16, 2);
     this.Mmax0 = this.M * 2;
     this.efConstruction = opts.efConstruction ?? 200;
     this.mL = 1 / Math.log(this.M);
