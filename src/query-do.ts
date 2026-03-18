@@ -1687,9 +1687,12 @@ export class QueryDO extends DurableObject<Env> {
     }
 
     if (fragments.length === 0) {
-      // All fragments pruned — return empty result
+      // All fragments pruned — return empty result with correct schema
+      const cols = query.projections.length > 0
+        ? query.projections
+        : (allFragments.length > 0 ? allFragments[0].columns.map(c => c.name) : []);
       return {
-        rows: [], rowCount: 0, columns: [],
+        rows: [], rowCount: 0, columns: cols,
         bytesRead: 0, pagesSkipped: 0, durationMs: Date.now() - t0,
         r2ReadMs: 0, wasmExecMs: 0, cacheHits: 0, cacheMisses: 0,
         edgeCacheHits: 0, edgeCacheMisses: 0,

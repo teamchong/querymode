@@ -33,13 +33,6 @@ function computeGap(sorted: Range[]): number {
   return Math.max(16 * 1024, Math.min(256 * 1024, medianGap * 2));
 }
 
-/** Compute optimal coalesce gap based on page density. Sorts a copy internally. */
-export function autoCoalesceGap(ranges: Range[]): number {
-  if (ranges.length < 2) return 64 * 1024;
-  const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
-  return computeGap(sorted);
-}
-
 /** Merge nearby byte ranges into fewer R2 reads. Sorts by offset, merges if gap <= maxGap.
  *  If maxGap is omitted, auto-computes from page density (sorts once instead of twice). */
 export function coalesceRanges(ranges: Range[], maxGap?: number): CoalescedRange[] {
