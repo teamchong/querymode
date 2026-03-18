@@ -108,8 +108,10 @@ This is automatic — no configuration needed. Supported filter ops:
 | `not_between` | Entire page range inside the excluded range |
 | `is_null` | Page has zero null values (nullCount = 0) |
 | `is_not_null` | Page is entirely null (nullCount = rowCount) |
+| `like` | Fixed prefix doesn't overlap page's string [min, max] range |
+| `not_like` | Uniform page (min = max) matches the LIKE pattern |
 
-String columns also have min/max stats (lexicographic). `like` patterns with a fixed prefix (e.g., `'abc%'`) can skip pages where the string range doesn't overlap the prefix. Patterns starting with a wildcard (e.g., `'%xyz'`) cannot be pruned. `not_like` does not benefit from page skip.
+String columns have min/max stats (lexicographic). `like` patterns with a fixed prefix (e.g., `'abc%'`) can skip pages where the string range doesn't overlap the prefix. Patterns starting with a wildcard (e.g., `'%xyz'`) cannot be pruned. `not_like` can skip uniform pages where the single value matches the pattern (all rows would be excluded).
 
 ### OR filters and page skip
 
