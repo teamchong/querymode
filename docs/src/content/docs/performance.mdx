@@ -161,9 +161,9 @@ WASM SIMD scan             → decode + filter in one pass (no Row[] intermediat
 JS fallback (if needed)    → matchesFilter on remaining rows
 ```
 
-**All 14 filter ops are fully pushable.** The DataFrame API's `.filter()` and the SQL compiler's `WHERE` clause both produce `FilterOp[]` — the same array that drives partition pruning, fragment skip, page skip, and WASM scan. No filter type requires post-scan evaluation.
+**All 14 filter ops are fully pushable.** The DataFrame API's `.filter()` and the SQL compiler's `WHERE` clause both produce `FilterOp[]` — the same array that drives partition pruning, fragment skip, page skip, and WASM scan. No filter op (eq, neq, gt, gte, lt, lte, in, not_in, between, not_between, like, not_like, is_null, is_not_null) requires post-scan evaluation.
 
-Non-pushable expressions (CASE, CAST, arithmetic in WHERE) go through a separate path: the SQL `SqlWrappingExecutor` evaluates them after the scan completes. These expressions still benefit from pushable filters that run first — a query like `WHERE region = 'us' AND CASE WHEN ... END` pushes the `region = 'us'` filter to scan and evaluates the CASE on the filtered result.
+SQL expressions that are **not** `FilterOp` — such as `CASE`, `CAST`, and arithmetic in `WHERE` (e.g., `WHERE price * qty > 100`) — cannot be expressed as a `FilterOp` and go through `SqlWrappingExecutor` after the scan. These still benefit from any pushable filters in the same query: `WHERE region = 'us' AND price * qty > 100` pushes `region = 'us'` to scan and evaluates the arithmetic on the filtered result.
 
 **OR filters** (`filterGroups`) are fully pushable too. Each OR branch is an independent `FilterOp[]` group. Page skip requires ALL groups to independently eliminate a page before skipping it.
 
