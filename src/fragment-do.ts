@@ -16,6 +16,7 @@ import { concatQMCBBatches, decodeColumnarBatch, columnarBatchToRows } from "./c
 import wasmModule from "./wasm-module.js";
 
 const R2_TIMEOUT_MS = 10_000;
+const FOOTER_CACHE_MAX = 500;
 
 interface ScanRequest {
   fragments: { r2Key: string; meta: TableMeta }[];
@@ -73,6 +74,18 @@ export class FragmentDO extends DurableObject<Env> {
       if (!cachedMeta || cachedMeta.updatedAt < meta.updatedAt) {
         this.footerCache.set(r2Key, meta);
         void this.ctx.storage.put(`frag:${r2Key}`, meta).catch(() => {});
+        // Evict oldest when cache exceeds cap
+        if (this.footerCache.size > FOOTER_CACHE_MAX) {
+          let oldestKey: string | undefined;
+          let oldestTime = Infinity;
+          for (const [k, m] of this.footerCache) {
+            if (m.updatedAt < oldestTime) { oldestTime = m.updatedAt; oldestKey = k; }
+          }
+          if (oldestKey) {
+            this.footerCache.delete(oldestKey);
+            void this.ctx.storage.delete(`frag:${oldestKey}`).catch(() => {});
+          }
+        }
       }
 
       const neededNames = queryReferencedColumns(query, effectiveMeta.columns.map(c => c.name));

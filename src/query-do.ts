@@ -497,7 +497,10 @@ export class QueryDO extends DurableObject<Env> {
         oldestKey = key;
       }
     }
-    if (oldestKey) this.datasetCache.delete(oldestKey);
+    if (oldestKey) {
+      this.datasetCache.delete(oldestKey);
+      this.partitionCatalogs.delete(oldestKey);
+    }
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -590,6 +593,7 @@ export class QueryDO extends DurableObject<Env> {
 
       this.footerCache.set(table, meta);
       this.wasmEngine.clearTable(table);
+      this.wasmEngine.cacheClear();
       await this.ctx.storage.put(`table:${table}`, meta);
     }
   }

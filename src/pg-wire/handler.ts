@@ -186,9 +186,7 @@ function formatValue(val: unknown): string | null {
   if (val === null || val === undefined) return null;
   if (typeof val === "bigint") return val.toString();
   if (val instanceof Float32Array) {
-    let s = "[";
-    for (let i = 0; i < val.length; i++) { if (i > 0) s += ","; s += val[i]; }
-    return s + "]";
+    return "[" + Array.from(val).join(",") + "]";
   }
   return String(val);
 }

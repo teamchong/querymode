@@ -947,6 +947,10 @@ export class LocalExecutor implements QueryExecutor {
           // Cache fragment sources for later use in execute()
           const fragments = await reader.createFragments(source, meta.columns);
           this.readerFragmentCache.set(path, fragments);
+          if (this.readerFragmentCache.size > 1000) {
+            const firstKey = this.readerFragmentCache.keys().next().value;
+            if (firstKey) this.readerFragmentCache.delete(firstKey);
+          }
           return { columns: meta.columns, fileSize };
         }
         throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}. Supported formats: .lance, .parquet, .csv, .tsv, .json, .ndjson, .jsonl, .arrow, .ipc, .feather`);
