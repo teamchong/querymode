@@ -45,7 +45,7 @@ export {
   wasmResultToQMCB, encodeColumnarBatch, decodeColumnarBatch,
   columnarBatchToRows, columnarKWayMerge, concatColumnarBatches,
   sliceColumnarBatch, concatQMCBBatches, readColumnValue,
-  DTYPE_F64, DTYPE_I64, DTYPE_UTF8, DTYPE_BOOL, DTYPE_F32VEC,
+  QMCB_MAGIC, DTYPE_F64, DTYPE_I64, DTYPE_UTF8, DTYPE_BOOL, DTYPE_F32VEC,
   DTYPE_NULL, DTYPE_I32, DTYPE_F32,
 } from "./columnar.js";
 export type { ColumnarColumn, ColumnarBatch } from "./columnar.js";

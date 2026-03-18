@@ -18,9 +18,9 @@ import type { Row } from "./types.js";
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 
-const QMCB_MAGIC = 0x42434D51; // "QMCB" little-endian
+export const QMCB_MAGIC = 0x42434D51; // "QMCB" little-endian
 
-// QMCB dtype tags (extends r2-spill.ts)
+// QMCB dtype tags (shared with r2-spill.ts)
 export const DTYPE_F64 = 0;
 export const DTYPE_I64 = 1;
 export const DTYPE_UTF8 = 2;

@@ -31,19 +31,14 @@
 
 import type { Row } from "./types.js";
 import { withRetry, withTimeout } from "./coalesce.js";
+import {
+  QMCB_MAGIC,
+  DTYPE_F64, DTYPE_I64, DTYPE_UTF8, DTYPE_BOOL, DTYPE_F32VEC, DTYPE_NULL,
+} from "./columnar.js";
 
 const R2_SPILL_TIMEOUT_MS = 10_000;
-const MAGIC = 0x42434D51; // "QMCB" little-endian
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-// Dtype tags
-const DTYPE_F64 = 0;
-const DTYPE_I64 = 1;
-const DTYPE_UTF8 = 2;
-const DTYPE_BOOL = 3;
-const DTYPE_F32VEC = 4;
-const DTYPE_NULL = 5;
 
 /** Generic spill backend for sort/join operators. */
 export interface SpillBackend {
@@ -80,7 +75,7 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
     // Empty run: just header
     const buf = new ArrayBuffer(10);
     const view = new DataView(buf);
-    view.setUint32(0, MAGIC, true);
+    view.setUint32(0, QMCB_MAGIC, true);
     view.setUint32(4, 0, true);
     view.setUint16(8, 0, true);
     return buf;
@@ -200,7 +195,7 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
   let offset = 0;
 
   // Header
-  view.setUint32(offset, MAGIC, true); offset += 4;
+  view.setUint32(offset, QMCB_MAGIC, true); offset += 4;
   view.setUint32(offset, rowCount, true); offset += 4;
   view.setUint16(offset, columnCount, true); offset += 2;
 
@@ -315,7 +310,7 @@ export function* decodeColumnarRun(buf: ArrayBuffer): Generator<Row> {
   const bytes = new Uint8Array(buf);
 
   const magic = view.getUint32(0, true);
-  if (magic !== MAGIC) throw new Error("Invalid spill file: bad magic");
+  if (magic !== QMCB_MAGIC) throw new Error("Invalid spill file: bad magic");
 
   const rowCount = view.getUint32(4, true);
   const columnCount = view.getUint16(8, true);
