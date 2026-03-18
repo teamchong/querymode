@@ -91,10 +91,10 @@ export function formatExplain(plan: ExplainResult): string {
   lines.push(`Table: ${plan.table} (${plan.format})`);
 
   const totalRowsFormatted = plan.totalRows.toLocaleString();
-  const fragInfo = plan.fragmentsSkipped
-    ? `Fragments: ${plan.fragments} (${plan.fragmentsSkipped} skipped)`
-    : `Fragments: ${plan.fragments}`;
-  lines.push(`Total rows: ${totalRowsFormatted} | ${fragInfo}`);
+  const fragParts = [`Fragments: ${plan.fragments}`];
+  if (plan.fragmentsSkipped) fragParts.push(`${plan.fragmentsSkipped} skipped`);
+  if (plan.fragmentsScanned != null) fragParts.push(`${plan.fragmentsScanned} scanned`);
+  lines.push(`Total rows: ${totalRowsFormatted} | ${fragParts.join(", ")}`);
 
   lines.push(`Columns: ${plan.columns.length} scanned`);
   for (const col of plan.columns) {
