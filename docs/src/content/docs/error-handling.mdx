@@ -86,6 +86,10 @@ The response body always includes `{ error: string }` and, for `QueryModeError`,
 { "error": "Column not found in events: foo", "code": "SCHEMA_MISMATCH" }
 ```
 
+## PostgreSQL SQLSTATE codes
+
+When connecting via the [pg-wire protocol](/querymode/pg-wire/), errors include standard SQLSTATE codes (e.g., `42P01` for table not found, `57014` for timeout). See [pg-wire error codes](/querymode/pg-wire/#error-codes) for the full mapping.
+
 ## DataFrame validation errors
 
 The DataFrame API validates arguments eagerly and throws `QueryModeError` with `QUERY_FAILED`:

@@ -82,7 +82,23 @@ The handler manages the full connection lifecycle:
 1. **Startup** — SSL negotiation (rejected), authentication (always ok), server parameters
 2. **Query** — SQL parsing, compilation, execution via the QueryMode pipeline
 3. **Response** — `RowDescription` + `DataRow` messages with proper type OIDs
-4. **Error** — SQL errors return `ErrorResponse` and the connection stays open
+4. **Error** — SQL errors return `ErrorResponse` with proper SQLSTATE codes and the connection stays open
+
+## Error codes
+
+Errors include standard PostgreSQL SQLSTATE codes so BI tools can classify them:
+
+| QueryMode error | SQLSTATE | Meaning |
+|----------------|----------|---------|
+| `TABLE_NOT_FOUND` | `42P01` | Undefined table |
+| `COLUMN_NOT_FOUND` | `42703` | Undefined column |
+| `INVALID_FILTER`, `INVALID_AGGREGATE` | `42601` | Syntax error |
+| `SCHEMA_MISMATCH` | `42804` | Datatype mismatch |
+| `INVALID_FORMAT` | `08P01` | Protocol violation |
+| `QUERY_TIMEOUT`, `NETWORK_TIMEOUT` | `57014` | Query canceled |
+| `MEMORY_EXCEEDED` | `53200` | Out of memory |
+| `QUERY_FAILED` | `XX000` | Internal error |
+| Other | `42000` | Generic syntax error (default) |
 
 ## Type mapping
 

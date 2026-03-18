@@ -90,8 +90,8 @@ function evaluateBinary(op: string, leftExpr: SqlExpr, rightExpr: SqlExpr, row: 
   if (op === "and") {
     const left = evaluateExpr(leftExpr, row);
     const right = evaluateExpr(rightExpr, row);
-    if (left === false || left === 0) return false;
-    if (right === false || right === 0) return false;
+    if (left === false || left === 0 || left === 0n) return false;
+    if (right === false || right === 0 || right === 0n) return false;
     if (left === null || right === null) return null;
     return isTruthy(left) && isTruthy(right);
   }
