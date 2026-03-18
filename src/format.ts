@@ -83,7 +83,10 @@ export function formatExplain(plan: ExplainResult): string {
   lines.push(`Table: ${plan.table} (${plan.format})`);
 
   const totalRowsFormatted = plan.totalRows.toLocaleString();
-  lines.push(`Total rows: ${totalRowsFormatted} | Fragments: ${plan.fragments}`);
+  const fragInfo = plan.fragmentsSkipped
+    ? `Fragments: ${plan.fragments} (${plan.fragmentsSkipped} skipped)`
+    : `Fragments: ${plan.fragments}`;
+  lines.push(`Total rows: ${totalRowsFormatted} | ${fragInfo}`);
 
   lines.push(`Columns: ${plan.columns.length} scanned`);
   for (const col of plan.columns) {
@@ -108,6 +111,18 @@ export function formatExplain(plan: ExplainResult): string {
   lines.push(`Pages: ${plan.pagesTotal} total, ${plan.pagesSkipped} skipped (${skipPct}%), ${plan.pagesScanned} scanned`);
 
   lines.push(`Estimated: ${formatBytes(plan.estimatedBytes)} across ${plan.estimatedR2Reads} read${plan.estimatedR2Reads !== 1 ? "s" : ""}`);
+
+  if (plan.estimatedRows !== plan.totalRows) {
+    lines.push(`Estimated rows after pruning: ${plan.estimatedRows.toLocaleString()}`);
+  }
+
+  if (plan.partitionCatalog) {
+    lines.push(`Partition catalog: ${plan.partitionCatalog.column} (${plan.partitionCatalog.partitionValues} values)`);
+  }
+
+  if (plan.fanOut) {
+    lines.push(`Fan-out: yes${plan.hierarchicalReduction ? ` (${plan.reducerTiers} reducer tiers)` : ""}`);
+  }
 
   if (plan.metaCached) {
     lines.push("Meta: cached");
