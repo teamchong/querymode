@@ -1077,6 +1077,7 @@ export class DistinctOperator implements Operator {
   private upstream: Operator;
   private columns: string[];
   private seen = new Set<string>();
+  private _resolvedCols: string[] | null = null;
 
   constructor(upstream: Operator, columns: string[]) {
     this.upstream = upstream;
@@ -1100,7 +1101,7 @@ export class DistinctOperator implements Operator {
 
       const indices = batch.selection ?? identityIndices(batch.rowCount);
       const kept: number[] = [];
-      const cols = this.columns.length > 0 ? this.columns : Array.from(batch.columns.keys());
+      const cols = this.columns.length > 0 ? this.columns : (this._resolvedCols ??= Array.from(batch.columns.keys()));
       // Pre-extract column arrays to avoid Map.get per column per row
       const colArrays: ((number | bigint | string | boolean | null)[] | undefined)[] = new Array(cols.length);
       for (let g = 0; g < cols.length; g++) colArrays[g] = batch.columns.get(cols[g]) ?? undefined;

@@ -224,12 +224,17 @@ export function mergeQueryResults(
   // Fallback: mixed or row-based
   for (const p of partials) ensureRows(p);
   let rows: Row[];
-  const allRows = partials.flatMap((p) => p.rows);
   const off = query.offset ?? 0;
-  if (off > 0 || query.limit !== undefined) {
-    rows = allRows.slice(off, query.limit !== undefined ? off + query.limit : undefined);
+  if (partials.length === 1 && off === 0 && query.limit === undefined) {
+    // Single shard, no slicing — avoid flatMap copy
+    rows = partials[0].rows;
   } else {
-    rows = allRows;
+    const allRows = partials.flatMap((p) => p.rows);
+    if (off > 0 || query.limit !== undefined) {
+      rows = allRows.slice(off, query.limit !== undefined ? off + query.limit : undefined);
+    } else {
+      rows = allRows;
+    }
   }
 
   return { rows, rowCount: rows.length, columns, ...baseResult };
