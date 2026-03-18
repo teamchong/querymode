@@ -396,9 +396,8 @@ describe("descriptorToCode", () => {
     const code = descriptorToCode(makeDesc({
       subqueryIn: [{ column: "region", valueSet: new Set(["us", "eu"]) }],
     }));
-    expect(code).toContain('.filterIn("region"');
-    expect(code).toContain('"us"');
-    expect(code).toContain('"eu"');
+    expect(code).toContain('.whereIn("region", ["us", "eu"])');
+    expect(code).not.toContain('_subquery');
   });
 
   it("limit 0 is preserved", () => {

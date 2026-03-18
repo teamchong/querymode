@@ -62,11 +62,11 @@ export function descriptorToCode(
     chains.push(`.join(\n    ${rightChain},\n    { left: ${str(desc.join.leftKey)}, right: ${str(desc.join.rightKey)} }${joinType},\n  )`);
   }
 
-  // SubqueryIn
+  // SubqueryIn — valueSet is already resolved, emit as whereIn with literal values
   if (desc.subqueryIn && desc.subqueryIn.length > 0) {
     for (const sq of desc.subqueryIn) {
       const values = [...sq.valueSet].map(v => str(v)).join(", ");
-      chains.push(`.filterIn(${str(sq.column)}, ${tableFn}.table("_subquery").whereIn(${str(sq.column)}, [${values}]))`);
+      chains.push(`.whereIn(${str(sq.column)}, [${values}])`);
     }
   }
 
@@ -133,7 +133,7 @@ export function descriptorToCode(
   }
 
   // Offset
-  if (desc.offset) {
+  if (desc.offset !== undefined && desc.offset !== 0) {
     chains.push(`.offset(${desc.offset})`);
   }
 

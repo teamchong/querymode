@@ -22,7 +22,7 @@ export class VipCache<K, V> {
     const entry = this.map.get(key);
     if (!entry) return undefined;
     if (entry.expiresAt && Date.now() > entry.expiresAt) {
-      this.map.delete(key);
+      if (entry.refCount === 0) this.map.delete(key);
       return undefined;
     }
     entry.accessCount++;
@@ -62,6 +62,7 @@ export class VipCache<K, V> {
       existing.value = value;
       existing.accessCount++;
       existing.lastAccess = Date.now();
+      existing.expiresAt = undefined; // clear TTL — set() implies no expiry
       return;
     }
 
@@ -91,9 +92,13 @@ export class VipCache<K, V> {
 
   invalidateByPrefix(prefix: string): number {
     let count = 0;
-    for (const key of this.map.keys()) {
+    for (const [key, entry] of this.map) {
       if (String(key).startsWith(prefix)) {
-        this.map.delete(key);
+        if (entry.refCount > 0) {
+          entry.pendingEviction = true;
+        } else {
+          this.map.delete(key);
+        }
         count++;
       }
     }
@@ -116,6 +121,12 @@ export class VipCache<K, V> {
   }
 
   delete(key: K): boolean {
+    const entry = this.map.get(key);
+    if (!entry) return false;
+    if (entry.refCount > 0) {
+      entry.pendingEviction = true;
+      return true;
+    }
     return this.map.delete(key);
   }
 
