@@ -115,7 +115,8 @@ Simple CTEs (no aggregation, no sort+limit) are inlined — their filters merge 
 ### Set operations
 
 ```sql
-SELECT * FROM orders_2025 UNION ALL SELECT * FROM orders_2026
+SELECT * FROM orders_2025 UNION ALL SELECT * FROM orders_2026   -- keeps duplicates
+SELECT * FROM orders_2025 UNION SELECT * FROM orders_2026       -- deduplicates
 SELECT region FROM orders INTERSECT SELECT region FROM users
 SELECT id FROM orders EXCEPT SELECT id FROM refunds
 ```
