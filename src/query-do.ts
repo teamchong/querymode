@@ -455,7 +455,6 @@ export class QueryDO extends DurableObject<Env> {
     return applySortAndLimit(result, query);
   }
 
-  /** Evict oldest dataset entry (by updatedAt) when cache exceeds max size. */
   /** Auto-detect best partition column and build catalog from fragment metadata. */
   private buildPartitionCatalog(tableName: string, fragmentMetas: Map<number, TableMeta>, partitionBy?: string): void {
     if (fragmentMetas.size < 2) return; // no point for single-fragment tables
@@ -1755,8 +1754,8 @@ export class QueryDO extends DurableObject<Env> {
    *  concurrent queries from queueing behind each other on the same slot. */
   private claimSlots(needed: number): number[] {
     const slots: number[] = [];
-    // Find unused slot indices — start from 0 and skip active ones
-    for (let i = 0; slots.length < needed; i++) {
+    const maxSlot = this.activeFragmentSlots.size + needed;
+    for (let i = 0; slots.length < needed && i < maxSlot; i++) {
       if (!this.activeFragmentSlots.has(i)) slots.push(i);
     }
     for (const s of slots) this.activeFragmentSlots.add(s);
