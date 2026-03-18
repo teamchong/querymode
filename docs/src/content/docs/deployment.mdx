@@ -94,6 +94,7 @@ pnpm build && wrangler deploy
 | `/query/explain` | POST | Execution plan |
 | `/tables` | GET | List registered tables |
 | `/meta?table=X` | GET | Table metadata |
+| `/upload?key=X` | POST | Direct R2 file upload (dev mode only, requires `DEV_MODE` env) |
 | `/write` | POST | Write rows |
 | `/refresh` | POST | Refresh metadata cache |
 | `/register` | POST | Register table |
