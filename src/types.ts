@@ -164,8 +164,12 @@ export function queryReferencedColumns(query: {
   windows?: WindowSpec[];
   join?: { leftKey: string };
   subqueryIn?: { column: string }[];
+  computedColumns?: { alias: string }[];
   vectorSearch?: { column: string };
 }, allColumnNames: string[]): Set<string> {
+  // When computedColumns are present, read all columns — function bodies are opaque
+  // and may reference any column (we can't statically analyze JS closures).
+  if (query.computedColumns && query.computedColumns.length > 0) return new Set(allColumnNames);
   const s = new Set(query.projections.length > 0 ? query.projections : allColumnNames);
   for (const f of query.filters) s.add(f.column);
   if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) s.add(f.column);
