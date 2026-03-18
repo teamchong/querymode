@@ -74,18 +74,20 @@ export class FragmentDO extends DurableObject<Env> {
         this.ctx.storage.put(`frag:${r2Key}`, meta);
       }
 
-      let cols = query.projections.length > 0
-        ? effectiveMeta.columns.filter(c => query.projections.includes(c.name))
-        : effectiveMeta.columns;
-
-      // Ensure vector search column is included even if not in projections
-      if (query.vectorSearch) {
-        const vc = query.vectorSearch.column;
-        if (!cols.some(c => c.name === vc)) {
-          const ec = effectiveMeta.columns.find(c => c.name === vc);
-          if (ec) cols = [...cols, ec];
-        }
+      let neededNames: Set<string>;
+      if (query.projections.length > 0) {
+        neededNames = new Set(query.projections);
+        for (const f of query.filters) neededNames.add(f.column);
+        if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededNames.add(f.column);
+        if (query.sortColumn) neededNames.add(query.sortColumn);
+        if (query.groupBy) for (const g of query.groupBy) neededNames.add(g);
+        if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededNames.add(a.column);
+      } else {
+        neededNames = new Set(effectiveMeta.columns.map(c => c.name));
       }
+      if (query.vectorSearch) neededNames.add(query.vectorSearch.column);
+
+      let cols = effectiveMeta.columns.filter(c => neededNames.has(c.name));
 
       // Build byte ranges for each page, skipping uniformly across all columns.
       // Uses canSkipPageMultiCol which handles both AND filters and OR filterGroups.
