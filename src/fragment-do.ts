@@ -11,6 +11,7 @@ import {
   buildKeptPageIndices,
 } from "./operators.js";
 import { mergeQueryResults } from "./merge.js";
+import { QueryModeError } from "./errors.js";
 import { resolveBucket } from "./bucket.js";
 import { concatQMCBBatches, decodeColumnarBatch, columnarBatchToRows } from "./columnar.js";
 import wasmModule from "./wasm-module.js";
@@ -187,12 +188,12 @@ export class FragmentDO extends DurableObject<Env> {
           pageInfos: keptPageIndices.map(pi => col.pages[pi]).filter(Boolean),
         }));
       if (!this.wasmEngine.registerColumns(fragTable, fragColEntries)) {
-        throw new Error(`WASM OOM: failed to register columns for fragment "${r2Key}"`);
+        throw new QueryModeError("MEMORY_EXCEEDED", `WASM OOM: failed to register columns for fragment "${r2Key}"`);
       }
 
       const fragQuery = { ...query, table: fragTable };
       const qmcb = this.wasmEngine.executeQueryColumnar(fragQuery);
-      if (!qmcb) throw new Error(`WASM query execution failed for fragment "${r2Key}"`);
+      if (!qmcb) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed for fragment "${r2Key}"`);
       this.wasmEngine.clearTable(fragTable);
       allBatches.push(qmcb);
       totalWasmExecMs += Date.now() - wasmStart;

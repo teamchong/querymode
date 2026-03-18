@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult, AppendOptions, DropResult } from "./types.js";
-import { NULL_SENTINEL } from "./types.js";
+import { NULL_SENTINEL, countColumnRows } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -54,7 +54,7 @@ export class MasterDO extends DurableObject<Env> {
     if (!result) throw new QueryModeError("INVALID_FORMAT", `Failed to read footer for "${r2Key}"`);
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
-    const totalRows = result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+    const totalRows = countColumnRows(result.columns);
     const meta: TableMeta = {
       name: tableName, footer: result.parsed, format: result.format, columns: result.columns,
       totalRows, fileSize: result.fileSize, r2Key, updatedAt: Date.now(),
@@ -150,7 +150,7 @@ export class MasterDO extends DurableObject<Env> {
 
     // Convert row-major to column-major
     const columnArrays = rowsToColumnArrays(rows);
-    if (columnArrays.length === 0) throw new Error("No valid columns found");
+    if (columnArrays.length === 0) throw new QueryModeError("SCHEMA_MISMATCH", "No valid columns found in rows");
 
     // Build Lance fragment via WASM
     const fragmentBytes = wasm.buildFragment(columnArrays);

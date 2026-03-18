@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, DataType, Env, ExplainResult, FilterOp, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
-import { queryReferencedColumns, queryCacheKey, NULL_SENTINEL } from "./types.js";
+import { queryReferencedColumns, queryCacheKey, countColumnRows, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
@@ -589,7 +589,7 @@ export class QueryDO extends DurableObject<Env> {
             const columns = await this.readColumnMeta(r2Key, footer);
             meta = {
               name: table, footer, format: "lance", columns,
-              totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+              totalRows: countColumnRows(columns),
               fileSize, r2Key, updatedAt,
             };
           }
@@ -639,7 +639,7 @@ export class QueryDO extends DurableObject<Env> {
     }
 
     // Use totalRows from broadcast if available and > 0, otherwise fall back to column computation
-    const computedRows = columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+    const computedRows = countColumnRows(columns);
     const totalRows = (body.totalRows != null && body.totalRows > 0) ? body.totalRows : computedRows;
 
     const meta: TableMeta = {
@@ -665,7 +665,7 @@ export class QueryDO extends DurableObject<Env> {
     if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
       const meta = this.footerCache.get(query.table)
         ?? (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (meta) return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
+      if (meta) return countColumnRows(meta.columns) || meta.totalRows;
     }
     const countQuery = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
     const result = await this.executeQuery(countQuery);
@@ -1455,7 +1455,7 @@ export class QueryDO extends DurableObject<Env> {
         const columns = await this.readColumnMeta(r2Key, footer);
         const meta: TableMeta = {
           name: tableName, footer, format: "lance", columns,
-          totalRows: columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0,
+          totalRows: countColumnRows(columns),
           fileSize, r2Key, updatedAt: Date.now(),
         };
         this.footerCache.set(tableName, meta);

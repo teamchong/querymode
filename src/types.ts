@@ -57,6 +57,11 @@ export interface ColumnMeta {
   listDimension?: number;
 }
 
+/** Count total rows across all pages of a column set. */
+export function countColumnRows(columns: ColumnMeta[]): number {
+  return columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+}
+
 /** Parquet-specific encoding info attached to pages */
 export interface PageEncoding {
   encoding?: string;      // "PLAIN" | "RLE_DICTIONARY" | ...

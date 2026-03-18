@@ -1,7 +1,7 @@
 import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendOptions, AppendResult, DropResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
-import { NULL_SENTINEL } from "./types.js";
+import { NULL_SENTINEL, countColumnRows } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";

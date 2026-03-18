@@ -7,7 +7,7 @@
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
-import { queryReferencedColumns, queryCacheKey, NULL_SENTINEL } from "./types.js";
+import { queryReferencedColumns, queryCacheKey, countColumnRows, NULL_SENTINEL } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -149,7 +149,7 @@ export class LocalExecutor implements QueryExecutor {
   async count(query: QueryDescriptor): Promise<number> {
     const meta = await this.getOrLoadMeta(query.table);
     if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
-      return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+      return countColumnRows(meta.columns);
     }
     // With filters: fall through to aggregate path
     const desc = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
@@ -206,7 +206,7 @@ export class LocalExecutor implements QueryExecutor {
 
     const coalesced = coalesceRanges(ranges);
     const estimatedBytes = ranges.reduce((s, r) => s + r.length, 0);
-    const totalRows = columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
+    const totalRows = countColumnRows(columns);
 
     // Detect format from file
     const format = await this.detectFileFormat(query.table);
