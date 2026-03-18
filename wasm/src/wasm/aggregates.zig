@@ -952,45 +952,7 @@ fn sqlLikeMatch(str: []const u8, pattern: []const u8) bool {
     return true;
 }
 
-/// Case-insensitive SQL LIKE match
-fn sqlLikeMatchCI(str: []const u8, pattern: []const u8) bool {
-    var si: usize = 0;
-    var pi: usize = 0;
-    var star_pi: usize = pattern.len;
-    var star_si: usize = 0;
 
-    while (si < str.len or pi < pattern.len) {
-        if (pi < pattern.len) {
-            if (pattern[pi] == '%') {
-                star_pi = pi;
-                star_si = si;
-                pi += 1;
-                continue;
-            }
-            if (si < str.len) {
-                const sc = toLowerASCII(str[si]);
-                const pc = toLowerASCII(pattern[pi]);
-                if (pc == '_' or sc == pc) {
-                    si += 1;
-                    pi += 1;
-                    continue;
-                }
-            }
-        }
-        if (star_pi < pattern.len) {
-            pi = star_pi + 1;
-            star_si += 1;
-            si = star_si;
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
-inline fn toLowerASCII(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + 32 else c;
-}
 
 /// Filter string column with SQL LIKE pattern, returns matching indices.
 /// offsets_ptr[i] = byte offset of string i in data, offsets_ptr[count] = total data length.
@@ -1014,7 +976,7 @@ export fn filterStringLike(
         const start = offsets_ptr[i];
         const end = offsets_ptr[i + 1];
         const str = data_ptr[start..end];
-        const matches = sqlLikeMatchCI(str, pattern);
+        const matches = sqlLikeMatch(str, pattern);
         if (matches != negate) {
             out_indices[out_count] = @intCast(i);
             out_count += 1;
