@@ -481,7 +481,7 @@ export class HnswIndex {
    * Serialize the index to a compact binary format.
    *
    * Layout:
-   *   Header (25 bytes):
+   *   Header (29 bytes):
    *     magic: u32 ("HNSW")
    *     dim: u32
    *     M: u32
@@ -489,6 +489,7 @@ export class HnswIndex {
    *     entryPoint: u32
    *     size: u32
    *     metric: u8
+   *     efConstruction: u32
    *   Vectors: size * dim * 4 bytes (float32)
    *   Node levels: size * u32
    *   Per level (maxLevel + 1 levels):
@@ -500,7 +501,7 @@ export class HnswIndex {
    */
   serialize(): ArrayBuffer {
     // Calculate total size
-    let totalSize = 25; // header
+    let totalSize = 29; // header
     totalSize += this._size * this.dim * 4; // vectors
     totalSize += this._size * 4; // node levels
 
@@ -515,7 +516,6 @@ export class HnswIndex {
 
     const buf = new ArrayBuffer(totalSize);
     const view = new DataView(buf);
-    const f32 = new Float32Array(buf);
     let offset = 0;
 
     // Header
@@ -526,6 +526,7 @@ export class HnswIndex {
     view.setUint32(offset, this.entryPoint >= 0 ? this.entryPoint : 0, true); offset += 4;
     view.setUint32(offset, this._size, true); offset += 4;
     view.setUint8(offset, METRIC_BYTE[this.metric] ?? 0); offset += 1;
+    view.setUint32(offset, this.efConstruction, true); offset += 4;
 
     // Vectors
     for (let i = 0; i < this._size; i++) {
@@ -576,10 +577,12 @@ export class HnswIndex {
     const entryPoint = view.getUint32(offset, true); offset += 4;
     const size = view.getUint32(offset, true); offset += 4;
     const metricByte = view.getUint8(offset); offset += 1;
+    const efConstruction = offset + 4 <= data.byteLength ? view.getUint32(offset, true) : 200;
+    offset += 4;
 
     const resolvedMetric = metric ?? BYTE_METRIC[metricByte] ?? "cosine";
 
-    const idx = new HnswIndex({ dim, metric: resolvedMetric, M });
+    const idx = new HnswIndex({ dim, metric: resolvedMetric, M, efConstruction });
     idx.maxLevel = size > 0 ? maxLevel : -1;
     idx.entryPoint = size > 0 ? entryPoint : -1;
 

@@ -49,10 +49,14 @@ function coerceValue(raw: unknown, dtype: DataType): number | bigint | string | 
   if (raw === null || raw === undefined) return null;
   switch (dtype) {
     case "bool":
+      if (raw === null || raw === undefined) return null;
       return Boolean(raw);
-    case "int64":
+    case "int64": {
       if (typeof raw === "bigint") return raw;
-      return BigInt(Math.trunc(Number(raw)));
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return null;
+      return BigInt(Math.trunc(n));
+    }
     case "float64":
       return Number(raw);
     case "utf8":
@@ -66,9 +70,12 @@ function coerceValue(raw: unknown, dtype: DataType): number | bigint | string | 
     case "uint32":
     case "float32":
       return Number(raw);
-    case "uint64":
+    case "uint64": {
       if (typeof raw === "bigint") return raw;
-      return BigInt(Math.trunc(Number(raw)));
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return null;
+      return BigInt(Math.trunc(n));
+    }
     default:
       return String(raw);
   }

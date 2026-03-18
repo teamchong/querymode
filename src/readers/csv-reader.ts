@@ -170,8 +170,11 @@ function coerceValue(raw: string, dtype: DataType): number | bigint | string | b
       const lower = trimmed.toLowerCase();
       return lower === "true" || lower === "1";
     }
-    case "int64":
-      return BigInt(Math.trunc(Number(trimmed)));
+    case "int64": {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) return null;
+      return BigInt(Math.trunc(n));
+    }
     case "float64":
       return Number(trimmed);
     default:
