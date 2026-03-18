@@ -175,15 +175,34 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     windows: windows.length > 0 ? windows : undefined,
   };
 
-  // Inline CTE: if FROM references a CTE name, merge its filters and resolve to the real table
+  // Inline CTE: if FROM references a CTE name, merge its filters and resolve to the real table.
+  // Only inline simple CTEs (filter-only). CTEs with sort/limit/aggregates need materialization.
   if (compiledCtes) {
     const cteMap = new Map(compiledCtes.map(c => [c.name, c.result]));
     const cte = cteMap.get(desc.table);
     if (cte) {
       const base = cte.descriptor;
-      desc.table = base.table;
-      desc.filters = [...base.filters, ...desc.filters];
-      desc.filterGroups = [...(base.filterGroups ?? []), ...(desc.filterGroups ?? [])];
+      // Guard: CTEs with sort/limit/aggregates/groupBy/having can't be inlined —
+      // they change the result shape and need materialization first.
+      const canInline = !base.sortColumn && base.limit === undefined &&
+        !base.aggregates && !base.groupBy && !cte.havingExpr && !cte.allOrderBy;
+      if (canInline) {
+        desc.table = base.table;
+        desc.filters = [...base.filters, ...desc.filters];
+        desc.filterGroups = [...(base.filterGroups ?? []), ...(desc.filterGroups ?? [])];
+        // Merge CTE's residual whereExpr into outer whereExpr via AND
+        if (cte.whereExpr) {
+          whereExpr = whereExpr
+            ? { kind: "binary", op: "and", left: cte.whereExpr, right: whereExpr } as SqlExpr
+            : cte.whereExpr;
+        }
+        // Propagate CTE's computedExprs
+        if (cte.computedExprs) {
+          computedExprs.unshift(...cte.computedExprs);
+        }
+      }
+      // If !canInline, table name stays as CTE name — will fail at execution
+      // (CTE materialization not yet supported)
     }
   }
 

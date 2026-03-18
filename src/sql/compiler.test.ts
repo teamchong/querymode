@@ -271,4 +271,32 @@ describe("SQL Compiler - compileFull", () => {
     expect(result.computedExprs![0].alias).toBe("total");
     expect(result.computedExprs![0].expr.kind).toBe("binary");
   });
+
+  it("CTE inlines simple filters", () => {
+    const result = sqlFull("WITH active AS (SELECT * FROM users WHERE status = 'active') SELECT * FROM active WHERE age > 25");
+    expect(result.descriptor.table).toBe("users");
+    expect(result.descriptor.filters).toHaveLength(2);
+    expect(result.descriptor.filters[0]).toMatchObject({ column: "status", op: "eq", value: "active" });
+    expect(result.descriptor.filters[1]).toMatchObject({ column: "age", op: "gt", value: 25 });
+  });
+
+  it("CTE with un-pushable WHERE propagates whereExpr", () => {
+    // UPPER(name) can't be pushed to FilterOp[], so CTE has a whereExpr
+    const result = sqlFull("WITH x AS (SELECT * FROM t WHERE UPPER(name) = 'JOHN') SELECT * FROM x");
+    expect(result.descriptor.table).toBe("t");
+    // The un-pushable predicate should appear as whereExpr, not silently dropped
+    expect(result.whereExpr).toBeDefined();
+  });
+
+  it("CTE with aggregation is not inlined", () => {
+    const result = sqlFull("WITH counts AS (SELECT dept, COUNT(*) AS cnt FROM t GROUP BY dept) SELECT * FROM counts");
+    // CTE has groupBy — can't be inlined, table stays as CTE name
+    expect(result.descriptor.table).toBe("counts");
+  });
+
+  it("CTE with LIMIT is not inlined", () => {
+    const result = sqlFull("WITH top5 AS (SELECT * FROM t ORDER BY score DESC LIMIT 5) SELECT * FROM top5");
+    // CTE has sort+limit — can't be inlined
+    expect(result.descriptor.table).toBe("top5");
+  });
 });
