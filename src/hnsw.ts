@@ -88,7 +88,7 @@ function heapCmp(a: HeapItem, b: HeapItem): number {
   return a.dist - b.dist;
 }
 
-/** Min-heap ordered by dist (smallest distance at top). */
+/** Min-heap ordered by dist (smallest distance at top). NaN-safe via heapCmp. */
 class MinHeap {
   private data: HeapItem[] = [];
 
@@ -117,7 +117,7 @@ class MinHeap {
     const d = this.data;
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      if (d[i].dist >= d[parent].dist) break;
+      if (heapCmp(d[i], d[parent]) >= 0) break;
       [d[i], d[parent]] = [d[parent], d[i]];
       i = parent;
     }
@@ -130,8 +130,8 @@ class MinHeap {
       let smallest = i;
       const l = 2 * i + 1;
       const r = 2 * i + 2;
-      if (l < n && d[l].dist < d[smallest].dist) smallest = l;
-      if (r < n && d[r].dist < d[smallest].dist) smallest = r;
+      if (l < n && heapCmp(d[l], d[smallest]) < 0) smallest = l;
+      if (r < n && heapCmp(d[r], d[smallest]) < 0) smallest = r;
       if (smallest === i) break;
       [d[i], d[smallest]] = [d[smallest], d[i]];
       i = smallest;
@@ -139,7 +139,7 @@ class MinHeap {
   }
 }
 
-/** Max-heap ordered by dist (largest distance at top). */
+/** Max-heap ordered by dist (largest distance at top). NaN-safe via heapCmp. */
 class MaxHeap {
   private data: HeapItem[] = [];
 
@@ -168,7 +168,7 @@ class MaxHeap {
     const d = this.data;
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      if (d[i].dist <= d[parent].dist) break;
+      if (heapCmp(d[i], d[parent]) <= 0) break;
       [d[i], d[parent]] = [d[parent], d[i]];
       i = parent;
     }
@@ -181,8 +181,8 @@ class MaxHeap {
       let largest = i;
       const l = 2 * i + 1;
       const r = 2 * i + 2;
-      if (l < n && d[l].dist > d[largest].dist) largest = l;
-      if (r < n && d[r].dist > d[largest].dist) largest = r;
+      if (l < n && heapCmp(d[l], d[largest]) > 0) largest = l;
+      if (r < n && heapCmp(d[r], d[largest]) > 0) largest = r;
       if (largest === i) break;
       [d[i], d[largest]] = [d[largest], d[i]];
       i = largest;
