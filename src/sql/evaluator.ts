@@ -1,7 +1,7 @@
 /** Runtime SQL expression evaluator — evaluates AST nodes against Row data */
 
 import type { Row } from "../types.js";
-import type { SqlExpr } from "./ast.js";
+import { aggArgKey, type SqlExpr } from "./ast.js";
 import { compileLikeRegex } from "../decode.js";
 
 export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
@@ -208,7 +208,7 @@ export function rewriteAggregatesAsColumns(expr: SqlExpr): SqlExpr {
     case "call": {
       const fnUpper = expr.name.toUpperCase();
       if (isAggregate(fnUpper)) {
-        const col = expr.args[0]?.kind === "star" ? "*" : (expr.args[0]?.kind === "column" ? expr.args[0].name : "*");
+        const col = expr.args[0] ? aggArgKey(expr.args[0]) : "*";
         const fn = (expr.distinct && fnUpper === "COUNT") ? "count_distinct" : fnUpper.toLowerCase();
         return { kind: "column", name: `${fn}_${col}` };
       }

@@ -2,7 +2,7 @@
 
 import type { QueryDescriptor } from "../client.js";
 import type { AggregateOp, FilterOp, WindowSpec } from "../types.js";
-import type { SelectStmt, SqlExpr, TableRef, SqlOrderBy, CteDef } from "./ast.js";
+import { aggArgKey, type SelectStmt, type SqlExpr, type TableRef, type SqlOrderBy, type CteDef } from "./ast.js";
 import { rewriteAggregatesAsColumns } from "./evaluator.js";
 
 const AGGREGATE_FNS = new Set(["COUNT", "SUM", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "STDDEV", "VARIANCE", "MEDIAN", "PERCENTILE"]);
@@ -227,6 +227,7 @@ function extractColumnName(expr: SqlExpr): string | undefined {
   return undefined;
 }
 
+
 function isAggregateCall(name: string): boolean {
   return AGGREGATE_FNS.has(name.toUpperCase());
 }
@@ -240,8 +241,7 @@ function compileAggregate(expr: SqlExpr & { kind: "call" }, alias?: string): Agg
   }
 
   if (expr.args.length > 0 && expr.args[0].kind !== "star") {
-    const colName = extractColumnName(expr.args[0]);
-    if (colName) column = colName;
+    column = aggArgKey(expr.args[0]);
   }
 
   const result: AggregateOp = { fn, column };

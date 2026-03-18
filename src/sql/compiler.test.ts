@@ -94,6 +94,19 @@ describe("SQL Compiler", () => {
     expect(desc.aggregates).toEqual([{ fn: "count_distinct", column: "user_id" }]);
   });
 
+  it("compiles SUM(expression) with deterministic column key", () => {
+    const desc = sql("SELECT SUM(price * quantity) FROM orders");
+    expect(desc.aggregates).toEqual([{ fn: "sum", column: "multiply(price,quantity)" }]);
+  });
+
+  it("COUNT(expr) does not collide with COUNT(*)", () => {
+    const desc = sql("SELECT COUNT(*), COUNT(a + b) FROM t");
+    expect(desc.aggregates).toHaveLength(2);
+    expect(desc.aggregates![0].column).toBe("*");
+    expect(desc.aggregates![1].column).toBe("add(a,b)");
+    expect(desc.aggregates![0].column).not.toBe(desc.aggregates![1].column);
+  });
+
   it("compiles GROUP BY", () => {
     const desc = sql("SELECT region, SUM(sales) FROM data GROUP BY region");
     expect(desc.groupBy).toEqual(["region"]);
@@ -232,6 +245,16 @@ describe("SQL Compiler - compileFull", () => {
         expect(result.havingExpr!.left.name).toBe("count_*");
       }
     }
+  });
+
+  it("HAVING with expression-arg aggregate uses matching column key", () => {
+    const result = sqlFull("SELECT dept, SUM(price * qty) FROM t GROUP BY dept HAVING SUM(price * qty) > 100");
+    expect(result.havingExpr).toBeDefined();
+    if (result.havingExpr!.kind === "binary" && result.havingExpr!.left.kind === "column") {
+      expect(result.havingExpr!.left.name).toBe("sum_multiply(price,qty)");
+    }
+    // Must match the aggregate's column key
+    expect(result.descriptor.aggregates![0].column).toBe("multiply(price,qty)");
   });
 
   it("returns allOrderBy for multi-column ORDER BY", () => {
