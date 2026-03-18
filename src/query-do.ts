@@ -5,7 +5,7 @@ import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { parseIcebergMetadata, extractParquetPathsFromManifest } from "./iceberg.js";
-import { canSkipPage, canSkipFragment, rowPassesFilters, applySortAndLimit } from "./decode.js";
+import { canSkipFragment, rowPassesFilters, applySortAndLimit } from "./decode.js";
 import { decodeParquetColumnChunk } from "./parquet-decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { mergeQueryResults } from "./merge.js";
@@ -736,24 +736,50 @@ export class QueryDO extends DurableObject<Env> {
     }
 
     const { columns } = meta;
-    const projectedColumns = query.projections.length > 0
-      ? columns.filter(c => query.projections.includes(c.name))
-      : columns;
+    let neededExplain: Set<string>;
+    if (query.projections.length > 0) {
+      neededExplain = new Set(query.projections);
+      for (const f of query.filters) neededExplain.add(f.column);
+      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededExplain.add(f.column);
+      if (query.sortColumn) neededExplain.add(query.sortColumn);
+      if (query.groupBy) for (const g of query.groupBy) neededExplain.add(g);
+      if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededExplain.add(a.column);
+      if (query.distinct) for (const d of query.distinct) neededExplain.add(d);
+      if (query.windows) for (const w of query.windows) {
+        if (w.column) neededExplain.add(w.column);
+        for (const p of w.partitionBy) neededExplain.add(p);
+        for (const o of w.orderBy) neededExplain.add(o.column);
+      }
+      if (query.join) neededExplain.add(query.join.leftKey);
+      if (query.subqueryIn) for (const sq of query.subqueryIn) neededExplain.add(sq.column);
+    } else {
+      neededExplain = new Set(columns.map(c => c.name));
+    }
+    if (query.vectorSearch) neededExplain.add(query.vectorSearch.column);
+    const projectedColumns = columns.filter(c => neededExplain.has(c.name));
 
-    let pagesTotal = 0;
     let pagesSkipped = 0;
     const ranges: { column: string; offset: number; length: number }[] = [];
     const colDetails: ExplainResult["columns"] = [];
 
+    // Uniform page-level skip across all columns to match actual query behavior
+    const maxPages = projectedColumns.reduce((m, c) => Math.max(m, c.pages.length), 0);
+    const keptPages = new Set<number>();
+    for (let pi = 0; pi < maxPages; pi++) {
+      if (!query.vectorSearch && canSkipPageMultiCol(projectedColumns, pi, query.filters, query.filterGroups)) {
+        pagesSkipped += projectedColumns.length;
+      } else {
+        keptPages.add(pi);
+      }
+    }
+    const pagesTotal = maxPages * projectedColumns.length;
+
     for (const col of projectedColumns) {
       let colBytes = 0;
       let colPages = 0;
-      for (const page of col.pages) {
-        pagesTotal++;
-        if (!query.vectorSearch && canSkipPage(page, query.filters, col.name)) {
-          pagesSkipped++;
-          continue;
-        }
+      for (let pi = 0; pi < col.pages.length; pi++) {
+        if (!keptPages.has(pi)) continue;
+        const page = col.pages[pi];
         colPages++;
         colBytes += page.byteLength;
         ranges.push({ column: col.name, offset: Number(page.byteOffset), length: page.byteLength });
