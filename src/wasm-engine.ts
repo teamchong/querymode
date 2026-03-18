@@ -169,6 +169,22 @@ export async function instantiateWasm(wasmModule: WebAssembly.Module, opts?: { o
   return engine;
 }
 
+/**
+ * WASM Heap Safety Invariants (bump allocator):
+ *
+ * The Zig engine uses a bump allocator — resetHeap() resets the pointer to zero,
+ * invalidating ALL prior allocations. Correctness requires:
+ *
+ * 1. resetHeap() MUST be called before each batch of alloc() calls
+ * 2. Between resetHeap() and result consumption: NO await (purely synchronous)
+ * 3. Results MUST be copied to JS (.slice() or parseWasmResult) before next resetHeap()
+ * 4. Each Durable Object owns its own WasmEngine — no cross-DO sharing
+ * 5. Decompress/aggregate helpers allocate without reset (.slice() results) — safe
+ *
+ * These invariants hold because Cloudflare DOs are single-threaded:
+ * no parallel JS execution within a DO, so no interleaving between
+ * resetHeap() and result consumption.
+ */
 export class WasmEngine {
   readonly exports: WasmExports;
   constructor(exports: WasmExports) { this.exports = exports; }
@@ -178,6 +194,13 @@ export class WasmEngine {
     if (bytes > 0x7FFF_FFFF) return 0;
     return this.exports.alloc(bytes);
   }
+
+  /**
+   * Reset the bump allocator — invalidates ALL prior allocations.
+   * Call before each batch of alloc()+execute operations.
+   * The caller MUST consume results synchronously (no await) before the next reset.
+   */
+  resetHeap(): void { this.exports.resetHeap(); }
 
   reset(): void { this.exports.resetResult(); }
 

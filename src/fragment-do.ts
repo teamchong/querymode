@@ -183,7 +183,7 @@ export class FragmentDO extends DurableObject<Env> {
       // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
       const wasmStart = Date.now();
       const fragTable = `__frag_${r2Key}`;
-      this.wasmEngine.exports.resetHeap();
+      this.wasmEngine.resetHeap();
       const fragColEntries = cols
         .filter(col => columnData.get(col.name)?.length)
         .map(col => ({

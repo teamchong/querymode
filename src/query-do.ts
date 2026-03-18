@@ -290,7 +290,7 @@ class EdgeScanOperator implements Operator {
     await this.fetchAllPages();
 
     const wasmStart = Date.now();
-    this.wasmEngine.exports.resetHeap();
+    this.wasmEngine.resetHeap();
     const fragTable = `__edge_${this.meta.r2Key}`;
     const colEntries = this.cols
       .filter(col => this.columnData.get(col.name)?.length)
@@ -358,7 +358,7 @@ class EdgeScanOperator implements Operator {
     for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
     if (numRows === 0) return this.next(); // skip empty pages
 
-    this.wasmEngine.exports.resetHeap();
+    this.wasmEngine.resetHeap();
     const fragTable = `__edge_pq_${pi}`;
     const decodedEntries = cols
       .filter(col => decodedColumns.get(col.name)?.length)
@@ -885,7 +885,7 @@ export class QueryDO extends DurableObject<Env> {
     const r2ReadMs = Date.now() - r2Start;
 
     const wasmStart = Date.now();
-    this.wasmEngine.exports.resetHeap();
+    this.wasmEngine.resetHeap();
 
     // Load fragment and extract columns via fragment reader
     const dataPtr = this.wasmEngine.exports.alloc(fileData.byteLength);
@@ -1132,7 +1132,7 @@ export class QueryDO extends DurableObject<Env> {
 
       // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort/agg)
       const colNames = cols.map(c => c.name);
-      this.wasmEngine.exports.resetHeap();
+      this.wasmEngine.resetHeap();
       const decodedEntries = cols
         .filter(col => decodedColumns.get(col.name)?.length)
         .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
@@ -1176,7 +1176,7 @@ export class QueryDO extends DurableObject<Env> {
 
     // Lance path: zero-copy WASM registration + SQL execution
     const wasmStart = Date.now();
-    this.wasmEngine.exports.resetHeap();
+    this.wasmEngine.resetHeap();
     const lanceColEntries = cols
       .filter(col => columnData.get(col.name)?.length)
       .map(col => ({

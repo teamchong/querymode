@@ -28,7 +28,7 @@ beforeAll(async () => {
 describe.skipIf(!hasWasm)("WASM integration", () => {
   describe("int64 + float64 columns → SQL → rows", () => {
     it("registers columns and executes SELECT *", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
 
       const table = "test_nums";
       const rowCount = 3;
@@ -63,7 +63,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("string column registration", () => {
     it("registers utf8 strings with length-prefixed encoding", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_strings";
 
       // Build length-prefixed string data: "hello" (5), "world" (5)
@@ -94,7 +94,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("type promotion", () => {
     it("promotes int32 to int64 for WASM registration", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_promo";
 
       // int32 values
@@ -117,7 +117,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("filter pushdown SQL", () => {
     it("filters with WHERE gt", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_filter";
 
       const i64Buf = new BigInt64Array([10n, 20n, 30n, 40n, 50n]);
@@ -139,7 +139,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
     });
 
     it("filters with WHERE eq", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_eq";
 
       const f64Buf = new Float64Array([1.0, 2.0, 3.0, 2.0]);
@@ -160,7 +160,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
     });
 
     it("filters with WHERE lt on float64", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_lt";
 
       const f64Buf = new Float64Array([1.0, 2.0, 3.0, 4.0]);
@@ -181,7 +181,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("vector search", () => {
     it("finds top-K nearest vectors via vectorSearchBuffer", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const dim = 4;
       const numVectors = 5;
 
@@ -231,7 +231,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("LIMIT and ORDER BY", () => {
     it("applies LIMIT to results", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_limit";
 
       const i64Buf = new BigInt64Array([1n, 2n, 3n, 4n, 5n]);
@@ -252,7 +252,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("multi-column SELECT with projections", () => {
     it("returns only projected columns", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_proj";
 
       const i64Buf = new BigInt64Array([1n, 2n, 3n]);
@@ -278,7 +278,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("bool column", () => {
     it("registers and queries bool values", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_bool";
 
       // Bool bitmap: [true, false, true] = 0b101 = 0x05
@@ -301,7 +301,7 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
 
   describe("aggregates", () => {
     it("computes SUM via WASM", () => {
-      wasm.exports.resetHeap();
+      wasm.resetHeap();
       const table = "test_sum";
 
       const f64Buf = new Float64Array([10.0, 20.0, 30.0]);

@@ -17,6 +17,7 @@ vi.mock("./wasm-engine.js", () => ({
       clearTables: () => {},
     },
     reset: () => {},
+    resetHeap: () => {},
     clearTable: () => {},
     registerColumn: () => true,
     registerColumns: () => true,

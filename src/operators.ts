@@ -559,7 +559,7 @@ function wasmFilterNumeric(
   wasm: WasmEngine,
 ): Uint32Array | null {
   try {
-    wasm.exports.resetHeap();
+    wasm.resetHeap();
 
     if (dtype === "float64" || dtype === "float32") {
       const dataPtr = wasm.exports.alloc(rowCount * 8);
@@ -620,7 +620,7 @@ function wasmFilterRange(
   rowCount: number, wasm: WasmEngine, negate = false,
 ): Uint32Array | null {
   try {
-    wasm.exports.resetHeap();
+    wasm.resetHeap();
 
     if (dtype === "float64" || dtype === "float32") {
       const dataPtr = wasm.exports.alloc(rowCount * 8);
@@ -677,7 +677,7 @@ function wasmFilterLike(
   wasm: WasmEngine,
 ): Uint32Array | null {
   try {
-    wasm.exports.resetHeap();
+    wasm.resetHeap();
     const encoder = _textEncoder;
 
     // Build offsets array and packed string data
@@ -730,7 +730,7 @@ function wasmFilterLike(
 /** Intersect two sorted index arrays using WASM. */
 function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Array {
   try {
-    wasm.exports.resetHeap();
+    wasm.resetHeap();
     const aPtr = wasm.exports.alloc(a.byteLength);
     const bPtr = wasm.exports.alloc(b.byteLength);
     const outPtr = wasm.exports.alloc(Math.min(a.length, b.length) * 4);
@@ -758,7 +758,7 @@ function wasmIntersect(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32
 /** Union two sorted index arrays using WASM. */
 function wasmUnion(a: Uint32Array, b: Uint32Array, wasm: WasmEngine): Uint32Array {
   try {
-    wasm.exports.resetHeap();
+    wasm.resetHeap();
     const aPtr = wasm.exports.alloc(a.byteLength);
     const bPtr = wasm.exports.alloc(b.byteLength);
     const outPtr = wasm.exports.alloc((a.length + b.length) * 4);
@@ -2015,7 +2015,7 @@ export class WasmAggregateOperator implements Operator {
         let matchCount = -1; // -1 = no filter, use full buffer
         let indicesPtr = 0;
         if (hasFilters) {
-          this.wasm.exports.resetHeap();
+          this.wasm.resetHeap();
 
           // Evaluate AND filters
           let currentIndices: Uint32Array | null = null;
@@ -2040,7 +2040,7 @@ export class WasmAggregateOperator implements Operator {
           if (!currentIndices || currentIndices.length === 0) continue;
 
           // Copy indices to WASM for indexed aggregates
-          this.wasm.exports.resetHeap();
+          this.wasm.resetHeap();
           indicesPtr = this.wasm.exports.alloc(currentIndices.byteLength);
           if (indicesPtr) {
             new Uint32Array(this.wasm.exports.memory.buffer, indicesPtr, currentIndices.length).set(currentIndices);
@@ -2142,7 +2142,7 @@ export class WasmAggregateOperator implements Operator {
       const elemSize = col.dtype === "int32" ? 4 : 8;
       const rowCount = buf.byteLength / elemSize;
 
-      this.wasm.exports.resetHeap();
+      this.wasm.resetHeap();
       const dataPtr = this.wasm.exports.alloc(buf.byteLength);
       if (!dataPtr) return new Uint32Array(0);
       new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
