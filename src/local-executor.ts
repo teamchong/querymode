@@ -20,6 +20,14 @@ import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
 import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, buildKeptPageIndices, type FragmentSource, type PipelineOptions } from "./operators.js";
 
+/** Evict oldest entry from a Map when it exceeds maxSize. */
+function evictOldest<K, V>(cache: Map<K, V>, maxSize: number): void {
+  if (cache.size > maxSize) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey !== undefined) cache.delete(firstKey);
+  }
+}
+
 /**
  * Executor for local mode (Node/Bun).
  * Reads Lance/Parquet files directly from the filesystem or via HTTP.
@@ -335,10 +343,7 @@ export class LocalExecutor implements QueryExecutor {
     }
     cached = isUrl ? await this.loadMetaFromUrl(table) : await this.loadMetaFromFile(table);
     this.metaCache.set(table, cached);
-    if (this.metaCache.size > 1000) {
-      const firstKey = this.metaCache.keys().next().value;
-      if (firstKey) this.metaCache.delete(firstKey);
-    }
+    evictOldest(this.metaCache, 1000);
     return cached;
   }
 
@@ -374,10 +379,7 @@ export class LocalExecutor implements QueryExecutor {
         ? await this.loadMetaFromUrl(query.table)
         : await this.loadMetaFromFile(query.table);
       this.metaCache.set(query.table, meta);
-      if (this.metaCache.size > 1000) {
-        const firstKey = this.metaCache.keys().next().value;
-        if (firstKey) this.metaCache.delete(firstKey);
-      }
+      evictOldest(this.metaCache, 1000);
     }
     const metaMs = Date.now() - metaStart;
 
@@ -805,10 +807,7 @@ export class LocalExecutor implements QueryExecutor {
       updatedAt: Date.now(),
     };
     this.datasetCache.set(cacheKey, dataset);
-    if (this.datasetCache.size > 100) {
-      const firstKey = this.datasetCache.keys().next().value;
-      if (firstKey) this.datasetCache.delete(firstKey);
-    }
+    evictOldest(this.datasetCache, 100);
     return dataset;
   }
 
@@ -947,10 +946,7 @@ export class LocalExecutor implements QueryExecutor {
           // Cache fragment sources for later use in execute()
           const fragments = await reader.createFragments(source, meta.columns);
           this.readerFragmentCache.set(path, fragments);
-          if (this.readerFragmentCache.size > 1000) {
-            const firstKey = this.readerFragmentCache.keys().next().value;
-            if (firstKey) this.readerFragmentCache.delete(firstKey);
-          }
+          evictOldest(this.readerFragmentCache, 1000);
           return { columns: meta.columns, fileSize };
         }
         throw new QueryModeError("INVALID_FORMAT", `Invalid file format: unrecognized magic in ${path}. Supported formats: .lance, .parquet, .csv, .tsv, .json, .ndjson, .jsonl, .arrow, .ipc, .feather`);
