@@ -16,6 +16,12 @@
  */
 
 import type { FilterOp, TableMeta } from "./types.js";
+import { NULL_SENTINEL } from "./types.js";
+
+/** Convert a partition value to a consistent string key, using NULL_SENTINEL for null/undefined. */
+function partKey(v: unknown): string {
+  return v === null || v === undefined ? NULL_SENTINEL : String(v);
+}
 
 /** A partition value mapped to the fragment IDs that contain it. */
 export interface PartitionEntry {
@@ -54,11 +60,11 @@ export class PartitionCatalog {
 
       const values = new Set<string>();
       for (const page of col.pages) {
-        if (page.minValue !== undefined) values.add(String(page.minValue));
-        if (page.maxValue !== undefined) values.add(String(page.maxValue));
+        if (page.minValue !== undefined) values.add(partKey(page.minValue));
+        if (page.maxValue !== undefined) values.add(partKey(page.maxValue));
         // If min !== max on any page, this isn't exact-partition data
         if (page.minValue !== undefined && page.maxValue !== undefined &&
-            String(page.minValue) !== String(page.maxValue)) {
+            partKey(page.minValue) !== partKey(page.maxValue)) {
           catalog.exactPartition = false;
         }
       }
@@ -84,7 +90,7 @@ export class PartitionCatalog {
       this.allFragmentIds.push(fragmentId);
     }
     for (const v of values) {
-      const key = String(v);
+      const key = partKey(v);
       let entry = this.index.get(key);
       if (!entry) { entry = []; this.index.set(key, entry); }
       if (!entry.includes(fragmentId)) entry.push(fragmentId);
@@ -127,7 +133,7 @@ export class PartitionCatalog {
         // Only safe for exact-partition data (min===max per page).
         // For range data, a value between min and max wouldn't be indexed.
         if (!this.exactPartition) return null;
-        const entry = this.index.get(String(filter.value));
+        const entry = this.index.get(partKey(filter.value));
         return entry ?? [];
       }
       case "in": {
@@ -135,14 +141,14 @@ export class PartitionCatalog {
         if (!Array.isArray(filter.value)) return null;
         const ids = new Set<number>();
         for (const v of filter.value) {
-          const entry = this.index.get(String(v));
+          const entry = this.index.get(partKey(v));
           if (entry) for (const id of entry) ids.add(id);
         }
         return [...ids];
       }
       case "neq": {
         if (!this.exactPartition) return null;
-        const excluded = new Set(this.index.get(String(filter.value)) ?? []);
+        const excluded = new Set(this.index.get(partKey(filter.value)) ?? []);
         return this.allFragmentIds.filter(id => !excluded.has(id));
       }
       case "not_in": {
@@ -150,7 +156,7 @@ export class PartitionCatalog {
         if (!Array.isArray(filter.value)) return null;
         const excluded = new Set<number>();
         for (const v of filter.value) {
-          const entry = this.index.get(String(v));
+          const entry = this.index.get(partKey(v));
           if (entry) for (const id of entry) excluded.add(id);
         }
         return this.allFragmentIds.filter(id => !excluded.has(id));
