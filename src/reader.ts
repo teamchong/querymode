@@ -9,6 +9,8 @@
 import type { ColumnMeta, DataType } from "./types.js";
 import type { FragmentSource } from "./operators.js";
 
+const textEncoder = new TextEncoder();
+
 // ---------------------------------------------------------------------------
 // FormatReader — one per file format (CSV, JSON, Arrow IPC, ...)
 // ---------------------------------------------------------------------------
@@ -238,12 +240,11 @@ export function encodeColumnBuffer(
     }
     case "utf8":
     case "binary": {
-      const encoder = new TextEncoder();
       const parts: Uint8Array[] = [];
       let totalLen = 0;
       for (const v of values) {
         const str = v === null ? "" : String(v);
-        const encoded = encoder.encode(str);
+        const encoded = textEncoder.encode(str);
         const header = new Uint8Array(4);
         new DataView(header.buffer).setUint32(0, encoded.length, true);
         parts.push(header, encoded);

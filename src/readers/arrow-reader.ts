@@ -59,12 +59,14 @@ function fbOffset(buf: DataView, tableOffset: number, fieldIdx: number): number 
   return tableOffset + fieldOff;
 }
 
+const textDecoder = new TextDecoder();
+
 /** Read a flatbuffer string. */
 function fbString(buf: DataView, strOffset: number): string {
   const len = readI32(buf, strOffset);
   const start = strOffset + 4;
   const bytes = new Uint8Array(buf.buffer, buf.byteOffset + start, len);
-  return new TextDecoder().decode(bytes);
+  return textDecoder.decode(bytes);
 }
 
 /** Read a flatbuffer vector length. */

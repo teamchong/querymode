@@ -12,6 +12,8 @@ import { type FormatReader, type DataSource, encodeColumnBuffer } from "../reade
 import type { ColumnMeta, DataType, PageInfo, Row } from "../types.js";
 import type { FragmentSource } from "../operators.js";
 
+const textDecoder = new TextDecoder();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -282,7 +284,7 @@ export class JsonReader implements FormatReader {
 
   async readMeta(source: DataSource): Promise<{ columns: ColumnMeta[]; totalRows: number }> {
     const buf = await source.readAll();
-    const text = new TextDecoder().decode(buf);
+    const text = textDecoder.decode(buf);
     const parsed = parseJsonFull(text);
     const columns = buildColumnMeta(parsed);
     return { columns, totalRows: parsed.rowCount };
@@ -290,7 +292,7 @@ export class JsonReader implements FormatReader {
 
   async createFragments(source: DataSource, projected: ColumnMeta[]): Promise<FragmentSource[]> {
     const buf = await source.readAll();
-    const text = new TextDecoder().decode(buf);
+    const text = textDecoder.decode(buf);
     const parsed = parseJsonFull(text);
     const allMeta = buildColumnMeta(parsed);
     const projectedNames = new Set(projected.map(c => c.name));

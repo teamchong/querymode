@@ -13,6 +13,8 @@ import { type FormatReader, type DataSource, encodeColumnBuffer } from "../reade
 import type { ColumnMeta, DataType, PageInfo, Row } from "../types.js";
 import type { FragmentSource } from "../operators.js";
 
+const textDecoder = new TextDecoder("utf-8");
+
 // ---------------------------------------------------------------------------
 // CSV Parser Helpers
 // ---------------------------------------------------------------------------
@@ -337,8 +339,7 @@ export class CsvReader implements FormatReader {
     if (first === 0x5b || first === 0x7b) return false;
 
     // Decode a chunk of text and check for a delimiter pattern
-    const decoder = new TextDecoder("utf-8");
-    const sample = decoder.decode(head.slice(0, Math.min(head.length, 2048)));
+    const sample = textDecoder.decode(head.slice(0, Math.min(head.length, 2048)));
     const firstLine = sample.split(/\r?\n/)[0] ?? "";
     if (firstLine.length === 0) return false;
 
@@ -349,7 +350,7 @@ export class CsvReader implements FormatReader {
 
   async readMeta(source: DataSource): Promise<{ columns: ColumnMeta[]; totalRows: number }> {
     const buf = await source.readAll();
-    const text = new TextDecoder().decode(buf);
+    const text = textDecoder.decode(buf);
     const parsed = parseCsvFull(text);
     const columns = buildColumnMeta(parsed);
     return { columns, totalRows: parsed.rowCount };
@@ -357,7 +358,7 @@ export class CsvReader implements FormatReader {
 
   async createFragments(source: DataSource, projected: ColumnMeta[]): Promise<FragmentSource[]> {
     const buf = await source.readAll();
-    const text = new TextDecoder().decode(buf);
+    const text = textDecoder.decode(buf);
     const parsed = parseCsvFull(text);
     // Build full column meta so the fragment has the full schema
     const allMeta = buildColumnMeta(parsed);
