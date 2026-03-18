@@ -70,7 +70,7 @@ export class MasterDO extends DurableObject<Env> {
     const listed = await resolveBucket(this.env, r2Prefix).list({ prefix: `${r2Prefix}_versions/`, limit: 100 });
     const manifestKeys = listed.objects
       .filter(o => o.key.endsWith(".manifest"))
-      .sort((a, b) => a.key.localeCompare(b.key));
+      .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!); const nb = parseInt(b.key.split("/").pop()!); return na - nb; });
     if (manifestKeys.length === 0) throw new Error("No manifests found");
 
     const latestKey = manifestKeys[manifestKeys.length - 1].key;

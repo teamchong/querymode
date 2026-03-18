@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, DataType, Env, ExplainResult, FilterOp, Footer, Row, TableMeta, DatasetMeta, IcebergDatasetMeta, QueryResult } from "./types.js";
-import { queryReferencedColumns } from "./types.js";
+import { queryReferencedColumns, NULL_SENTINEL } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { parseFooter, parseColumnMetaFromProtobuf } from "./footer.js";
 import { parseManifest, logicalTypeToDataType } from "./manifest.js";
@@ -677,11 +677,12 @@ export class QueryDO extends DurableObject<Env> {
     if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
     if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
     if (query.windows) for (const w of query.windows) {
-      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? ""); feed("\0");
+      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? NULL_SENTINEL); feed("\0");
       if (w.partitionBy) for (const p of w.partitionBy) { feed(p); feed("\0"); }
       if (w.orderBy) for (const o of w.orderBy) { feed(o.column); feed(o.direction); feed("\0"); }
       if (w.frame) { feed(w.frame.type); feed(String(w.frame.start)); feed(String(w.frame.end)); feed("\0"); }
       if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
+      if (w.args?.default_ !== undefined) { feed(String(w.args.default_)); feed("\0"); }
     }
     if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); }
     if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(this.queryKey(query.setOperation.right)); feed("\0"); }
@@ -1523,7 +1524,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}_versions/`, limit: 100 });
       const manifestKeys = listed.objects
         .filter(o => o.key.endsWith(".manifest"))
-        .sort((a, b) => a.key.localeCompare(b.key));
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!); const nb = parseInt(b.key.split("/").pop()!); return na - nb; });
       if (manifestKeys.length === 0) continue;
 
       // Read latest manifest
@@ -1675,7 +1676,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}metadata/`, limit: 100 });
       const metadataKeys = listed.objects
         .filter(o => o.key.endsWith(".metadata.json"))
-        .sort((a, b) => a.key.localeCompare(b.key));
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!); const nb = parseInt(b.key.split("/").pop()!); return na - nb; });
       if (metadataKeys.length === 0) continue;
 
       const latestKey = metadataKeys[metadataKeys.length - 1].key;
