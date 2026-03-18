@@ -1103,7 +1103,7 @@ export class DistinctOperator implements Operator {
       const kept: number[] = [];
       const cols = this.columns.length > 0 ? this.columns : (this._resolvedCols ??= Array.from(batch.columns.keys()));
       // Pre-extract column arrays to avoid Map.get per column per row
-      const colArrays: ((number | bigint | string | boolean | null)[] | undefined)[] = new Array(cols.length);
+      const colArrays: (DecodedValue[] | undefined)[] = new Array(cols.length);
       for (let g = 0; g < cols.length; g++) colArrays[g] = batch.columns.get(cols[g]) ?? undefined;
 
       for (let ii = 0; ii < indices.length; ii++) {
