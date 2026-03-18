@@ -158,6 +158,34 @@ This eliminates the biggest cost in distributed queries: serializing millions of
 
 See [Columnar Format](/querymode/columnar-format/) for the wire format details.
 
+## Inspecting query plans
+
+Use `.explain()` to see what a query will do without executing it:
+
+```typescript
+const plan = await qm.table("events")
+  .filter("region", "eq", "us")
+  .filter("amount", "gt", 100)
+  .explain()
+```
+
+Key fields in `ExplainResult`:
+
+| Field | What it tells you |
+|-------|------------------|
+| `totalRows` | Total rows in the table |
+| `estimatedRows` | Rows remaining after pruning |
+| `fragments` / `fragmentsSkipped` | How many fragments partition pruning eliminated |
+| `pagesTotal` / `pagesSkipped` | How many pages min/max pruning eliminated |
+| `estimatedBytes` / `estimatedR2Reads` | Actual I/O cost (bytes and coalesced R2 reads) |
+| `filters[].pushable` | Whether each filter is pushed to the scan layer |
+| `fanOut` | Whether the query will dispatch to Fragment DOs |
+| `partitionCatalog` | Partition column and cardinality (if catalog exists) |
+
+**Reading the numbers:** If `pagesSkipped` is close to `pagesTotal`, your filter is highly selective and the query will be fast. If `fragmentsSkipped` is close to `fragments`, partition pruning is working. If `estimatedR2Reads` is small (< 10), the query touches very little data.
+
+**Formatted output:** Use `formatExplain(plan)` for a human-readable summary suitable for logging.
+
 ## Benchmarks
 
 CI runs head-to-head benchmarks against DuckDB on every push. Typical results at 1M-5M rows:
