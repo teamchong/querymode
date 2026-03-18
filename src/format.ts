@@ -20,6 +20,7 @@ export interface LocalTimingInfo {
 
 /** Format bytes into a human-readable string. */
 export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0B";
   if (n === 0) return "0B";
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)}KB`;

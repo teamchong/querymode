@@ -1,5 +1,6 @@
 import type { Row } from "./types.js";
 import { encodeColumnarRun, decodeColumnarRun } from "./r2-spill.js";
+import { QueryModeError } from "./errors.js";
 
 /** A partition of data stored in R2 */
 export interface R2Partition {
@@ -21,6 +22,7 @@ export class R2Partitioner {
   private partitionBytesWritten: number[];
 
   constructor(bucket: R2Bucket, prefix: string, partitionCount: number) {
+    if (partitionCount < 1) throw new QueryModeError("QUERY_FAILED", "R2Partitioner: partitionCount must be >= 1");
     this.bucket = bucket;
     this.prefix = prefix;
     this.partitionCount = partitionCount;
@@ -115,7 +117,9 @@ export class WorkerPool {
   }) {
     this.bucket = opts.bucket;
     this.doNamespace = opts.doNamespace;
-    this.maxFanOut = opts.maxFanOut ?? 50;
+    const fanOut = opts.maxFanOut ?? 50;
+    if (fanOut < 1) throw new QueryModeError("QUERY_FAILED", "WorkerPool: maxFanOut must be >= 1");
+    this.maxFanOut = fanOut;
   }
 
   /**
