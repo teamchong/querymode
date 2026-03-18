@@ -2116,6 +2116,9 @@ export class HashJoinOperator implements Operator {
   private crossRightIdx = 0;
   private crossDone = false;
 
+  // Column name tracking for null-fill in right/full joins
+  private leftColumns: string[] | null = null;
+
   // Partitioned spill state (Grace hash join)
   private partitionCount = 0;
   private leftPartitionIds: string[] = [];
@@ -2172,6 +2175,20 @@ export class HashJoinOperator implements Operator {
     return `${key}\x00${idx}`;
   }
 
+  /** Create a merged row with null-filled left columns for an unmatched right row. */
+  private nullFilledRight(rightRow: Row): Row {
+    const merged: Row = {};
+    if (this.leftColumns) {
+      for (const k of this.leftColumns) merged[k] = null;
+    }
+    for (const k in rightRow) {
+      if (k === this.rightKey) continue;
+      const outKey = k in merged ? `right_${k}` : k;
+      merged[outKey] = rightRow[k];
+    }
+    return merged;
+  }
+
   /** Emit unmatched right rows with null-filled left columns. */
   private emitUnmatchedRight(): Row[] {
     if (!this.hashMap || !this.rightMatched) return [];
@@ -2179,7 +2196,7 @@ export class HashJoinOperator implements Operator {
     for (const [key, rows] of this.hashMap) {
       for (let i = 0; i < rows.length; i++) {
         if (!this.rightMatched.has(this.rightRowId(key, i))) {
-          result.push({ ...rows[i] });
+          result.push(this.nullFilledRight(rows[i]));
         }
       }
     }
@@ -2416,6 +2433,8 @@ export class HashJoinOperator implements Operator {
     // Probe with left partition (skip NULL keys)
     const result: Row[] = [];
     for await (const leftRow of this.streamPartition(this.leftPartitionIds[partIdx])) {
+      // Capture left column names on first row (for null-fill in right/full unmatched rows)
+      if (!this.leftColumns) this.leftColumns = Object.keys(leftRow);
       const leftVal = leftRow[this.leftKey];
       if (leftVal === null || leftVal === undefined) {
         if (this.joinType === "left" || this.joinType === "full") result.push({ ...leftRow });
@@ -2438,13 +2457,13 @@ export class HashJoinOperator implements Operator {
       for (const [key, rows] of rightMap) {
         for (let i = 0; i < rows.length; i++) {
           if (!matched.has(`${key}\x00${i}`)) {
-            result.push({ ...rows[i] });
+            result.push(this.nullFilledRight(rows[i]));
           }
         }
       }
       // NULL-keyed right rows never match — always unmatched
       for (const row of rightNullRows) {
-        result.push({ ...row });
+        result.push(this.nullFilledRight(row));
       }
     }
 
@@ -2499,6 +2518,11 @@ export class HashJoinOperator implements Operator {
           return null;
         }
 
+        // Capture left column names on first batch (for null-fill in right/full unmatched rows)
+        if (!this.leftColumns && batch.length > 0) {
+          this.leftColumns = Object.keys(batch[0]);
+        }
+
         const result: Row[] = [];
         for (const leftRow of batch) {
           const leftVal = leftRow[this.leftKey];
@@ -2540,6 +2564,7 @@ export class HashJoinOperator implements Operator {
     this.rightMatched = null;
     this.crossRightBuffer = null;
     this.crossLeftBatch = null;
+    if (this.spill) await this.spill.cleanup();
     await this.left.close();
     await this.right.close();
   }
@@ -2961,25 +2986,27 @@ function assemblePipeline(
  * Drain all rows from an operator pipeline.
  */
 export async function drainPipeline(pipeline: Operator): Promise<Row[]> {
-  // Use columnar path if the pipeline supports it — avoids Row[] materialization in intermediate operators
-  if (pipeline.nextColumnar) {
+  try {
+    // Use columnar path if the pipeline supports it — avoids Row[] materialization in intermediate operators
+    if (pipeline.nextColumnar) {
+      const rows: Row[] = [];
+      while (true) {
+        const batch = await pipeline.nextColumnar();
+        if (!batch) break;
+        // Materialize only at the pipeline exit
+        for (const row of materializeRows(batch)) rows.push(row);
+      }
+      return rows;
+    }
+
     const rows: Row[] = [];
     while (true) {
-      const batch = await pipeline.nextColumnar();
+      const batch = await pipeline.next();
       if (!batch) break;
-      // Materialize only at the pipeline exit
-      for (const row of materializeRows(batch)) rows.push(row);
+      for (const row of batch) rows.push(row);
     }
-    await pipeline.close();
     return rows;
+  } finally {
+    await pipeline.close();
   }
-
-  const rows: Row[] = [];
-  while (true) {
-    const batch = await pipeline.next();
-    if (!batch) break;
-    for (const row of batch) rows.push(row);
-  }
-  await pipeline.close();
-  return rows;
 }
