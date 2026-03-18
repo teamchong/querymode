@@ -526,6 +526,46 @@ function computePageStats(
       }
       return min <= max ? { min, max } : null;
     }
+    case "uint64": {
+      let min = BigInt("18446744073709551615"), max = 0n;
+      for (let i = 0; i < numValues; i++) {
+        if (isNull(i)) continue;
+        const v = view.getBigUint64(i * 8, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "uint32": {
+      let min = 4294967295, max = 0;
+      for (let i = 0; i < numValues; i++) {
+        if (isNull(i)) continue;
+        const v = view.getUint32(i * 4, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "uint16": {
+      let min = 65535, max = 0;
+      for (let i = 0; i < numValues; i++) {
+        if (isNull(i)) continue;
+        const v = view.getUint16(i * 2, true);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
+    case "uint8": {
+      let min = 255, max = 0;
+      for (let i = 0; i < numValues; i++) {
+        if (isNull(i)) continue;
+        const v = view.getUint8(i);
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      return min <= max ? { min, max } : null;
+    }
     default:
       return null;
   }
