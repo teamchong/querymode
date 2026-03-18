@@ -1,6 +1,7 @@
 import type { Env, QueryDORpc, MasterDORpc } from "./types.js";
 import { bigIntReplacer } from "./decode.js";
 import { resolveBucket } from "./bucket.js";
+import { QueryModeError } from "./errors.js";
 import { MasterDO } from "./master-do.js";
 import { QueryDO } from "./query-do.js";
 import { FragmentDO } from "./fragment-do.js";
@@ -204,8 +205,18 @@ export default {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const status = msg.includes("CAS failed") ? 409 : msg.includes("not found") ? 404 : 500;
-      return json({ error: msg }, status, headers);
+      if (err instanceof SyntaxError) return json({ error: `Bad request: ${msg}` }, 400, headers);
+      let status = 500;
+      if (err instanceof QueryModeError) {
+        if (err.code === "TABLE_NOT_FOUND" || err.code === "COLUMN_NOT_FOUND") status = 404;
+        else if (err.code === "INVALID_FILTER" || err.code === "INVALID_FORMAT" || err.code === "INVALID_AGGREGATE") status = 400;
+        else if (err.code === "QUERY_TIMEOUT" || err.code === "NETWORK_TIMEOUT") status = 504;
+      } else if (msg.includes("CAS failed")) {
+        status = 409;
+      } else if (msg.includes("not found")) {
+        status = 404;
+      }
+      return json({ error: msg, ...(err instanceof QueryModeError && { code: err.code }) }, status, headers);
     }
   },
 };
