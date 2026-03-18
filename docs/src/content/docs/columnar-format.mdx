@@ -115,3 +115,18 @@ Worker exit guard:
 ```
 
 WASM never calls back into JS. JS→WASM call overhead is 6ns cold, 0ns after TurboFan inlines (~1M calls). Shared `wasm.memory` access from JS is identical cost to regular typed arrays.
+
+## Two ColumnarBatch types
+
+The codebase has two distinct `ColumnarBatch` interfaces for different layers:
+
+| Type | Module | Shape | Purpose |
+|------|--------|-------|---------|
+| **QMCB ColumnarBatch** | `columnar.ts` | `columns: ColumnarColumn[]` (ArrayBuffer-backed) | Wire format for DO-to-DO transfer |
+| **Pipeline ColumnarBatch** | `operators.ts` | `columns: Map<string, DecodedValue[]>`, `selection?: Uint32Array` | Operator-internal data flow |
+
+The **QMCB** version is what this page documents — serialized to binary, transferred over RPC, decoded at the receiver. It uses typed array views (`Float64Array`, `BigInt64Array`) into raw `ArrayBuffer` data.
+
+The **pipeline** version lives inside operators implementing `nextColumnar()`. It uses `Map<string, DecodedValue[]>` for decoded column values and an optional `selection` vector (a `Uint32Array` of active row indices) to mark post-filter survivors without copying column data. When a `ScanOperator` applies WASM SIMD filters, the result is a pipeline `ColumnarBatch` with a selection vector — only selected rows proceed to the next operator.
+
+If you're writing a **custom operator** with `nextColumnar()`, you work with the pipeline type. If you're working with **inter-DO transfer**, you work with the QMCB type.
