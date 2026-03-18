@@ -274,25 +274,22 @@ class RemoteExecutor implements QueryExecutor {
     const byteStream = await rpc.streamRpc(query);
 
     // Parse length-prefixed columnar binary frames into Row objects
+    const reader = byteStream.getReader();
+    let pending: Uint8Array = new Uint8Array(0);
+    let cancelled = false;
+
+    const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+      const out = new Uint8Array(a.length + b.length);
+      out.set(a, 0);
+      out.set(b, a.length);
+      return out;
+    };
+
     return new ReadableStream<Row>({
-      async start(controller) {
-        const reader = byteStream.getReader();
-        let pending: Uint8Array = new Uint8Array(0);
-
-        const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
-          const out = new Uint8Array(a.length + b.length);
-          out.set(a, 0);
-          out.set(b, a.length);
-          return out;
-        };
-
+      async pull(controller) {
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            pending = pending.length > 0 ? concat(pending, value) : value;
-
-            // Process complete frames
+          while (!cancelled) {
+            // Process any complete frames in pending buffer first
             while (pending.length >= 4) {
               const frameLen = new DataView(pending.buffer as ArrayBuffer, pending.byteOffset).getUint32(0, true);
               if (pending.length < 4 + frameLen) break; // wait for more data
@@ -306,12 +303,24 @@ class RemoteExecutor implements QueryExecutor {
               for (const row of decodeColumnarRun(frameBuf)) {
                 controller.enqueue(row);
               }
+              return; // yield back to consumer after enqueuing
             }
+
+            // Need more data from upstream
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+            pending = pending.length > 0 ? concat(pending, value) : value;
           }
-          controller.close();
         } catch (err) {
           controller.error(err);
         }
+      },
+      cancel() {
+        cancelled = true;
+        reader.cancel().catch(() => {});
       },
     });
   }
