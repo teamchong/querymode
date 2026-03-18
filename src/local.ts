@@ -62,6 +62,11 @@ export class QueryMode {
   static demo(tableName?: string): DataFrame {
     return createDemo(tableName);
   }
+
+  /** @internal Get the underlying executor (for pg-wire and similar integrations). */
+  getExecutor(): QueryExecutor {
+    return this.executor;
+  }
 }
 
 export { LocalExecutor } from "./local-executor.js";

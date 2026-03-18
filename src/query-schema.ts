@@ -52,8 +52,6 @@ export const queryDescriptorSchema = z.object({
   cacheTTL: z.number().int().positive().optional(),
 });
 
-export type ValidatedQuery = z.infer<typeof queryDescriptorSchema>;
-
 /**
  * Parse and validate a raw request body into a QueryDescriptor.
  * Throws a formatted error string on validation failure.

@@ -22,6 +22,12 @@ export class MasterDO extends DurableObject<Env> {
     super(ctx, env);
   }
 
+  private log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>): void {
+    console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
+      JSON.stringify({ ts: new Date().toISOString(), level, msg, ...data }),
+    );
+  }
+
   // ── RPC methods ────────────────────────────────────────────────────────
 
   async registerRpc(queryDoId: string, region: string): Promise<{ registered: boolean; region: string; tableVersions?: Record<string, { r2Key: string; updatedAt: number }> }> {
@@ -412,10 +418,10 @@ export class MasterDO extends DurableObject<Env> {
         const count = (this.broadcastFailures.get(region) ?? 0) + 1;
         this.broadcastFailures.set(region, count);
         if (count >= 3) {
-          console.warn(`Broadcast to ${region} failed ${count} times, removing`);
+          this.log("warn", "broadcast_region_removed", { region, failures: count });
           deadRegions.push(region);
         } else {
-          console.warn(`Broadcast to ${region} failed (${count}/3)`);
+          this.log("warn", "broadcast_failed", { region, failures: count, threshold: 3 });
         }
       }
     }));

@@ -708,7 +708,11 @@ export class DataFrame<T extends Row = Row> {
   async show(n = 10): Promise<void> {
     const rows = await this.head(n);
     if (rows.length === 0) { console.log("(empty)"); return; }
-    console.table(rows);
+    if (typeof console.table === "function") {
+      console.table(rows);
+    } else {
+      console.log(JSON.stringify(rows, null, 2));
+    }
   }
 
   /** Streaming iteration over results in batches. */

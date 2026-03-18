@@ -19,7 +19,7 @@ const qm = QueryMode.local();
 
 const server = net.createServer((socket) => {
   const handler = new PgConnectionHandler({
-    executor: (qm as unknown as { executor: import("../client.js").QueryExecutor }).executor,
+    executor: qm.getExecutor(),
     send: (data) => {
       if (!socket.destroyed) socket.write(data);
     },
