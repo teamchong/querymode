@@ -53,8 +53,10 @@ One per fragment — scales with data, no hard cap. Each scans its assigned frag
    - Coalesced R2 range reads
    - Prefetch next page while decoding current
    - WASM SIMD decode + filter
-5. **QueryDO** merges partial results via k-way merge (or hierarchical reduction for large fan-outs)
+5. **QueryDO** merges partial results via columnar k-way merge (or hierarchical reduction for large fan-outs)
 6. **Response** returned as JSON or streaming columnar format
+
+Data flows between DOs as **QMCB (QueryMode Columnar Binary)** — a zero-copy columnar wire format transferred via structured clone over Worker RPC. This eliminates JSON serialization of millions of rows between DOs. See [Columnar Format](/querymode/columnar-format/) for the wire format details.
 
 ## Mental model: biological cells, not a brain
 
@@ -269,6 +271,6 @@ Tests run in two runtimes:
 |---------|------|-------|
 | **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | — |
 | **Node** | DuckDB conformance (1M-5M rows), fixture files, SQL, infra | — |
-| **Total** | All runtimes | **735+ tests** |
+| **Total** | All runtimes | **780+ tests** |
 
 Conformance tests validate every operator against DuckDB at scale. CI benchmarks compare QueryMode vs DuckDB on every push.
