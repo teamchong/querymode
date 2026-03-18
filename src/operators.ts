@@ -172,20 +172,17 @@ export class ScanOperator implements Operator {
     }
   }
 
-  /** Fetch specified columns for a page in parallel. Returns the pageInfoMap. */
+  /** Fetch specified columns for a page in parallel. Returns the pageInfoMap.
+   *  Page-level skip decision is made uniformly by findNextPage via canSkipPageMultiCol —
+   *  do NOT re-check per-column here to avoid row misalignment across columns. */
   private fetchColumns(
     frag: FragmentSource, pi: number, cols: ColumnMeta[],
   ): { promise: Promise<Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>>; skipped: number } {
     const pageInfoMap = new Map<string, { buf: ArrayBuffer; pageInfo: PageInfo }>();
     const readPromises: Promise<void>[] = [];
-    let skipped = 0;
     for (const col of cols) {
       const colPage = col.pages[pi];
       if (!colPage) continue;
-      if (!this.query.vectorSearch && canSkipPage(colPage, this.query.filters, col.name)) {
-        skipped++;
-        continue;
-      }
       readPromises.push(
         frag.readPage(col, colPage).then(buf => {
           this.bytesRead += buf.byteLength;
@@ -197,7 +194,7 @@ export class ScanOperator implements Operator {
       promise: readPromises.length > 0
         ? Promise.all(readPromises).then(() => pageInfoMap)
         : Promise.resolve(pageInfoMap),
-      skipped,
+      skipped: 0,
     };
   }
 
