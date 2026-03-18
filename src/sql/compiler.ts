@@ -185,7 +185,8 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
       // Guard: CTEs with sort/limit/aggregates/groupBy/having can't be inlined —
       // they change the result shape and need materialization first.
       const canInline = !base.sortColumn && base.limit === undefined &&
-        !base.aggregates && !base.groupBy && !cte.havingExpr && !cte.allOrderBy;
+        !base.aggregates && !base.groupBy && !cte.havingExpr && !cte.allOrderBy &&
+        !(base.filterGroups && base.filterGroups.length > 0 && desc.filterGroups && desc.filterGroups.length > 0);
       if (canInline) {
         desc.table = base.table;
         desc.filters = [...base.filters, ...desc.filters];

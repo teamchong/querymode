@@ -322,4 +322,21 @@ describe("SQL Compiler - compileFull", () => {
     // CTE has sort+limit — can't be inlined
     expect(result.descriptor.table).toBe("top5");
   });
+
+  it("CTE with OR filterGroups + outer OR filterGroups is not inlined", () => {
+    const result = sqlFull("WITH x AS (SELECT * FROM t WHERE a = 1 OR b = 2) SELECT * FROM x WHERE c = 3 OR d = 4");
+    // Both CTE and outer query have OR-decomposed filterGroups.
+    // Inlining would flat-concat them into (a=1 OR b=2 OR c=3 OR d=4)
+    // instead of (a=1 OR b=2) AND (c=3 OR d=4). Prevent inlining.
+    expect(result.descriptor.table).toBe("x");
+  });
+
+  it("CTE with OR filterGroups + outer AND filters inlines correctly", () => {
+    const result = sqlFull("WITH x AS (SELECT * FROM t WHERE a = 1 OR b = 2) SELECT * FROM x WHERE c = 3");
+    // CTE has filterGroups, outer has only AND filters — safe to inline
+    expect(result.descriptor.table).toBe("t");
+    expect(result.descriptor.filters).toHaveLength(1);
+    expect(result.descriptor.filters[0]).toMatchObject({ column: "c", op: "eq", value: 3 });
+    expect(result.descriptor.filterGroups).toHaveLength(2);
+  });
 });
