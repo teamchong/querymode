@@ -1027,21 +1027,28 @@ function filterToSql(f: FilterOp): string {
   return `${quote(f.column)} ${COMPARISON_OP_MAP[f.op] ?? "="} ${val}`;
 }
 
-function queryToSql(query: QueryDescriptor): string {
+/** @internal — exported for testing */
+export function queryToSql(query: QueryDescriptor): string {
   const parts: string[] = [];
 
+  const distinctKw = query.distinct?.length ? "DISTINCT " : "";
   if (query.aggregates?.length) {
     const exprs: string[] = [];
     if (query.groupBy) exprs.push(...query.groupBy.map(quote));
     for (const agg of query.aggregates) {
-      const expr = `${agg.fn.toUpperCase()}(${agg.column === "*" ? "*" : quote(agg.column)})`;
+      let expr: string;
+      if (agg.fn === "count_distinct") {
+        expr = `COUNT(DISTINCT ${agg.column === "*" ? "*" : quote(agg.column)})`;
+      } else {
+        expr = `${agg.fn.toUpperCase()}(${agg.column === "*" ? "*" : quote(agg.column)})`;
+      }
       exprs.push(agg.alias ? `${expr} AS ${quote(agg.alias)}` : expr);
     }
-    parts.push(`SELECT ${exprs.join(", ")}`);
+    parts.push(`SELECT ${distinctKw}${exprs.join(", ")}`);
   } else if (query.projections.length > 0) {
-    parts.push(`SELECT ${query.projections.map(quote).join(", ")}`);
+    parts.push(`SELECT ${distinctKw}${query.projections.map(quote).join(", ")}`);
   } else {
-    parts.push("SELECT *");
+    parts.push(`SELECT ${distinctKw}*`);
   }
 
   parts.push(`FROM ${quote(query.table)}`);

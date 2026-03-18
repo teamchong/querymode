@@ -4,7 +4,7 @@
  * Skips gracefully if binary not found.
  */
 import { describe, it, expect, beforeAll } from "vitest";
-import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
+import { instantiateWasm, queryToSql, type WasmEngine } from "./wasm-engine.js";
 import type { QueryDescriptor } from "./client.js";
 import type { PageInfo } from "./types.js";
 import * as fs from "node:fs/promises";
@@ -341,5 +341,51 @@ describe.skipIf(!hasWasm)("WASM integration", () => {
       const data = new Float64Array([10.0, 20.0, 30.0]);
       expect(wasm.avgFloat64(data.buffer)).toBeCloseTo(20.0);
     });
+  });
+});
+
+// Pure-TS tests — no WASM binary required
+describe("queryToSql", () => {
+  const base = { table: "t", filters: [] as any[], projections: [] as string[] };
+
+  it("generates SELECT DISTINCT", () => {
+    const sql = queryToSql({ ...base, distinct: ["a", "b"] });
+    expect(sql).toBe('SELECT DISTINCT * FROM t');
+  });
+
+  it("generates SELECT DISTINCT with projections", () => {
+    const sql = queryToSql({ ...base, distinct: ["a"], projections: ["a", "b"] });
+    expect(sql).toBe('SELECT DISTINCT a, b FROM t');
+  });
+
+  it("generates COUNT(DISTINCT col) for count_distinct", () => {
+    const sql = queryToSql({ ...base, aggregates: [{ fn: "count_distinct", column: "user_id" }] });
+    expect(sql).toContain("COUNT(DISTINCT user_id)");
+  });
+
+  it("generates COUNT(*) for count with star", () => {
+    const sql = queryToSql({ ...base, aggregates: [{ fn: "count", column: "*" }] });
+    expect(sql).toContain("COUNT(*)");
+  });
+
+  it("includes OR filterGroups", () => {
+    const sql = queryToSql({
+      ...base,
+      filterGroups: [
+        [{ column: "a", op: "eq", value: 1 }],
+        [{ column: "b", op: "eq", value: 2 }],
+      ],
+    });
+    expect(sql).toContain("(a = 1 OR b = 2)");
+  });
+
+  it("handles NOT IN filter", () => {
+    const sql = queryToSql({ ...base, filters: [{ column: "id", op: "not_in", value: [1, 2] }] });
+    expect(sql).toContain("NOT IN (1, 2)");
+  });
+
+  it("handles NOT BETWEEN filter", () => {
+    const sql = queryToSql({ ...base, filters: [{ column: "x", op: "not_between", value: [10, 20] }] });
+    expect(sql).toContain("NOT BETWEEN 10 AND 20");
   });
 });
