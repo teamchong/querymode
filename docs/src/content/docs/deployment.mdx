@@ -128,6 +128,18 @@ import {
 
 See the [Operators](/querymode/operators/) page for the full operator reference.
 
+## Postgres wire protocol
+
+Start a local server that accepts `psql`, DBeaver, Metabase, or any PostgreSQL-compatible client:
+
+```bash
+npx tsx src/pg-wire/server.ts
+# psql -h localhost -p 5433 -U querymode
+# SELECT * FROM './data/events.parquet' WHERE region = 'us' LIMIT 10;
+```
+
+See [Postgres Wire Protocol](/querymode/pg-wire/) for configuration, supported SQL, and programmatic embedding.
+
 ## Next.js API route
 
 ```typescript
