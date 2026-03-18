@@ -88,6 +88,40 @@ describe("partial-agg", () => {
     expect(merged.states[0].max).toBe(100);
   });
 
+  it("stddev/variance return null for single-element groups (SQL STDDEV_SAMP)", () => {
+    const query: QueryDescriptor = {
+      table: "t",
+      filters: [],
+      projections: [],
+      aggregates: [
+        { fn: "stddev", column: "v" },
+        { fn: "variance", column: "v" },
+      ],
+    };
+    // Single value → count=1 → STDDEV_SAMP/VAR_SAMP undefined → null
+    const partial = computePartialAgg([{ v: 42 }], query);
+    const result = finalizePartialAgg(partial, query);
+    expect(result[0]["stddev_v"]).toBe(null);
+    expect(result[0]["variance_v"]).toBe(null);
+  });
+
+  it("stddev/variance return values for multi-element groups", () => {
+    const query: QueryDescriptor = {
+      table: "t",
+      filters: [],
+      projections: [],
+      aggregates: [
+        { fn: "stddev", column: "v" },
+        { fn: "variance", column: "v" },
+      ],
+    };
+    // [10, 20, 30] → mean=20, population variance=66.67, stddev=8.16
+    const partial = computePartialAgg([{ v: 10 }, { v: 20 }, { v: 30 }], query);
+    const result = finalizePartialAgg(partial, query);
+    expect(result[0]["variance_v"]).toBeCloseTo(66.667, 1);
+    expect(result[0]["stddev_v"]).toBeCloseTo(8.165, 1);
+  });
+
   it("finalizePartialAgg computes avg and other aggregates", () => {
     const rows = [{ v: 10 }, { v: 20 }, { v: 30 }];
     const query: QueryDescriptor = {

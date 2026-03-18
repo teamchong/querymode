@@ -143,6 +143,30 @@ OR filters (`filterGroups`) use different pruning logic than AND filters:
 
 Page skip decisions are made uniformly across all columns — the same pages are skipped for every column to avoid row misalignment between columns.
 
+## Filter pushdown pipeline
+
+Filters flow through multiple layers, each eliminating data earlier (and cheaper) than the next:
+
+```
+DataFrame API / SQL WHERE
+    ↓ compile to FilterOp[]
+Partition catalog          → skip entire fragments by partition key (O(1))
+    ↓
+canSkipFragment            → skip fragments by column min/max across all pages
+    ↓
+canSkipPageMultiCol        → skip pages by per-page min/max/nullCount stats
+    ↓
+WASM SIMD scan             → decode + filter in one pass (no Row[] intermediate)
+    ↓
+JS fallback (if needed)    → matchesFilter on remaining rows
+```
+
+**All 14 filter ops are fully pushable.** The DataFrame API's `.filter()` and the SQL compiler's `WHERE` clause both produce `FilterOp[]` — the same array that drives partition pruning, fragment skip, page skip, and WASM scan. No filter type requires post-scan evaluation.
+
+Non-pushable expressions (CASE, CAST, arithmetic in WHERE) go through a separate path: the SQL `SqlWrappingExecutor` evaluates them after the scan completes. These expressions still benefit from pushable filters that run first — a query like `WHERE region = 'us' AND CASE WHEN ... END` pushes the `region = 'us'` filter to scan and evaluates the CASE on the filtered result.
+
+**OR filters** (`filterGroups`) are fully pushable too. Each OR branch is an independent `FilterOp[]` group. Page skip requires ALL groups to independently eliminate a page before skipping it.
+
 ## WASM vs JS execution
 
 The scan layer pushes filter+decode to WASM SIMD when possible:

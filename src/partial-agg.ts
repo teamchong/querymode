@@ -83,8 +83,8 @@ function resolveValue(state: PartialAggState): number | string | null {
     case "avg": return state.sum / state.count;
     case "min": return state.strMin !== undefined ? state.strMin : state.min;
     case "max": return state.strMax !== undefined ? state.strMax : state.max;
-    case "stddev": return state.count < 2 ? 0 : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
-    case "variance": return state.count < 2 ? 0 : (state.m2 ?? 0) / state.count;
+    case "stddev": return state.count < 2 ? null : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
+    case "variance": return state.count < 2 ? null : (state.m2 ?? 0) / state.count;
     case "median": {
       const vals = state.values ?? [];
       vals.sort((a, b) => a - b);
