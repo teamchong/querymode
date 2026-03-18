@@ -1524,7 +1524,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}_versions/`, limit: 100 });
       const manifestKeys = listed.objects
         .filter(o => o.key.endsWith(".manifest"))
-        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!); const nb = parseInt(b.key.split("/").pop()!); return na - nb; });
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
       if (manifestKeys.length === 0) continue;
 
       // Read latest manifest
@@ -1676,7 +1676,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}metadata/`, limit: 100 });
       const metadataKeys = listed.objects
         .filter(o => o.key.endsWith(".metadata.json"))
-        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!); const nb = parseInt(b.key.split("/").pop()!); return na - nb; });
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
       if (metadataKeys.length === 0) continue;
 
       const latestKey = metadataKeys[metadataKeys.length - 1].key;

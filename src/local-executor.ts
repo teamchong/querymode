@@ -728,7 +728,7 @@ export class LocalExecutor implements QueryExecutor {
     const versionsDir = pathMod.join(table, "_versions");
     const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
     const manifests = entries.filter(e => e.endsWith(".manifest"))
-      .sort((a, b) => parseInt(a) - parseInt(b));
+      .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
 
     const results: VersionInfo[] = [];
     for (const manifestFile of manifests) {
@@ -802,7 +802,7 @@ export class LocalExecutor implements QueryExecutor {
     const versionsDir = pathMod.join(table, "_versions");
     const entries = await fs.readdir(versionsDir).catch(() => [] as string[]);
     const manifests = entries.filter(e => e.endsWith(".manifest"))
-      .sort((a, b) => parseInt(a) - parseInt(b));
+      .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
     if (manifests.length === 0) {
       throw new Error(`No manifests found in ${versionsDir}`);
     }
