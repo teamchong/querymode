@@ -641,13 +641,14 @@ export class LocalExecutor implements QueryExecutor {
     const leftQuery: QueryDescriptor = {
       table: query.table,
       filters: query.filters,
+      filterGroups: query.filterGroups,
       projections: [], // fetch all columns for join
       join: undefined,
     };
     const leftScan = new (await import("./operators.js")).ScanOperator(leftFragments, leftQuery, wasm);
     let leftPipeline: import("./operators.js").Operator = leftScan;
-    if (leftQuery.filters.length > 0) {
-      leftPipeline = new (await import("./operators.js")).FilterOperator(leftPipeline, leftQuery.filters);
+    if (leftQuery.filters.length > 0 || (leftQuery.filterGroups && leftQuery.filterGroups.length > 0)) {
+      leftPipeline = new (await import("./operators.js")).FilterOperator(leftPipeline, leftQuery.filters, leftQuery.filterGroups);
     }
 
     // Build right side — execute the right query to get a fragment source
