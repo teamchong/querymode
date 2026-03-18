@@ -517,6 +517,19 @@ describe("matchesFilter", () => {
   it("returns false for null", () => {
     expect(matchesFilter(null, { column: "x", op: "eq", value: 42 })).toBe(false);
   });
+
+  it("matches like (case-sensitive)", () => {
+    expect(matchesFilter("Alice", { column: "x", op: "like", value: "Ali%" })).toBe(true);
+    expect(matchesFilter("alice", { column: "x", op: "like", value: "Ali%" })).toBe(false);
+    expect(matchesFilter("ALICE", { column: "x", op: "like", value: "Ali%" })).toBe(false);
+    expect(matchesFilter("Alice", { column: "x", op: "like", value: "%ice" })).toBe(true);
+    expect(matchesFilter("Alice", { column: "x", op: "like", value: "_lice" })).toBe(true);
+  });
+
+  it("matches not_like (case-sensitive)", () => {
+    expect(matchesFilter("Alice", { column: "x", op: "not_like", value: "Ali%" })).toBe(false);
+    expect(matchesFilter("alice", { column: "x", op: "not_like", value: "Ali%" })).toBe(true);
+  });
 });
 
 describe("bigIntReplacer", () => {

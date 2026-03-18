@@ -158,6 +158,42 @@ describe("rewriteAggregatesAsColumns", () => {
     expect(result).toEqual({ kind: "column", name: "sum_amount" });
   });
 
+  it("bigint arithmetic preserves precision", () => {
+    const bigRow = { id: 9007199254740993n }; // > MAX_SAFE_INTEGER
+    const idCol: SqlExpr = { kind: "column", name: "id" };
+    const one: SqlExpr = { kind: "value", value: { type: "integer", value: 1 } };
+    const result = evaluateExpr(bin("add", idCol, one), bigRow);
+    expect(result).toBe(9007199254740994n);
+  });
+
+  it("bigint subtraction preserves precision", () => {
+    const bigRow = { id: 9007199254740993n };
+    const idCol: SqlExpr = { kind: "column", name: "id" };
+    const one: SqlExpr = { kind: "value", value: { type: "integer", value: 1 } };
+    expect(evaluateExpr(bin("subtract", idCol, one), bigRow)).toBe(9007199254740992n);
+  });
+
+  it("unary minus preserves bigint", () => {
+    const bigRow = { id: 42n };
+    const expr: SqlExpr = { kind: "unary", op: "minus", operand: { kind: "column", name: "id" } };
+    expect(evaluateExpr(expr, bigRow)).toBe(-42n);
+  });
+
+  it("CAST string to BIGINT preserves precision", () => {
+    const r = { s: "9007199254740993" };
+    const expr: SqlExpr = {
+      kind: "cast",
+      expr: { kind: "column", name: "s" },
+      targetType: "BIGINT",
+    };
+    expect(evaluateExpr(expr, r)).toBe(9007199254740993n);
+  });
+
+  it("LIKE is case-sensitive via evaluator", () => {
+    expect(evaluateExpr(bin("like", val("Alice"), val("Ali%")), row)).toBe(true);
+    expect(evaluateExpr(bin("like", val("alice"), val("Ali%")), row)).toBe(false);
+  });
+
   it("rewrites nested binary with aggregates", () => {
     const expr = bin("gt",
       { kind: "call", name: "COUNT", args: [{ kind: "star" }], distinct: false },
