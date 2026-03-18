@@ -766,6 +766,9 @@ export class DataFrame<T extends Row = Row> {
     if (!this._executor.cursor) {
       throw new Error("cursor() requires an executor with cursor support");
     }
+    if (this._deferredSubqueries.length > 0 || this._vectorEncoder) {
+      throw new Error("cursor() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
+    }
     return this._executor.cursor(this.toDescriptor(), opts?.batchSize ?? 1000);
   }
 
@@ -792,6 +795,9 @@ export class DataFrame<T extends Row = Row> {
   async execStream(): Promise<ReadableStream<Row>> {
     if (!this._executor.executeStream) {
       throw new Error("execStream() requires a remote executor with streaming support");
+    }
+    if (this._deferredSubqueries.length > 0 || this._vectorEncoder) {
+      throw new Error("execStream() cannot resolve filterIn() subqueries or vector text queries — use stream() or collect() instead");
     }
     return this._executor.executeStream(this.toDescriptor());
   }
