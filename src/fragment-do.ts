@@ -82,6 +82,14 @@ export class FragmentDO extends DurableObject<Env> {
         if (query.sortColumn) neededNames.add(query.sortColumn);
         if (query.groupBy) for (const g of query.groupBy) neededNames.add(g);
         if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededNames.add(a.column);
+        if (query.distinct) for (const d of query.distinct) neededNames.add(d);
+        if (query.windows) for (const w of query.windows) {
+          if (w.column) neededNames.add(w.column);
+          for (const p of w.partitionBy) neededNames.add(p);
+          for (const o of w.orderBy) neededNames.add(o.column);
+        }
+        if (query.join) { neededNames.add(query.join.leftKey); }
+        if (query.subqueryIn) for (const sq of query.subqueryIn) neededNames.add(sq.column);
       } else {
         neededNames = new Set(effectiveMeta.columns.map(c => c.name));
       }
