@@ -7,7 +7,7 @@
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
-import { queryReferencedColumns, NULL_SENTINEL } from "./types.js";
+import { queryReferencedColumns, queryCacheKey, NULL_SENTINEL } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -346,44 +346,6 @@ export class LocalExecutor implements QueryExecutor {
     return cached;
   }
 
-  /** Build a cache key from query descriptor — no serialization. */
-  private queryCacheKey(query: QueryDescriptor): string {
-    let h = 0x811c9dc5;
-    const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
-    feed(query.table); feed("\0");
-    if (query.version !== undefined) { feed(`v${query.version}`); feed("\0"); }
-    for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
-      feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
-    }
-    if (query.filterGroups) {
-      for (const group of query.filterGroups) {
-        feed("|");
-        for (const f of [...group].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
-          feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
-        }
-      }
-    }
-    for (const p of [...query.projections].sort()) { feed(p); feed("\0"); }
-    if (query.sortColumn) { feed(query.sortColumn); feed("\0"); feed(query.sortDirection ?? "asc"); feed("\0"); }
-    if (query.limit !== undefined) { feed(String(query.limit)); feed("\0"); }
-    if (query.offset !== undefined) { feed(String(query.offset)); feed("\0"); }
-    if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed("\0"); feed(a.column); feed("\0"); if (a.alias) feed(a.alias); feed("\0"); }
-    if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
-    if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
-    if (query.windows) for (const w of query.windows) {
-      feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? NULL_SENTINEL); feed("\0");
-      if (w.partitionBy) for (const p of w.partitionBy) { feed(p); feed("\0"); }
-      if (w.orderBy) for (const o of w.orderBy) { feed(o.column); feed(o.direction); feed("\0"); }
-      if (w.frame) { feed(w.frame.type); feed(String(w.frame.start)); feed(String(w.frame.end)); feed("\0"); }
-      if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
-      if (w.args?.default_ !== undefined) { feed(String(w.args.default_)); feed("\0"); }
-    }
-    if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); if (cc.fn) { feed(cc.fn.toString()); feed("\0"); } }
-    if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(this.queryCacheKey(query.setOperation.right)); feed("\0"); }
-    if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
-    if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(this.queryCacheKey(query.join.right)); feed("\0"); }
-    return `qr:${query.table}:${(h >>> 0).toString(36)}`;
-  }
 
   async execute(query: QueryDescriptor): Promise<QueryResult> {
     const startTime = Date.now();
@@ -391,7 +353,7 @@ export class LocalExecutor implements QueryExecutor {
 
     // Check result cache (skip for vector search — non-deterministic with IVF-PQ)
     if (query.cacheTTL && !query.vectorSearch) {
-      const cacheKey = this.queryCacheKey(query);
+      const cacheKey = queryCacheKey(query);
       const cached = this.resultCache.get(cacheKey);
       if (cached) return { ...cached, cacheHit: true, durationMs: Date.now() - startTime };
     }
@@ -492,7 +454,7 @@ export class LocalExecutor implements QueryExecutor {
     };
 
     if (query.cacheTTL) {
-      this.resultCache.setWithTTL(this.queryCacheKey(query), result, query.cacheTTL);
+      this.resultCache.setWithTTL(queryCacheKey(query), result, query.cacheTTL);
     }
 
     return result;

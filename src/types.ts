@@ -435,6 +435,66 @@ export interface QueryDORpc {
   registerIcebergRpc(body: unknown): Promise<unknown>;
 }
 
+/**
+ * FNV-1a cache key for a query descriptor — deterministic hash over all query fields.
+ * Shared by local-executor and query-do for result cache dedup.
+ */
+export function queryCacheKey(query: {
+  table: string;
+  version?: number;
+  filters: FilterOp[];
+  filterGroups?: FilterOp[][];
+  projections: string[];
+  sortColumn?: string;
+  sortDirection?: string;
+  limit?: number;
+  offset?: number;
+  aggregates?: AggregateOp[];
+  groupBy?: string[];
+  distinct?: string[];
+  windows?: WindowSpec[];
+  computedColumns?: { alias: string; fn?: ((...args: never[]) => unknown) }[];
+  setOperation?: { mode: string; right: unknown };
+  subqueryIn?: { column: string; valueSet: Set<string> | string[] }[];
+  join?: { type?: string; leftKey: string; rightKey: string; right: unknown };
+}): string {
+  let h = 0x811c9dc5;
+  const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
+  feed(query.table); feed("\0");
+  if (query.version !== undefined) { feed(`v${query.version}`); feed("\0"); }
+  for (const f of [...query.filters].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+    feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
+  }
+  if (query.filterGroups) {
+    for (const group of query.filterGroups) {
+      feed("|");
+      for (const f of [...group].sort((a, b) => a.column.localeCompare(b.column) || a.op.localeCompare(b.op))) {
+        feed(f.column); feed("\0"); feed(f.op); feed("\0"); feed(String(f.value)); feed("\0");
+      }
+    }
+  }
+  for (const p of [...query.projections].sort()) { feed(p); feed("\0"); }
+  if (query.sortColumn) { feed(query.sortColumn); feed("\0"); feed(query.sortDirection ?? "asc"); feed("\0"); }
+  if (query.limit !== undefined) { feed(String(query.limit)); feed("\0"); }
+  if (query.offset !== undefined) { feed(String(query.offset)); feed("\0"); }
+  if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed("\0"); feed(a.column); feed("\0"); if (a.alias) feed(a.alias); feed("\0"); }
+  if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
+  if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
+  if (query.windows) for (const w of query.windows) {
+    feed(w.fn); feed("\0"); feed(w.alias); feed("\0"); feed(w.column ?? NULL_SENTINEL); feed("\0");
+    if (w.partitionBy) for (const p of w.partitionBy) { feed(p); feed("\0"); }
+    if (w.orderBy) for (const o of w.orderBy) { feed(o.column); feed(o.direction); feed("\0"); }
+    if (w.frame) { feed(w.frame.type); feed(String(w.frame.start)); feed(String(w.frame.end)); feed("\0"); }
+    if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
+    if (w.args?.default_ !== undefined) { feed(String(w.args.default_)); feed("\0"); }
+  }
+  if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); if (cc.fn) { feed(cc.fn.toString()); feed("\0"); } }
+  if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(queryCacheKey(query.setOperation.right as Parameters<typeof queryCacheKey>[0])); feed("\0"); }
+  if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
+  if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(queryCacheKey(query.join.right as Parameters<typeof queryCacheKey>[0])); feed("\0"); }
+  return `qr:${query.table}:${(h >>> 0).toString(36)}`;
+}
+
 /** RPC interface exposed by MasterDO for zero-serialization calls */
 export interface MasterDORpc {
   appendRpc(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult>;
