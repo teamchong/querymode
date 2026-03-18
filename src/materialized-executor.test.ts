@@ -256,8 +256,8 @@ describe("MaterializedExecutor", () => {
       const result = await createFromJSON(bigData)
         .aggregate("sum", "amount", "total")
         .collect();
-      // BigInt values should be converted to Number for aggregation
-      expect(result.rows[0].total).toBe(600);
+      // BigInt SUM preserves int64 precision (returns bigint, not number)
+      expect(result.rows[0].total).toBe(600n);
     });
 
     it("aggregation on empty data returns null", async () => {

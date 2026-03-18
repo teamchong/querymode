@@ -28,6 +28,10 @@ export interface PartialAggState {
   /** For min/max on string columns */
   strMin?: string;
   strMax?: string;
+  /** For int64 columns: bigint accumulators that preserve precision beyond 2^53 */
+  bigSum?: bigint;
+  bigMin?: bigint;
+  bigMax?: bigint;
 }
 
 export function initPartialAggState(
@@ -72,17 +76,35 @@ export function updatePartialAgg(
   }
 }
 
-function resolveValue(state: PartialAggState): number | string | null {
+/** Accumulate a bigint value — preserves int64 precision for SUM/MIN/MAX. */
+function updatePartialAggBigInt(state: PartialAggState, value: bigint): void {
+  state.bigSum = (state.bigSum ?? 0n) + value;
+  state.count++;
+  if (state.bigMin === undefined || value < state.bigMin) state.bigMin = value;
+  if (state.bigMax === undefined || value > state.bigMax) state.bigMax = value;
+  if (state.values !== undefined) state.values.push(Number(value));
+  if (state.distinctSet !== undefined) state.distinctSet.add(String(value));
+  if (state.m2 !== undefined) {
+    const numVal = Number(value);
+    const oldMean = state.count > 1 ? (Number(state.bigSum - value)) / (state.count - 1) : 0;
+    const delta = numVal - oldMean;
+    const newMean = Number(state.bigSum) / state.count;
+    state.m2 += delta * (numVal - newMean);
+  }
+}
+
+function resolveValue(state: PartialAggState): number | bigint | string | null {
   // count/count_distinct always return a number (0 for empty)
   if (state.fn === "count") return state.count;
   if (state.fn === "count_distinct") return state.distinctSet?.size ?? 0;
   // All other aggregates return null when no non-null values were seen (SQL standard)
   if (state.count === 0) return null;
+  const hasBig = state.bigSum !== undefined;
   switch (state.fn) {
-    case "sum": return state.sum;
-    case "avg": return state.sum / state.count;
-    case "min": return state.strMin !== undefined ? state.strMin : state.min;
-    case "max": return state.strMax !== undefined ? state.strMax : state.max;
+    case "sum": return hasBig ? (state.bigSum! + BigInt(Math.trunc(state.sum))) : state.sum;
+    case "avg": return hasBig ? (Number(state.bigSum!) + state.sum) / state.count : state.sum / state.count;
+    case "min": return state.strMin !== undefined ? state.strMin : hasBig ? state.bigMin! : state.min;
+    case "max": return state.strMax !== undefined ? state.strMax : hasBig ? state.bigMax! : state.max;
     case "stddev": return state.count < 2 ? null : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));
     case "variance": return state.count < 2 ? null : (state.m2 ?? 0) / state.count;
     case "median": {
@@ -119,7 +141,7 @@ function feedAggStates(
     if (typeof val === "number") {
       updatePartialAgg(states[i], val, val);
     } else if (typeof val === "bigint") {
-      updatePartialAgg(states[i], Number(val), val);
+      updatePartialAggBigInt(states[i], val);
     } else if (val !== null && val !== undefined) {
       if (aggregates[i].fn === "count_distinct") {
         updatePartialAgg(states[i], 0, val);
@@ -210,6 +232,12 @@ export function mergeStates(
     target[i].count += source[i].count;
     if (source[i].min < target[i].min) target[i].min = source[i].min;
     if (source[i].max > target[i].max) target[i].max = source[i].max;
+    // Merge bigint accumulators (int64 precision)
+    if (source[i].bigSum !== undefined) {
+      target[i].bigSum = (target[i].bigSum ?? 0n) + source[i].bigSum!;
+      if (target[i].bigMin === undefined || source[i].bigMin! < target[i].bigMin!) target[i].bigMin = source[i].bigMin;
+      if (target[i].bigMax === undefined || source[i].bigMax! > target[i].bigMax!) target[i].bigMax = source[i].bigMax;
+    }
     if (source[i].strMin !== undefined) {
       if (target[i].strMin === undefined || source[i].strMin! < target[i].strMin!) target[i].strMin = source[i].strMin;
     }

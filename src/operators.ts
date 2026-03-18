@@ -1000,13 +1000,33 @@ export class WindowOperator implements Operator {
     const frameStart = frame?.start ?? "unbounded";
     const frameEnd = frame?.end ?? "current";
 
+    // Detect if column contains bigint values (int64) — use BigInt accumulators to preserve precision
+    let useBigInt = false;
+    if (col !== "*") {
+      for (let i = 0; i < indices.length; i++) {
+        const v = rows[indices[i]][col];
+        if (v !== null && v !== undefined) { useBigInt = typeof v === "bigint"; break; }
+      }
+    }
+
+    if (useBigInt) {
+      this.applyAggWindowBigInt(rows, indices, fn, alias, col, frameStart, frameEnd);
+    } else {
+      this.applyAggWindowNumber(rows, indices, fn, alias, col, frameStart, frameEnd);
+    }
+  }
+
+  private applyAggWindowNumber(
+    rows: Row[], indices: number[], fn: string, alias: string, col: string,
+    frameStart: string | number, frameEnd: string | number,
+  ): void {
     // Fast path: "unbounded preceding ... current row" uses O(n) running accumulators
     if (frameStart === "unbounded" && frameEnd === "current") {
       let runSum = 0, runCount = 0, runMin = Infinity, runMax = -Infinity;
       for (let i = 0; i < indices.length; i++) {
         const val = col === "*" ? 1 : rows[indices[i]][col];
         if (val !== null && val !== undefined) {
-          const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
+          const n = typeof val === "number" ? val : 0;
           runSum += n;
           runCount++;
           if (n < runMin) runMin = n;
@@ -1025,27 +1045,17 @@ export class WindowOperator implements Operator {
 
     // General path for custom frames
     for (let i = 0; i < indices.length; i++) {
-      let start: number, end: number;
-
-      if (frameStart === "unbounded") start = 0;
-      else if (frameStart === "current") start = i;
-      else start = Math.max(0, i + (frameStart as number));
-
-      if (frameEnd === "unbounded") end = indices.length - 1;
-      else if (frameEnd === "current") end = i;
-      else end = Math.min(indices.length - 1, i + (frameEnd as number));
-
+      const [start, end] = this.frameRange(i, indices.length, frameStart, frameEnd);
       let sum = 0, count = 0, min = Infinity, max = -Infinity;
       for (let j = start; j <= end; j++) {
         const val = col === "*" ? 1 : rows[indices[j]][col];
         if (val === null || val === undefined) continue;
-        const n = typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0;
+        const n = typeof val === "number" ? val : 0;
         sum += n;
         count++;
         if (n < min) min = n;
         if (n > max) max = n;
       }
-
       switch (fn) {
         case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
         case "avg": rows[indices[i]][alias] = count === 0 ? null : sum / count; break;
@@ -1054,6 +1064,63 @@ export class WindowOperator implements Operator {
         case "count": rows[indices[i]][alias] = count; break;
       }
     }
+  }
+
+  /** BigInt accumulation path — preserves int64 precision for SUM/MIN/MAX. */
+  private applyAggWindowBigInt(
+    rows: Row[], indices: number[], fn: string, alias: string, col: string,
+    frameStart: string | number, frameEnd: string | number,
+  ): void {
+    if (frameStart === "unbounded" && frameEnd === "current") {
+      let runSum = 0n, runCount = 0;
+      let runMin: bigint | undefined, runMax: bigint | undefined;
+      for (let i = 0; i < indices.length; i++) {
+        const val = rows[indices[i]][col];
+        if (val !== null && val !== undefined) {
+          const n = typeof val === "bigint" ? val : BigInt(Math.trunc(val as number));
+          runSum += n;
+          runCount++;
+          if (runMin === undefined || n < runMin) runMin = n;
+          if (runMax === undefined || n > runMax) runMax = n;
+        }
+        switch (fn) {
+          case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
+          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : Number(runSum) / runCount; break;
+          case "min": rows[indices[i]][alias] = runMin ?? null; break;
+          case "max": rows[indices[i]][alias] = runMax ?? null; break;
+          case "count": rows[indices[i]][alias] = runCount; break;
+        }
+      }
+      return;
+    }
+
+    for (let i = 0; i < indices.length; i++) {
+      const [start, end] = this.frameRange(i, indices.length, frameStart, frameEnd);
+      let sum = 0n, count = 0;
+      let min: bigint | undefined, max: bigint | undefined;
+      for (let j = start; j <= end; j++) {
+        const val = rows[indices[j]][col];
+        if (val === null || val === undefined) continue;
+        const n = typeof val === "bigint" ? val : BigInt(Math.trunc(val as number));
+        sum += n;
+        count++;
+        if (min === undefined || n < min) min = n;
+        if (max === undefined || n > max) max = n;
+      }
+      switch (fn) {
+        case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
+        case "avg": rows[indices[i]][alias] = count === 0 ? null : Number(sum) / count; break;
+        case "min": rows[indices[i]][alias] = min ?? null; break;
+        case "max": rows[indices[i]][alias] = max ?? null; break;
+        case "count": rows[indices[i]][alias] = count; break;
+      }
+    }
+  }
+
+  private frameRange(i: number, len: number, frameStart: string | number, frameEnd: string | number): [number, number] {
+    const start = frameStart === "unbounded" ? 0 : frameStart === "current" ? i : Math.max(0, i + (frameStart as number));
+    const end = frameEnd === "unbounded" ? len - 1 : frameEnd === "current" ? i : Math.min(len - 1, i + (frameEnd as number));
+    return [start, end];
   }
 
   private orderByEqual(rows: Row[], idx1: number, idx2: number, orderBy: WindowSpec["orderBy"]): boolean {
