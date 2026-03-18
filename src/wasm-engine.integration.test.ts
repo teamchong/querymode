@@ -388,4 +388,14 @@ describe("queryToSql", () => {
     const sql = queryToSql({ ...base, filters: [{ column: "x", op: "not_between", value: [10, 20] }] });
     expect(sql).toContain("NOT BETWEEN 10 AND 20");
   });
+
+  it("preserves LIMIT 0", () => {
+    const sql = queryToSql({ ...base, limit: 0 });
+    expect(sql).toContain("LIMIT 0");
+  });
+
+  it("preserves OFFSET 0", () => {
+    const sql = queryToSql({ ...base, offset: 0 });
+    expect(sql).toContain("OFFSET 0");
+  });
 });
