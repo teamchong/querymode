@@ -60,6 +60,33 @@ Each `.page()` call is a separate query execution with `offset` and `limit`. No 
 - No memory accumulates between pages
 - Sorted results are consistent if data doesn't change
 
+## Columnar pipeline and materialization
+
+Internally, QueryMode defers `Row[]` creation as long as possible. Data flows through the pipeline in columnar format — column buffers and selection vectors — rather than as JavaScript objects.
+
+**Local execution (Node/Bun):**
+1. `ScanOperator` reads column pages from disk into typed arrays
+2. Filters run via WASM SIMD directly on column buffers — no row objects created
+3. Aggregation, sort, and limit operate on columnar batches
+4. `Row[]` objects are materialized only at the final `collect()` / `stream()` boundary
+
+**Edge execution (Cloudflare Workers):**
+1. `FragmentDO` scans pages and runs WASM queries, producing QMCB (QueryMode Columnar Binary) — a zero-copy columnar wire format
+2. QMCB `ArrayBuffer` transfers over Worker RPC via structured clone (not JSON serialization)
+3. `QueryDO` receives QMCB, merges/sorts columnar batches without creating `Row[]`
+4. `Row[]` is materialized only at the HTTP response boundary via `columnarBatchToRows()`
+
+This means a query that scans 1M rows but returns 100 never creates 1M JavaScript objects — filters eliminate rows at the column-buffer level, and only the 100 matching rows become `Row[]` at the end.
+
+For custom operator pipelines, `drainPipeline()` is the function that exhausts an operator chain and materializes all output rows:
+
+```typescript
+import { buildPipeline, drainPipeline } from "querymode"
+
+const pipeline = buildPipeline(descriptor, fragmentSource)
+const { rows, columns } = await drainPipeline(pipeline)
+```
+
 ## Streaming iteration
 
 `.stream()` works directly on the DataFrame — no `.lazy()` needed:
