@@ -154,7 +154,7 @@ export function wasmResultToQMCB(
       case WASM_FLOAT64: {
         const sz = numRows * 8;
         if (dp + sz > size) break;
-        outBuf.set(new Uint8Array(memoryBuffer, ptr + dp, sz), wp);
+        outBuf.set(buf.subarray(dp, dp + sz), wp);
         wp += sz;
         dp += sz;
         break;
@@ -164,7 +164,7 @@ export function wasmResultToQMCB(
       case WASM_FLOAT32: {
         const sz = numRows * 4;
         if (dp + sz > size) break;
-        outBuf.set(new Uint8Array(memoryBuffer, ptr + dp, sz), wp);
+        outBuf.set(buf.subarray(dp, dp + sz), wp);
         wp += sz;
         dp += sz;
         break;
@@ -172,11 +172,11 @@ export function wasmResultToQMCB(
 
       case WASM_BOOL: {
         if (dp + numRows > size) break;
-        const boolData = new Uint8Array(memoryBuffer, ptr + dp, numRows);
         const packedLen = Math.ceil(numRows / 8);
         // outBuf is zero-initialized (new ArrayBuffer), OR is safe
+        // Read directly from buf (already a view at ptr) — no extra typed array needed
         for (let i = 0; i < numRows; i++) {
-          if (boolData[i]) outBuf[wp + (i >> 3)] |= 1 << (i & 7);
+          if (buf[dp + i]) outBuf[wp + (i >> 3)] |= 1 << (i & 7);
         }
         wp += packedLen;
         dp += numRows;
@@ -204,7 +204,9 @@ export function wasmResultToQMCB(
           const len = view.getUint32(dp, true);
           dp += 4;
           if (len > 0 && dp + len <= size) {
-            outBuf.set(new Uint8Array(memoryBuffer, ptr + dp, len), dataPos + strOffset);
+            // Use buf.subarray (view into existing WASM Uint8Array) instead of
+            // new Uint8Array(memoryBuffer, ...) to avoid per-row constructor overhead.
+            outBuf.set(buf.subarray(dp, dp + len), dataPos + strOffset);
           }
           strOffset += len;
           dp += len;
