@@ -122,10 +122,35 @@ export function mergeQueryResults(
   const columns =
     partials.length > 0 ? partials[0].columns : query.projections;
 
-  const baseResult = {
+  // Accumulate telemetry: sums for counters/bytes, max for parallel timings
+  let r2ReadMs = 0, wasmExecMs = 0;
+  let cacheHits = 0, cacheMisses = 0;
+  let edgeCacheHits = 0, edgeCacheMisses = 0;
+  let spillBytesWritten = 0, spillBytesRead = 0;
+  let hasR2 = false, hasWasm = false;
+  for (const p of partials) {
+    if (p.r2ReadMs !== undefined) { r2ReadMs = r2ReadMs > p.r2ReadMs ? r2ReadMs : p.r2ReadMs; hasR2 = true; }
+    if (p.wasmExecMs !== undefined) { wasmExecMs = wasmExecMs > p.wasmExecMs ? wasmExecMs : p.wasmExecMs; hasWasm = true; }
+    if (p.cacheHits) cacheHits += p.cacheHits;
+    if (p.cacheMisses) cacheMisses += p.cacheMisses;
+    if (p.edgeCacheHits) edgeCacheHits += p.edgeCacheHits;
+    if (p.edgeCacheMisses) edgeCacheMisses += p.edgeCacheMisses;
+    if (p.spillBytesWritten) spillBytesWritten += p.spillBytesWritten;
+    if (p.spillBytesRead) spillBytesRead += p.spillBytesRead;
+  }
+
+  const baseResult: Omit<QueryResult, "rows" | "rowCount" | "columns"> = {
     bytesRead: totalBytesRead,
     pagesSkipped: totalPagesSkipped,
     durationMs: maxDuration,
+    ...(hasR2 && { r2ReadMs }),
+    ...(hasWasm && { wasmExecMs }),
+    ...(cacheHits > 0 && { cacheHits }),
+    ...(cacheMisses > 0 && { cacheMisses }),
+    ...(edgeCacheHits > 0 && { edgeCacheHits }),
+    ...(edgeCacheMisses > 0 && { edgeCacheMisses }),
+    ...(spillBytesWritten > 0 && { spillBytesWritten }),
+    ...(spillBytesRead > 0 && { spillBytesRead }),
   };
 
   // Aggregation path — columnar when possible, Row[] fallback

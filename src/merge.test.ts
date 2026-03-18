@@ -124,6 +124,46 @@ describe("mergeQueryResults", () => {
     expect(merged.rows[0].sum_val).toBe(1275);
   });
 
+  it("propagates telemetry fields from partials", () => {
+    const p1: QueryResult = {
+      rows: [{ v: 1 }], rowCount: 1, columns: ["v"],
+      bytesRead: 100, pagesSkipped: 2, durationMs: 10,
+      r2ReadMs: 5, wasmExecMs: 3, cacheHits: 4, cacheMisses: 1,
+      edgeCacheHits: 2, edgeCacheMisses: 0, spillBytesWritten: 1024, spillBytesRead: 512,
+    };
+    const p2: QueryResult = {
+      rows: [{ v: 2 }], rowCount: 1, columns: ["v"],
+      bytesRead: 200, pagesSkipped: 3, durationMs: 15,
+      r2ReadMs: 8, wasmExecMs: 6, cacheHits: 3, cacheMisses: 2,
+      edgeCacheHits: 1, edgeCacheMisses: 1, spillBytesWritten: 2048, spillBytesRead: 1024,
+    };
+    const query: QueryDescriptor = { table: "t", filters: [], projections: ["v"] };
+    const merged = mergeQueryResults([p1, p2], query);
+    expect(merged.bytesRead).toBe(300);
+    expect(merged.pagesSkipped).toBe(5);
+    expect(merged.durationMs).toBe(15);
+    // Timing: max across partials (parallel execution)
+    expect(merged.r2ReadMs).toBe(8);
+    expect(merged.wasmExecMs).toBe(6);
+    // Counters: summed
+    expect(merged.cacheHits).toBe(7);
+    expect(merged.cacheMisses).toBe(3);
+    expect(merged.edgeCacheHits).toBe(3);
+    expect(merged.edgeCacheMisses).toBe(1);
+    expect(merged.spillBytesWritten).toBe(3072);
+    expect(merged.spillBytesRead).toBe(1536);
+  });
+
+  it("omits telemetry fields when no partials have them", () => {
+    const p1 = makeResult([{ v: 1 }]);
+    const query: QueryDescriptor = { table: "t", filters: [], projections: ["v"] };
+    const merged = mergeQueryResults([p1], query);
+    expect(merged.r2ReadMs).toBeUndefined();
+    expect(merged.wasmExecMs).toBeUndefined();
+    expect(merged.cacheHits).toBeUndefined();
+    expect(merged.spillBytesWritten).toBeUndefined();
+  });
+
   it("offset works with sorted merge across partials", () => {
     const partials = Array.from({ length: 10 }, (_, i) =>
       makeResult([{ v: i }]),
