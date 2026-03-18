@@ -953,6 +953,9 @@ export class LocalExecutor implements QueryExecutor {
     const fragments: FragmentSource[] = [];
 
     for (const [, meta] of dataset.fragmentMetas) {
+      // Skip entire fragment if min/max stats eliminate it
+      if (canSkipFragment(meta, query.filters, query.filterGroups)) continue;
+
       const neededCols = new Set(query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name));
       for (const f of query.filters) neededCols.add(f.column);
       if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededCols.add(f.column);
