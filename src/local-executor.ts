@@ -610,7 +610,7 @@ export class LocalExecutor implements QueryExecutor {
         pipeline = new TopKOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.limit, query.offset ?? 0);
       } else if (query.sortColumn) {
         pipeline = new InMemorySortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0);
-      } else if (query.offset || query.limit !== undefined) {
+      } else if (query.offset !== undefined || query.limit !== undefined) {
         pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
       }
     } else if (query.sortColumn) {
@@ -619,7 +619,7 @@ export class LocalExecutor implements QueryExecutor {
       } else {
         pipeline = new ExternalSortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0, pipeOpts?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET);
       }
-    } else if (query.offset || query.limit !== undefined) {
+    } else if (query.offset !== undefined || query.limit !== undefined) {
       pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
     }
 

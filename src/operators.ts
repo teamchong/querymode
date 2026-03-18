@@ -3066,7 +3066,7 @@ function assemblePipeline(
         pipeline, query.sortColumn, query.sortDirection === "desc",
         query.offset ?? 0,
       );
-    } else if (query.offset || query.limit !== undefined) {
+    } else if (query.offset !== undefined || query.limit !== undefined) {
       pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
     }
   } else if (query.sortColumn) {
@@ -3081,7 +3081,7 @@ function assemblePipeline(
         query.offset ?? 0, memBudget, options?.spill,
       );
     }
-  } else if (query.offset || query.limit !== undefined) {
+  } else if (query.offset !== undefined || query.limit !== undefined) {
     pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
   }
 
