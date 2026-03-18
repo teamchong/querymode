@@ -81,6 +81,12 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if ((max as string) < prefix || (min as string) >= prefixEnd) return true;
         break;
       }
+      // not_like: skip uniform pages where the single value matches the pattern
+      case "not_like": {
+        if (typeof filter.value !== "string" || typeof min !== "string" || min !== max) break;
+        if (compileLikeRegex(filter.value).test(min)) return true;
+        break;
+      }
     }
   }
   return false;

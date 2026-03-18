@@ -218,6 +218,29 @@ describe("canSkipPage", () => {
     const strPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
     expect(canSkipPage(strPage, [{ column: "x", op: "like", value: "%xyz%" }], "x")).toBe(false);
   });
+
+  // NOT LIKE page skip — uniform pages only
+  it("skips uniform page with NOT LIKE when the single value matches the pattern", () => {
+    const uniformPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "hello", maxValue: "hello" };
+    // "hello" matches "hel%" → NOT LIKE excludes all rows → skip
+    expect(canSkipPage(uniformPage, [{ column: "x", op: "not_like", value: "hel%" }], "x")).toBe(true);
+    // "hello" matches "hello" exactly → NOT LIKE excludes all rows → skip
+    expect(canSkipPage(uniformPage, [{ column: "x", op: "not_like", value: "hello" }], "x")).toBe(true);
+    // "hello" matches "h_llo" (single-char wildcard) → skip
+    expect(canSkipPage(uniformPage, [{ column: "x", op: "not_like", value: "h_llo" }], "x")).toBe(true);
+  });
+
+  it("does not skip uniform page with NOT LIKE when the value doesn't match", () => {
+    const uniformPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "hello", maxValue: "hello" };
+    // "hello" does not match "world%" → NOT LIKE keeps all rows → don't skip
+    expect(canSkipPage(uniformPage, [{ column: "x", op: "not_like", value: "world%" }], "x")).toBe(false);
+  });
+
+  it("does not skip non-uniform page with NOT LIKE", () => {
+    const mixedPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: "apple", maxValue: "banana" };
+    // Non-uniform page — can't determine if all values match, so don't skip
+    expect(canSkipPage(mixedPage, [{ column: "x", op: "not_like", value: "app%" }], "x")).toBe(false);
+  });
 });
 
 describe("assembleRows", () => {
