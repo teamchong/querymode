@@ -39,6 +39,17 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         })) return true;
         break;
       }
+      // not_in: skip when entire page is a single value that appears in the NOT IN list
+      case "not_in": {
+        if (!Array.isArray(filter.value) || min !== max) break;
+        if (filter.value.some(v => {
+          let cv = v;
+          if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
+          else if (typeof min === "number" && typeof cv === "bigint") cv = Number(cv);
+          return cv === min;
+        })) return true;
+        break;
+      }
       case "between": {
         if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
         let lo = filter.value[0];

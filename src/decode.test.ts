@@ -166,6 +166,20 @@ describe("canSkipPage", () => {
     const bigPage: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 10n, maxValue: 90n };
     expect(canSkipPage(bigPage, [{ column: "x", op: "in", value: [1, 5, 95] }], "x")).toBe(true);
   });
+
+  it("skips uniform page where value is in NOT IN list", () => {
+    const uniform: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 42, maxValue: 42 };
+    expect(canSkipPage(uniform, [{ column: "x", op: "not_in", value: [10, 42, 99] }], "x")).toBe(true);
+  });
+
+  it("does not skip uniform page where value is not in NOT IN list", () => {
+    const uniform: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 0, minValue: 42, maxValue: 42 };
+    expect(canSkipPage(uniform, [{ column: "x", op: "not_in", value: [10, 99] }], "x")).toBe(false);
+  });
+
+  it("does not skip range page for NOT IN", () => {
+    expect(canSkipPage(page, [{ column: "x", op: "not_in", value: [10, 50, 90] }], "x")).toBe(false);
+  });
 });
 
 describe("assembleRows", () => {
