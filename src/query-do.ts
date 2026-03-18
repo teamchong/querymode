@@ -1481,44 +1481,50 @@ export class QueryDO extends DurableObject<Env> {
       const manifest = parseManifest(await manifestObj.arrayBuffer());
       if (!manifest) continue;
 
-      // Read footer + columns for each fragment
+      // Read footer + columns for each fragment (parallel R2 reads)
       const fragmentMetas = new Map<number, TableMeta>();
-      for (const frag of manifest.fragments) {
-        // Try filePath as-is first, then with data/ prefix (Lance stores relative paths without data/)
-        const candidates = [
-          `${prefix}${frag.filePath}`,
-          `${prefix}data/${frag.filePath}`,
-        ];
-        let head: { size: number } | null = null;
-        let fragKey = candidates[0];
-        for (const candidate of candidates) {
-          head = await this.r2(candidate).head(candidate);
-          if (head) { fragKey = candidate; break; }
+      const leafFields = manifest.schema.length > 0
+        ? manifest.schema.filter(f => f.parentId === -1 || f.parentId === 0)
+        : [];
+
+      const fragResults = await Promise.all(manifest.fragments.map(async (frag) => {
+        try {
+          const candidates = [
+            `${prefix}${frag.filePath}`,
+            `${prefix}data/${frag.filePath}`,
+          ];
+          let head: { size: number } | null = null;
+          let fragKey = candidates[0];
+          for (const candidate of candidates) {
+            head = await this.r2(candidate).head(candidate);
+            if (head) { fragKey = candidate; break; }
+          }
+          if (!head) return null;
+
+          const fileSize = BigInt(head.size);
+          const footerObj = await this.r2(fragKey).get(fragKey, { range: { offset: Number(fileSize) - 40, length: 40 } });
+          if (!footerObj) return null;
+
+          const footer = parseFooter(await footerObj.arrayBuffer());
+          if (!footer) return null;
+
+          let columns = await this.readColumnMeta(fragKey, footer);
+          if (leafFields.length > 0) {
+            columns = columns.map((col, i) => {
+              const field = leafFields[i];
+              if (!field) return col;
+              return { ...col, name: field.name, dtype: logicalTypeToDataType(field.logicalType) };
+            });
+          }
+          return { id: frag.id, meta: { name: frag.filePath, footer, format: "lance" as const, columns, totalRows: frag.physicalRows, fileSize, r2Key: fragKey, updatedAt: Date.now() } };
+        } catch {
+          this.log("warn", "fragment_load_failed", { filePath: frag.filePath });
+          return null;
         }
-        if (!head) continue;
+      }));
 
-        const fileSize = BigInt(head.size);
-        const footerObj = await this.r2(fragKey).get(fragKey, { range: { offset: Number(fileSize) - 40, length: 40 } });
-        if (!footerObj) continue;
-
-        const footer = parseFooter(await footerObj.arrayBuffer());
-        if (!footer) continue;
-
-        let columns = await this.readColumnMeta(fragKey, footer);
-        // Apply manifest schema names/types to columns (v2 protobuf may have encoding paths instead of names)
-        if (manifest.schema.length > 0) {
-          const leafFields = manifest.schema.filter(f => f.parentId === -1 || f.parentId === 0);
-          columns = columns.map((col, i) => {
-            const field = leafFields[i];
-            if (!field) return col;
-            return { ...col, name: field.name, dtype: logicalTypeToDataType(field.logicalType) };
-          });
-        }
-        fragmentMetas.set(frag.id, {
-          name: frag.filePath, footer, format: "lance", columns,
-          totalRows: frag.physicalRows,
-          fileSize, r2Key: fragKey, updatedAt: Date.now(),
-        });
+      for (const r of fragResults) {
+        if (r) fragmentMetas.set(r.id, r.meta);
       }
 
       if (fragmentMetas.size === 0) continue;
@@ -1559,13 +1565,19 @@ export class QueryDO extends DurableObject<Env> {
   private async loadParquetFragments(parquetPaths: string[], prefix: string): Promise<{ fragmentMetas: Map<number, TableMeta>; totalRows: number }> {
     const fragmentMetas = new Map<number, TableMeta>();
     let totalRows = 0;
-    for (let i = 0; i < parquetPaths.length; i++) {
-      const parquetKey = parquetPaths[i].startsWith(prefix) ? parquetPaths[i] : `${prefix}${parquetPaths[i]}`;
-      const meta = await this.loadParquetR2Meta(parquetKey);
-      if (!meta) continue;
-      meta.name = parquetPaths[i];
-      fragmentMetas.set(i, meta);
-      totalRows += meta.totalRows;
+    const results = await Promise.all(parquetPaths.map(async (path, i) => {
+      try {
+        const parquetKey = path.startsWith(prefix) ? path : `${prefix}${path}`;
+        const meta = await this.loadParquetR2Meta(parquetKey);
+        if (!meta) return null;
+        meta.name = path;
+        return { id: i, meta };
+      } catch {
+        return null;
+      }
+    }));
+    for (const r of results) {
+      if (r) { fragmentMetas.set(r.id, r.meta); totalRows += r.meta.totalRows; }
     }
     return { fragmentMetas, totalRows };
   }
