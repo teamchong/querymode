@@ -533,7 +533,10 @@ export class WasmEngine {
         const dataPtr = this.exports.alloc(rowCount * 8);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
-        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(values[i] as bigint ?? 0n);
+        for (let i = 0; i < rowCount; i++) {
+          const v = values[i];
+          dst[i] = v == null ? 0n : typeof v === "bigint" ? v : BigInt(Math.trunc(v as number));
+        }
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
         return true;
       }
@@ -1010,6 +1013,10 @@ const COMPARISON_OP_MAP: Record<string, string> = { eq: "=", neq: "!=", gt: ">",
 function filterToSql(f: FilterOp): string {
   if (f.op === "is_null") return `${quote(f.column)} IS NULL`;
   if (f.op === "is_not_null") return `${quote(f.column)} IS NOT NULL`;
+  // null/undefined value with eq/neq → IS NULL / IS NOT NULL
+  if (f.value === null || f.value === undefined) {
+    return `${quote(f.column)} ${f.op === "neq" ? "IS NOT NULL" : "IS NULL"}`;
+  }
   if (f.op === "in" && Array.isArray(f.value)) {
     return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
   }

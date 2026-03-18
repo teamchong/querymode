@@ -13,6 +13,7 @@ import { mergeQueryResults } from "./merge.js";
 import { decodeColumnarBatch, columnarBatchToRows } from "./columnar.js";
 import { coalesceRanges, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend, encodeColumnarRun } from "./r2-spill.js";
+import { QueryModeError } from "./errors.js";
 import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline, estimateRowSize,
@@ -678,7 +679,7 @@ export class QueryDO extends DurableObject<Env> {
     const metaCached = !!meta;
     if (!meta) {
       meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (!meta) throw new Error(`Table "${query.table}" not found`);
+      if (!meta) throw new QueryModeError("TABLE_NOT_FOUND", `Table "${query.table}" not found`);
     }
 
     const { columns } = meta;
@@ -801,7 +802,7 @@ export class QueryDO extends DurableObject<Env> {
       let meta: TableMeta | undefined = this.footerCache.get(query.table);
       if (!meta) {
         meta = (await this.loadTableFromR2(query.table)) ?? undefined;
-        if (!meta) throw new Error(`Table "${query.table}" not found`);
+        if (!meta) throw new QueryModeError("TABLE_NOT_FOUND", `Table "${query.table}" not found`);
       }
 
       // Use operator pipeline for any query that could produce unbounded results:
@@ -1252,7 +1253,7 @@ export class QueryDO extends DurableObject<Env> {
       let leftMeta: TableMeta | undefined = this.footerCache.get(query.table);
       if (!leftMeta) {
         leftMeta = (await this.loadTableFromR2(query.table)) ?? undefined;
-        if (!leftMeta) throw new Error(`Table "${query.table}" not found`);
+        if (!leftMeta) throw new QueryModeError("TABLE_NOT_FOUND", `Table "${query.table}" not found`);
       }
 
       // Build left scan (no sort/limit/agg — those apply after join)
@@ -1272,7 +1273,7 @@ export class QueryDO extends DurableObject<Env> {
       let rightMeta: TableMeta | undefined = this.footerCache.get(join.right.table);
       if (!rightMeta) {
         rightMeta = (await this.loadTableFromR2(join.right.table)) ?? undefined;
-        if (!rightMeta) throw new Error(`Table "${join.right.table}" not found`);
+        if (!rightMeta) throw new QueryModeError("TABLE_NOT_FOUND", `Table "${join.right.table}" not found`);
       }
 
       // Build right scan
@@ -1907,7 +1908,9 @@ export class QueryDO extends DurableObject<Env> {
           if (s.status === "fulfilled") {
             results.push(s.value);
           } else {
-            failures.push(String(s.reason));
+            const reason = String(s.reason);
+            failures.push(reason);
+            this.log("error", "reducer_do_failed", { reason, tier });
           }
         }
         if (failures.length > 0) {
