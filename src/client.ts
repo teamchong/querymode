@@ -825,11 +825,14 @@ export class DataFrame<T extends Row = Row> {
     const drainExecutor: QueryExecutor = {
       async execute(_query: QueryDescriptor): Promise<QueryResult> {
         const rows: Row[] = [];
-        let batch: RowBatch | null;
-        while ((batch = await op.next()) !== null) {
-          for (const row of batch) rows.push(row);
+        try {
+          let batch: RowBatch | null;
+          while ((batch = await op.next()) !== null) {
+            for (const row of batch) rows.push(row);
+          }
+        } finally {
+          await op.close();
         }
-        await op.close();
         return {
           rows,
           rowCount: rows.length,
