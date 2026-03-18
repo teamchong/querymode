@@ -118,9 +118,9 @@ function evaluateBinary(op: string, leftExpr: SqlExpr, rightExpr: SqlExpr, row: 
     case "le": return compare(left, right) <= 0;
     case "gt": return compare(left, right) > 0;
     case "ge": return compare(left, right) >= 0;
-    case "add": return toNumber(left) + toNumber(right);
-    case "subtract": return toNumber(left) - toNumber(right);
-    case "multiply": return toNumber(left) * toNumber(right);
+    case "add": return numericOp(left, right, (a, b) => a + b, (a, b) => a + b);
+    case "subtract": return numericOp(left, right, (a, b) => a - b, (a, b) => a - b);
+    case "multiply": return numericOp(left, right, (a, b) => a * b, (a, b) => a * b);
     case "divide": {
       const divisor = toNumber(right);
       return divisor === 0 ? null : toNumber(left) / divisor;
@@ -149,7 +149,7 @@ function evaluateUnary(op: string, operandExpr: SqlExpr, row: Row): unknown {
   }
   if (op === "minus") {
     if (val === null) return null;
-    return -toNumber(val);
+    return typeof val === "bigint" ? -val : -toNumber(val);
   }
   return null;
 }
@@ -183,6 +183,20 @@ function toNumber(val: unknown): number {
   return 0;
 }
 
+/** Preserve bigint precision when both operands are bigint or safe integers. */
+function numericOp(
+  left: unknown, right: unknown,
+  numFn: (a: number, b: number) => number,
+  bigFn: (a: bigint, b: bigint) => bigint,
+): number | bigint {
+  const lb = typeof left === "bigint";
+  const rb = typeof right === "bigint";
+  if (lb && rb) return bigFn(left as bigint, right as bigint);
+  if (lb && typeof right === "number" && Number.isInteger(right)) return bigFn(left as bigint, BigInt(right));
+  if (rb && typeof left === "number" && Number.isInteger(left)) return bigFn(BigInt(left), right as bigint);
+  return numFn(toNumber(left), toNumber(right));
+}
+
 function matchLike(value: string, pattern: string): boolean {
   return compileLikeRegex(pattern).test(value);
 }
@@ -190,7 +204,11 @@ function matchLike(value: string, pattern: string): boolean {
 function castValue(val: unknown, targetType: string): unknown {
   if (val === null) return null;
   const t = targetType.toLowerCase();
-  if (t === "bigint") return typeof val === "bigint" ? val : BigInt(Math.trunc(toNumber(val)));
+  if (t === "bigint") {
+    if (typeof val === "bigint") return val;
+    if (typeof val === "string") { try { return BigInt(val); } catch { return 0n; } }
+    return BigInt(Math.trunc(toNumber(val)));
+  }
   if (t === "int" || t === "integer") return Math.trunc(toNumber(val));
   if (t === "float" || t === "double" || t === "real" || t === "decimal" || t === "numeric") return toNumber(val);
   if (t === "text" || t === "varchar" || t === "string" || t === "char") return String(val);

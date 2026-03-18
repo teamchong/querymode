@@ -584,7 +584,7 @@ export function compileLikeRegex(pattern: string): RegExp {
   if (cached) return cached;
   // Escape regex metacharacters, then replace SQL wildcards
   const escaped = pattern.replace(/[.+?^${}()|[\]\\*]/g, "\\$&");
-  const re = new RegExp("^" + escaped.replace(/%/g, ".*").replace(/_/g, ".") + "$", "i");
+  const re = new RegExp("^" + escaped.replace(/%/g, ".*").replace(/_/g, ".") + "$", "s");
   likeRegexCache.set(pattern, re);
   if (likeRegexCache.size > 1000) likeRegexCache.clear(); // prevent unbounded growth
   return re;
