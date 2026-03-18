@@ -292,7 +292,14 @@ export function finalizePartialAgg(
       } else {
         // Attempt to restore numeric types
         const num = Number(part);
-        row[groupCols[i]] = part !== "" && !isNaN(num) && isFinite(num) && String(num) === part ? num : part;
+        if (part !== "" && !isNaN(num) && isFinite(num) && String(num) === part) {
+          row[groupCols[i]] = num;
+        } else if (part !== "" && /^-?\d+$/.test(part)) {
+          // Number round-trip lost precision — restore as bigint
+          try { row[groupCols[i]] = BigInt(part); } catch { row[groupCols[i]] = part; }
+        } else {
+          row[groupCols[i]] = part;
+        }
       }
     }
     for (let i = 0; i < states.length; i++) {

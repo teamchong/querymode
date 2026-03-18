@@ -684,7 +684,7 @@ export class QueryDO extends DurableObject<Env> {
       if (w.args?.offset !== undefined) { feed(String(w.args.offset)); feed("\0"); }
       if (w.args?.default_ !== undefined) { feed(String(w.args.default_)); feed("\0"); }
     }
-    if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); }
+    if (query.computedColumns) for (const cc of query.computedColumns) { feed(cc.alias); feed("\0"); if (cc.fn) { feed(cc.fn.toString()); feed("\0"); } }
     if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(this.queryKey(query.setOperation.right)); feed("\0"); }
     if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
     if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(this.queryKey(query.join.right)); feed("\0"); }

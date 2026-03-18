@@ -1101,14 +1101,16 @@ export class DistinctOperator implements Operator {
       const indices = batch.selection ?? identityIndices(batch.rowCount);
       const kept: number[] = [];
       const cols = this.columns.length > 0 ? this.columns : Array.from(batch.columns.keys());
+      // Pre-extract column arrays to avoid Map.get per column per row
+      const colArrays: ((number | bigint | string | boolean | null)[] | undefined)[] = new Array(cols.length);
+      for (let g = 0; g < cols.length; g++) colArrays[g] = batch.columns.get(cols[g]) ?? undefined;
 
       for (let ii = 0; ii < indices.length; ii++) {
         const idx = indices[ii];
         let key = "";
         for (let g = 0; g < cols.length; g++) {
           if (g > 0) key += "\x00";
-          const vals = batch.columns.get(cols[g]);
-          const v = vals ? vals[idx] : null;
+          const v = colArrays[g] ? colArrays[g]![idx] : null;
           key += v === null || v === undefined ? NULL_SENTINEL : String(v);
         }
         if (!this.seen.has(key)) {
