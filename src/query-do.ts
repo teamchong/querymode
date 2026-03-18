@@ -894,7 +894,7 @@ export class QueryDO extends DurableObject<Env> {
       .set(new Uint8Array(fileData));
 
     const loadResult = this.wasmEngine.exports.fragmentLoad(dataPtr, fileData.byteLength);
-    if (loadResult === 0) throw new QueryModeError("INVALID_FORMAT", `Failed to load Lance fragment (invalid file?)`);
+    if (loadResult !== 0) throw new QueryModeError("INVALID_FORMAT", `Failed to load Lance fragment (invalid file?)`);
 
     // Parse Lance v2 column metadata using shared parser
     const dataset = this.datasetCache.get(query.table);
