@@ -13,14 +13,13 @@ export interface CoalescedRange {
 }
 
 /**
- * Compute optimal coalesce gap based on page density.
+ * Compute optimal coalesce gap from a **pre-sorted** range array.
  * Dense layouts (small gaps between pages) benefit from aggressive merging.
  * Sparse layouts waste bandwidth with large gaps.
  * Returns a gap between 16KB (sparse) and 256KB (dense).
  */
-export function autoCoalesceGap(ranges: Range[]): number {
-  if (ranges.length < 2) return 64 * 1024;
-  const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
+function computeGap(sorted: Range[]): number {
+  if (sorted.length < 2) return 64 * 1024;
   // Compute median gap between adjacent ranges
   const gaps: number[] = [];
   for (let i = 1; i < sorted.length; i++) {
@@ -34,17 +33,26 @@ export function autoCoalesceGap(ranges: Range[]): number {
   return Math.max(16 * 1024, Math.min(256 * 1024, medianGap * 2));
 }
 
-/** Merge nearby byte ranges into fewer R2 reads. Sorts by offset, merges if gap <= maxGap. */
-export function coalesceRanges(ranges: Range[], maxGap: number): CoalescedRange[] {
+/** Compute optimal coalesce gap based on page density. Sorts a copy internally. */
+export function autoCoalesceGap(ranges: Range[]): number {
+  if (ranges.length < 2) return 64 * 1024;
+  const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
+  return computeGap(sorted);
+}
+
+/** Merge nearby byte ranges into fewer R2 reads. Sorts by offset, merges if gap <= maxGap.
+ *  If maxGap is omitted, auto-computes from page density (sorts once instead of twice). */
+export function coalesceRanges(ranges: Range[], maxGap?: number): CoalescedRange[] {
   if (ranges.length === 0) return [];
   const sorted = [...ranges].sort((a, b) => a.offset - b.offset);
+  const gap = maxGap ?? computeGap(sorted);
   const result: CoalescedRange[] = [];
   let cur: CoalescedRange = { offset: sorted[0].offset, length: sorted[0].length, ranges: [sorted[0]] };
 
   for (let i = 1; i < sorted.length; i++) {
     const r = sorted[i];
     const curEnd = cur.offset + cur.length;
-    if (r.offset <= curEnd + maxGap) {
+    if (r.offset <= curEnd + gap) {
       cur.length = Math.max(curEnd, r.offset + r.length) - cur.offset;
       cur.ranges.push(r);
     } else {
