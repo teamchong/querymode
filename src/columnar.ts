@@ -548,7 +548,8 @@ export function readColumnValue(col: ColumnarColumn, row: number): number | bigi
     case DTYPE_UTF8: {
       const offsets = col.offsets!;
       const start = offsets[row], end = offsets[row + 1];
-      return textDecoder.decode(new Uint8Array(col.data, start, end - start));
+      const u8 = col._u8 ?? (col._u8 = new Uint8Array(col.data));
+      return textDecoder.decode(u8.subarray(start, end));
     }
     case DTYPE_BOOL: {
       const bits = col._u8 ?? (col._u8 = new Uint8Array(col.data));
