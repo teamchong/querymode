@@ -472,10 +472,14 @@ export class LocalExecutor implements QueryExecutor {
       }
     }
 
-    // Step 2: Determine columns to fetch (projection + filter + sort columns)
+    // Step 2: Determine columns to fetch (projection + filter + sort + groupBy + aggregate columns)
     const neededColumns = new Set(query.projections.length > 0 ? query.projections : columns.map(c => c.name));
     for (const f of query.filters) neededColumns.add(f.column);
+    if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededColumns.add(f.column);
     if (query.sortColumn) neededColumns.add(query.sortColumn);
+    if (query.groupBy) for (const g of query.groupBy) neededColumns.add(g);
+    if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededColumns.add(a.column);
+    if (query.vectorSearch) neededColumns.add(query.vectorSearch.column);
     const projectedColumns = columns.filter(c => neededColumns.has(c.name));
 
     // Vector search still uses the legacy all-at-once path (needs full embeddings for WASM SIMD)
@@ -920,7 +924,11 @@ export class LocalExecutor implements QueryExecutor {
     for (const [, meta] of dataset.fragmentMetas) {
       const neededCols = new Set(query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name));
       for (const f of query.filters) neededCols.add(f.column);
+      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededCols.add(f.column);
       if (query.sortColumn) neededCols.add(query.sortColumn);
+      if (query.groupBy) for (const g of query.groupBy) neededCols.add(g);
+      if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededCols.add(a.column);
+      if (query.vectorSearch) neededCols.add(query.vectorSearch.column);
       const projectedColumns = meta.columns.filter(c => neededCols.has(c.name));
       const filePath = meta.r2Key;
 
