@@ -219,7 +219,8 @@ function castValue(val: unknown, targetType: string): unknown {
   if (t === "bigint") {
     if (typeof val === "bigint") return val;
     if (typeof val === "string") { try { return BigInt(val); } catch { return 0n; } }
-    return BigInt(Math.trunc(toNumber(val)));
+    const n = toNumber(val);
+    return Number.isFinite(n) ? BigInt(Math.trunc(n)) : 0n;
   }
   if (t === "int" || t === "integer") return Math.trunc(toNumber(val));
   if (t === "float" || t === "double" || t === "real" || t === "decimal" || t === "numeric") return toNumber(val);
