@@ -34,7 +34,7 @@ export class FragmentDO extends DurableObject<Env> {
   private wasmEngine!: WasmEngine;
   /** Footer cache keyed by r2Key — survives across scans while the DO is alive. */
   private footerCache = new Map<string, TableMeta>();
-  private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -46,10 +46,14 @@ export class FragmentDO extends DurableObject<Env> {
     );
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    this.initialized = true;
+  private ensureInitialized(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
 
+  private async doInit(): Promise<void> {
     // Restore footer cache from SQLite (survives hibernation)
     const stored = await this.ctx.storage.list<TableMeta>({ prefix: "frag:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("frag:", ""), meta);
