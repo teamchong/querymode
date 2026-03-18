@@ -1,13 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env, TableMeta, QueryResult, Row } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
-import { canSkipPage } from "./decode.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, autoCoalesceGap, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
 import { R2SpillBackend } from "./r2-spill.js";
 import {
   type Operator, type RowBatch,
   buildEdgePipeline, drainPipeline,
+  canSkipPageMultiCol,
 } from "./operators.js";
 import { mergeQueryResults } from "./merge.js";
 import { resolveBucket } from "./bucket.js";
@@ -88,21 +88,14 @@ export class FragmentDO extends DurableObject<Env> {
       }
 
       // Build byte ranges for each page, skipping uniformly across all columns.
-      // A page is skipped only if any AND filter eliminates it — same for all columns.
+      // Uses canSkipPageMultiCol which handles both AND filters and OR filterGroups.
       const maxPages = cols.reduce((m, c) => Math.max(m, c.pages.length), 0);
       const keptPageIndices: number[] = [];
       for (let pi = 0; pi < maxPages; pi++) {
-        let skip = false;
-        if (!query.vectorSearch) {
-          for (const f of query.filters) {
-            const col = cols.find(c => c.name === f.column);
-            if (!col) continue;
-            const page = col.pages[pi];
-            if (!page) continue;
-            if (canSkipPage(page, [f], f.column)) { skip = true; break; }
-          }
+        if (!query.vectorSearch && canSkipPageMultiCol(cols, pi, query.filters, query.filterGroups)) {
+          totalPagesSkipped += cols.length;
+          continue;
         }
-        if (skip) { totalPagesSkipped += cols.length; continue; }
         keptPageIndices.push(pi);
       }
 
