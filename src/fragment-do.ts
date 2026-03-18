@@ -223,7 +223,7 @@ export class FragmentDO extends DurableObject<Env> {
 
         const outputColumns = query.projections.length > 0
           ? query.projections
-          : (fragments[0]?.meta.columns.map(c => c.name) ?? []);
+          : (fragments.length > 0 ? fragments[0].meta.columns.map(c => c.name) : []);
 
         const FRAG_MEMORY_BUDGET = 32 * 1024 * 1024;
         const pipeline = buildEdgePipeline(batchSource, query, outputColumns, {
