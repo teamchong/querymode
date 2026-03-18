@@ -180,6 +180,25 @@ describe("canSkipPage", () => {
   it("does not skip range page for NOT IN", () => {
     expect(canSkipPage(page, [{ column: "x", op: "not_in", value: [10, 50, 90] }], "x")).toBe(false);
   });
+
+  it("skips page with IS NULL when nullCount is 0", () => {
+    expect(canSkipPage(page, [{ column: "x", op: "is_null", value: 0 }], "x")).toBe(true);
+  });
+
+  it("does not skip page with IS NULL when nullCount > 0", () => {
+    const withNulls: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 5, minValue: 10, maxValue: 90 };
+    expect(canSkipPage(withNulls, [{ column: "x", op: "is_null", value: 0 }], "x")).toBe(false);
+  });
+
+  it("skips page with IS NOT NULL when all rows are null", () => {
+    const allNull: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 50 };
+    expect(canSkipPage(allNull, [{ column: "x", op: "is_not_null", value: 0 }], "x")).toBe(true);
+  });
+
+  it("does not skip page with IS NOT NULL when some rows are non-null", () => {
+    const withNulls: PageInfo = { byteOffset: 0n, byteLength: 100, rowCount: 50, nullCount: 5, minValue: 10, maxValue: 90 };
+    expect(canSkipPage(withNulls, [{ column: "x", op: "is_not_null", value: 0 }], "x")).toBe(false);
+  });
 });
 
 describe("assembleRows", () => {

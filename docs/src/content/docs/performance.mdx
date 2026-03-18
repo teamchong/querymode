@@ -106,6 +106,8 @@ This is automatic — no configuration needed. Supported filter ops:
 | `not_in` | Uniform page (min = max) appears in NOT IN list |
 | `between` | Page range and filter range don't overlap |
 | `not_between` | Entire page range inside the excluded range |
+| `is_null` | Page has zero null values (nullCount = 0) |
+| `is_not_null` | Page is entirely null (nullCount = rowCount) |
 
 String columns also have min/max stats (lexicographic). `like` and `not_like` filters don't benefit from page skip.
 

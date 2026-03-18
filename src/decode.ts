@@ -9,7 +9,9 @@ import { decodeLanceV2Utf8 } from "./lance-v2.js";
 export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"], columnName: string): boolean {
   for (const filter of filters) {
     if (filter.column !== columnName) continue;
-    if (filter.op === "is_null" || filter.op === "is_not_null") continue;
+    // is_null: skip when page has no nulls; is_not_null: skip when page is all nulls
+    if (filter.op === "is_null") { if (page.nullCount === 0) return true; continue; }
+    if (filter.op === "is_not_null") { if (page.nullCount === page.rowCount) return true; continue; }
     if (page.minValue === undefined || page.maxValue === undefined) continue;
 
     let { minValue: min, maxValue: max } = page;
