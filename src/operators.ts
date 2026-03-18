@@ -2109,7 +2109,7 @@ export class WasmAggregateOperator implements Operator {
       const hasBig = a.bigSum !== undefined || a.bigMin !== undefined || a.bigMax !== undefined;
       switch (agg.fn) {
         case "sum": row[alias] = a.count === 0 ? null : (hasBig ? a.bigSum! : a.sum); break;
-        case "avg": row[alias] = a.count === 0 ? null : (hasBig ? Number(a.bigSum!) / a.count : a.sum / a.count); break;
+        case "avg": row[alias] = a.count === 0 ? null : (hasBig ? bigIntAvg(a.bigSum!, a.count) : a.sum / a.count); break;
         case "min": row[alias] = a.count === 0 ? null : (a.bigMin !== undefined ? a.bigMin : a.min); break;
         case "max": row[alias] = a.count === 0 ? null : (a.bigMax !== undefined ? a.bigMax : a.max); break;
         case "count": row[alias] = a.count; break;
