@@ -85,7 +85,8 @@ interface ColumnarBatch {
 | `decodeColumnarBatch(qmcb)` | Decode QMCB to `ColumnarBatch` |
 | `columnarBatchToRows(batch)` | Materialize to `Row[]` (response boundary only) |
 | `columnarKWayMerge(batches, col, dir, limit)` | Sorted merge on typed arrays |
-| `concatColumnarBatches(batches)` | Concatenate without re-encoding |
+| `concatColumnarBatches(batches)` | Concatenate decoded batches |
+| `concatQMCBBatches(batches)` | Concatenate raw QMCB ArrayBuffers (no decode needed) |
 | `sliceColumnarBatch(batch, offset, limit)` | Offset/limit without `Row[]` |
 | `readColumnValue(col, row)` | Read single value from column |
 
