@@ -9,6 +9,7 @@
 
 import type { QueryExecutor } from "../client.js";
 import type { Row } from "../types.js";
+import { QueryModeError } from "../errors.js";
 import { buildSqlDataFrame } from "../sql/index.js";
 import {
   parseStartupMessage,
@@ -162,7 +163,8 @@ export class PgConnectionHandler {
       this.send(readyForQuery());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.send(errorResponse(msg));
+      const sqlState = err instanceof QueryModeError ? errorCodeToSqlState(err.code) : "42000";
+      this.send(errorResponse(msg, sqlState));
       this.send(readyForQuery());
     }
   }
@@ -189,4 +191,21 @@ function formatValue(val: unknown): string | null {
     return "[" + Array.from(val).join(",") + "]";
   }
   return String(val);
+}
+
+/** Map QueryModeError.code to PostgreSQL SQLSTATE codes. */
+function errorCodeToSqlState(code: string): string {
+  switch (code) {
+    case "TABLE_NOT_FOUND": return "42P01";   // undefined_table
+    case "COLUMN_NOT_FOUND": return "42703";   // undefined_column
+    case "INVALID_FORMAT": return "08P01";     // protocol_violation
+    case "INVALID_FILTER":
+    case "INVALID_AGGREGATE": return "42601";  // syntax_error
+    case "SCHEMA_MISMATCH": return "42804";    // datatype_mismatch
+    case "QUERY_TIMEOUT":
+    case "NETWORK_TIMEOUT": return "57014";    // query_canceled
+    case "MEMORY_EXCEEDED": return "53200";    // out_of_memory
+    case "QUERY_FAILED": return "XX000";       // internal_error
+    default: return "42000";
+  }
 }
