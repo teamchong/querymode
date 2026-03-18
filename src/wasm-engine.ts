@@ -1071,7 +1071,7 @@ export function queryToSql(query: QueryDescriptor): string {
     for (let i = 0; i < vs.queryVector.length; i++) { if (i > 0) vecStr += ","; vecStr += vs.queryVector[i]; }
     vecStr += "]";
     const hasWhere = andConditions.length > 0 || orGroupConditions.length > 0;
-    parts.push(`${hasWhere ? "AND" : "WHERE"} ${quote(vs.column)} NEAR ${vecStr}`);
+    parts.push(`${hasWhere ? "AND" : "WHERE"} ${quote(vs.column)} NEAR ${vecStr} TOPK ${vs.topK}`);
   }
 
   if (query.groupBy?.length) parts.push(`GROUP BY ${query.groupBy.map(quote).join(", ")}`);

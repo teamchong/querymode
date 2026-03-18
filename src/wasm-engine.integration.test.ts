@@ -398,4 +398,13 @@ describe("queryToSql", () => {
     const sql = queryToSql({ ...base, offset: 0 });
     expect(sql).toContain("OFFSET 0");
   });
+
+  it("includes TOPK in vector search SQL", () => {
+    const sql = queryToSql({
+      ...base,
+      vectorSearch: { column: "embedding", queryVector: new Float32Array([0.1, 0.2, 0.3]), topK: 10 },
+    });
+    expect(sql).toContain("NEAR [");
+    expect(sql).toContain("TOPK 10");
+  });
 });
