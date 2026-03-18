@@ -34,6 +34,15 @@ export interface PartialAggState {
   bigMax?: bigint;
 }
 
+/** Compute AVG from bigint sum + number sum without losing precision for large sums. */
+function bigAvg(bigSum: bigint, numSum: number, count: number): number {
+  const bigCount = BigInt(count);
+  // Integer part from bigint division, remainder handled as float
+  const quotient = Number(bigSum / bigCount);
+  const remainder = Number(bigSum % bigCount);
+  return quotient + (remainder + numSum) / count;
+}
+
 export function initPartialAggState(
   fn: PartialAggState["fn"],
   column: string,
@@ -102,7 +111,7 @@ function resolveValue(state: PartialAggState): number | bigint | string | null {
   const hasBig = state.bigSum !== undefined;
   switch (state.fn) {
     case "sum": return hasBig ? (state.bigSum! + BigInt(Math.trunc(state.sum))) : state.sum;
-    case "avg": return hasBig ? (Number(state.bigSum!) + state.sum) / state.count : state.sum / state.count;
+    case "avg": return hasBig ? bigAvg(state.bigSum!, state.sum, state.count) : state.sum / state.count;
     case "min": return state.strMin !== undefined ? state.strMin : hasBig ? state.bigMin! : state.min;
     case "max": return state.strMax !== undefined ? state.strMax : hasBig ? state.bigMax! : state.max;
     case "stddev": return state.count < 2 ? null : Math.sqrt(Math.max(0, (state.m2 ?? 0) / state.count));

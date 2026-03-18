@@ -40,6 +40,13 @@ import {
   type PartialAgg,
 } from "./partial-agg.js";
 
+/** Compute AVG from bigint sum without losing precision for sums > 2^53.
+ *  Divides in BigInt space, handles remainder as float. */
+function bigIntAvg(sum: bigint, count: number): number {
+  const bigCount = BigInt(count);
+  return Number(sum / bigCount) + Number(sum % bigCount) / count;
+}
+
 /** A batch of rows flowing through the pipeline. */
 export type RowBatch = Row[];
 
@@ -1109,7 +1116,7 @@ export class WindowOperator implements Operator {
         }
         switch (fn) {
           case "sum": rows[indices[i]][alias] = runCount === 0 ? null : runSum; break;
-          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : Number(runSum) / runCount; break;
+          case "avg": rows[indices[i]][alias] = runCount === 0 ? null : bigIntAvg(runSum, runCount); break;
           case "min": rows[indices[i]][alias] = runMin ?? null; break;
           case "max": rows[indices[i]][alias] = runMax ?? null; break;
           case "count": rows[indices[i]][alias] = runCount; break;
@@ -1133,7 +1140,7 @@ export class WindowOperator implements Operator {
       }
       switch (fn) {
         case "sum": rows[indices[i]][alias] = count === 0 ? null : sum; break;
-        case "avg": rows[indices[i]][alias] = count === 0 ? null : Number(sum) / count; break;
+        case "avg": rows[indices[i]][alias] = count === 0 ? null : bigIntAvg(sum, count); break;
         case "min": rows[indices[i]][alias] = min ?? null; break;
         case "max": rows[indices[i]][alias] = max ?? null; break;
         case "count": rows[indices[i]][alias] = count; break;
