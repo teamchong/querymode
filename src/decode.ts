@@ -36,7 +36,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (filter.value.every(v => {
           let cv = v;
           if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
-          else if (typeof min === "number" && typeof cv === "bigint") cv = Number(cv);
+          else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
           return cv < min || cv > max;
         })) return true;
         break;
@@ -47,7 +47,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (filter.value.some(v => {
           let cv = v;
           if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
-          else if (typeof min === "number" && typeof cv === "bigint") cv = Number(cv);
+          else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
           return cv === min;
         })) return true;
         break;
