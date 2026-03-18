@@ -145,20 +145,20 @@ export interface WasmExports {
   ivfPqFree(handle: number): void;
 }
 
-export async function instantiateWasm(wasmModule: WebAssembly.Module): Promise<WasmEngine> {
+export async function instantiateWasm(wasmModule: WebAssembly.Module, opts?: { onLog?: (msg: string) => void }): Promise<WasmEngine> {
   let mem: { buffer: ArrayBuffer } | undefined;
+  const onLog = opts?.onLog;
   const instance = await WebAssembly.instantiate(wasmModule, {
     env: {
       opfs_open: () => 0, opfs_close: () => {}, opfs_read: () => 0,
       opfs_write: () => 0, opfs_size: () => 0, opfs_flush: () => {}, opfs_truncate: () => {},
-      js_log: (ptr: number, len: number) => {
-        try {
-          if (mem) {
-            const msg = textDecoder.decode(new Uint8Array(mem.buffer, ptr, len));
-            console.log(`[WASM] ${msg}`);
+      js_log: onLog
+        ? (ptr: number, len: number) => {
+            try {
+              if (mem) onLog(textDecoder.decode(new Uint8Array(mem.buffer, ptr, len)));
+            } catch { /* ignore */ }
           }
-        } catch { /* ignore */ }
-      },
+        : () => {},
     },
   });
   mem = (instance.exports as unknown as WasmExports).memory;

@@ -23,6 +23,7 @@ export {
   ComputedColumnOperator, HashJoinOperator, ExternalSortOperator,
   InMemorySortOperator, WindowOperator, DistinctOperator, SetOperator,
   LimitOperator, SubqueryInOperator,
+  ScanOperator,
   drainPipeline, buildPipeline, buildEdgePipeline, FsSpillBackend,
   buildKeptPageIndices, canSkipPageMultiCol,
 } from "./operators.js";
