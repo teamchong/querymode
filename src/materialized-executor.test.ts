@@ -129,6 +129,17 @@ describe("MaterializedExecutor", () => {
       expect(result.rows[4].name).toBe("Eve");
     });
 
+    it("sorts bigint values numerically (not lexicographically)", async () => {
+      const bigData = [
+        { id: 1n, val: 9n },
+        { id: 2n, val: 10n },
+        { id: 3n, val: 2n },
+        { id: 4n, val: 100n },
+      ];
+      const result = await createFromJSON(bigData).sort("val", "asc").collect();
+      expect(result.rows.map(r => r.val)).toEqual([2n, 9n, 10n, 100n]);
+    });
+
     it("pushes nulls to end", async () => {
       const dataWithNull = [
         { id: 1, val: null },

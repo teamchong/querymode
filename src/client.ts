@@ -15,7 +15,7 @@ import type {
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
-import { NULL_SENTINEL } from "./types.js";
+import { NULL_SENTINEL, rowComparator } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
 import { rowPassesFilters } from "./decode.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
@@ -963,15 +963,7 @@ export class MaterializedExecutor implements QueryExecutor {
 
     // Apply sort
     if (query.sortColumn) {
-      const col = query.sortColumn;
-      const desc = query.sortDirection === "desc";
-      rows.sort((a, b) => {
-        const av = a[col], bv = b[col];
-        if (av === null || av === undefined) return 1;
-        if (bv === null || bv === undefined) return -1;
-        if (typeof av === "number" && typeof bv === "number") return desc ? bv - av : av - bv;
-        return desc ? String(bv).localeCompare(String(av)) : String(av).localeCompare(String(bv));
-      });
+      rows.sort(rowComparator(query.sortColumn, query.sortDirection === "desc"));
     }
 
     // Apply offset + limit
