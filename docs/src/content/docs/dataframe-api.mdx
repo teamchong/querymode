@@ -99,6 +99,21 @@ df.window({
 
 Supported: `row_number`, `rank`, `dense_rank`, `lag`, `lead`, rolling `sum`/`avg`/`min`/`max`/`count` with frame specification.
 
+Rolling aggregates with frame:
+
+```typescript
+df.window({
+  fn: "avg",
+  column: "amount",
+  partitionBy: ["region"],
+  orderBy: [{ column: "created_at", direction: "asc" }],
+  alias: "rolling_avg",
+  frame: { type: "rows", start: -2, end: 0 }, // 3-row trailing window
+})
+```
+
+Frame bounds: numeric offsets (negative = preceding, positive = following), `"unbounded"`, or `"current"`.
+
 ## Computed columns
 
 ```typescript

@@ -101,6 +101,20 @@ SELECT name, LAG(amount, 1) OVER (ORDER BY created_at) AS prev_amount FROM order
 
 `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, and rolling `SUM`/`AVG`/`MIN`/`MAX`/`COUNT` with frame specification.
 
+Frame specification supports `ROWS` and `RANGE` with `UNBOUNDED PRECEDING`, `N PRECEDING`, `CURRENT ROW`, `N FOLLOWING`, `UNBOUNDED FOLLOWING`:
+
+```sql
+-- Rolling 3-row average
+SELECT name, AVG(amount) OVER (
+  ORDER BY created_at ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+) AS rolling_avg FROM orders
+
+-- Running total
+SELECT name, SUM(amount) OVER (
+  PARTITION BY region ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+) AS running_total FROM orders
+```
+
 ### Common Table Expressions (CTEs)
 
 ```sql
