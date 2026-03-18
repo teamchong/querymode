@@ -37,6 +37,28 @@ describe("createFromJSON", () => {
   });
 });
 
+describe("DataFrame.drop", () => {
+  it("removes specified columns from result", async () => {
+    const data = [
+      { id: 1, name: "Alice", age: 30 },
+      { id: 2, name: "Bob", age: 25 },
+    ];
+    const df = createFromJSON(data).drop("age");
+    const result = await df.collect();
+    expect(result.columns).toEqual(["id", "name"]);
+    expect(result.rows[0]).toEqual({ id: 1, name: "Alice" });
+    expect(result.rows[1]).toEqual({ id: 2, name: "Bob" });
+  });
+
+  it("removes multiple columns", async () => {
+    const data = [{ id: 1, name: "Alice", age: 30, score: 95 }];
+    const df = createFromJSON(data).drop("age", "score");
+    const result = await df.collect();
+    expect(result.columns).toEqual(["id", "name"]);
+    expect(result.rows[0]).toEqual({ id: 1, name: "Alice" });
+  });
+});
+
 describe("createFromCSV", () => {
   it("parses comma-delimited CSV", async () => {
     const csv = "id,name,age\n1,Alice,30\n2,Bob,25\n3,Charlie,35";

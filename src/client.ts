@@ -490,7 +490,9 @@ export class DataFrame<T extends Row = Row> {
 
     // If no progress callback, fast path
     if (!opts?.onProgress) {
-      return this._executor.execute(desc) as Promise<QueryResult<T>>;
+      const result = await this._executor.execute(desc) as QueryResult<T>;
+      this.applyDrops(result);
+      return result;
     }
 
     // With progress: use streaming if available, otherwise fallback
@@ -503,7 +505,7 @@ export class DataFrame<T extends Row = Row> {
         batches++;
         onProgress({ batchesProcessed: batches, rowsCollected: allRows.length, bytesRead: 0 });
       }
-      return {
+      const result = {
         rows: allRows,
         rowCount: allRows.length,
         columns: allRows.length > 0 ? Object.keys(allRows[0]) : desc.projections,
@@ -511,12 +513,30 @@ export class DataFrame<T extends Row = Row> {
         pagesSkipped: 0,
         durationMs: 0,
       } as QueryResult<T>;
+      this.applyDrops(result);
+      return result;
     }
 
     // Fallback: single execute, report once at the end
     const result = await this._executor.execute(desc) as QueryResult<T>;
     onProgress({ batchesProcessed: 1, rowsCollected: result.rowCount, bytesRead: result.bytesRead });
+    this.applyDrops(result);
     return result;
+  }
+
+  /** Strip columns marked for drop via __drop__ computed columns. */
+  private applyDrops(result: QueryResult<T>): void {
+    const dropCols = this._computedColumns
+      .filter(c => c.alias.startsWith("__drop__"))
+      .map(c => c.alias.slice(8));
+    if (dropCols.length === 0) return;
+    const dropSet = new Set(dropCols);
+    const markerSet = new Set(dropCols.map(c => `__drop__${c}`));
+    for (const row of result.rows) {
+      for (const key of dropSet) delete (row as Record<string, unknown>)[key];
+      for (const key of markerSet) delete (row as Record<string, unknown>)[key];
+    }
+    result.columns = result.columns.filter(c => !dropSet.has(c) && !markerSet.has(c));
   }
 
   /** Alias for .collect() — backward compatibility with TableQuery.exec(). */
