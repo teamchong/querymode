@@ -409,7 +409,7 @@ export class QueryDO extends DurableObject<Env> {
   private resultCache = new VipCache<string, QueryResult>(RESULT_CACHE_MAX, RESULT_VIP_THRESHOLD);
   private wasmEngine!: WasmEngine;
   private activeFragmentSlots = new Set<number>(); // slots currently scanning
-  private initialized = false;
+  private initPromise: Promise<void> | null = null;
   private registeredWithMaster = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -524,10 +524,14 @@ export class QueryDO extends DurableObject<Env> {
     }
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    this.initialized = true;
+  private ensureInitialized(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
 
+  private async doInit(): Promise<void> {
     const stored = await this.ctx.storage.list<TableMeta>({ prefix: "table:" });
     for (const [key, meta] of stored) this.footerCache.set(key.replace("table:", ""), meta);
 

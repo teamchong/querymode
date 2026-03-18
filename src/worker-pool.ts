@@ -159,7 +159,7 @@ export class WorkerPool {
   ): Promise<R2Partition[]> {
     const results = await Promise.all(
       partitions.map(async (partition, i) => {
-        const workerId = `worker-${taskName}-${i}-${Date.now()}`;
+        const workerId = `worker-${taskName}-${i}-${crypto.randomUUID()}`;
         const id = this.doNamespace.idFromName(workerId);
         const handle = this.doNamespace.get(id) as unknown as WorkerDORpc;
         return handle.executeTask({
@@ -187,7 +187,7 @@ export class WorkerPool {
 
     const results = await Promise.all(
       chunks.map(async (chunk, ci) => {
-        const coordId = `coord-${taskName}-${ci}-${Date.now()}`;
+        const coordId = `coord-${taskName}-${ci}-${crypto.randomUUID()}`;
         const id = this.doNamespace.idFromName(coordId);
         const handle = this.doNamespace.get(id) as unknown as WorkerDORpc;
         return handle.executeCoordinator({
@@ -222,7 +222,7 @@ export class WorkerPool {
 
     const results = await Promise.all(
       superChunks.map(async (superChunk, sci) => {
-        const superCoordId = `supercoord-${taskName}-${sci}-${Date.now()}`;
+        const superCoordId = `supercoord-${taskName}-${sci}-${crypto.randomUUID()}`;
         const id = this.doNamespace.idFromName(superCoordId);
         const handle = this.doNamespace.get(id) as unknown as WorkerDORpc;
         return handle.executeSuperCoordinator({
