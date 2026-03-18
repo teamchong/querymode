@@ -810,7 +810,7 @@ export class WasmEngine {
    * Build a Lance fragment file from column data.
    * Returns the raw Lance binary bytes ready to write to R2/disk.
    */
-  buildFragment(columns: { name: string; dtype: string; values: ArrayBufferLike }[]): Uint8Array {
+  buildFragment(columns: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[]): Uint8Array {
     // Estimate capacity: sum of all values plus overhead
     let totalBytes = 0;
     for (const col of columns) totalBytes += col.values.byteLength;
@@ -908,8 +908,8 @@ export class WasmEngine {
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
           const byteCount = col.values.byteLength;
-          // rowCount must be provided externally for exact count; default to byteLength * 8
-          const rowCount = (col as { rowCount?: number }).rowCount ?? byteCount * 8;
+          // rowCount must be provided for exact count; byteCount * 8 overestimates when rows % 8 != 0
+          const rowCount = col.rowCount ?? byteCount * 8;
           result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, byteCount, rowCount, 0);
           break;
         }

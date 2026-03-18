@@ -110,7 +110,7 @@ export class LocalExecutor implements QueryExecutor {
 
     // Convert rows to column arrays
     const columnNames = Object.keys(rows[0]);
-    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike }[] = [];
+    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[] = [];
 
     for (const colName of columnNames) {
       const sample = rows.find(r => r[colName] != null)?.[colName];
@@ -131,9 +131,12 @@ export class LocalExecutor implements QueryExecutor {
         for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as bigint : 0n; }
         columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
       } else if (typeof sample === "boolean") {
-        const arr = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v === null || v === undefined ? 0n : v ? 1n : 0n; }
-        columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
+        const byteCount = Math.ceil(rows.length / 8);
+        const boolBuf = new Uint8Array(byteCount);
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
+        }
+        columnArrays.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
       } else if (typeof sample === "string") {
         const enc = textEncoder;
         const parts: Uint8Array[] = [];

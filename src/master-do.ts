@@ -148,7 +148,7 @@ export class MasterDO extends DurableObject<Env> {
 
     // Convert row-major to column-major
     const columnNames = Object.keys(rows[0]);
-    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike }[] = [];
+    const columnArrays: { name: string; dtype: string; values: ArrayBufferLike; rowCount?: number }[] = [];
 
     for (const colName of columnNames) {
       const sampleValue = rows.find(r => r[colName] != null)?.[colName];
@@ -190,7 +190,7 @@ export class MasterDO extends DurableObject<Env> {
         for (let i = 0; i < rows.length; i++) {
           if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
         }
-        columnArrays.push({ name: colName, dtype: "bool", values: boolBuf.buffer });
+        columnArrays.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
       }
     }
 
