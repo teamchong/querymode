@@ -207,6 +207,43 @@ describe("SQL Integration - buildSqlDataFrame", () => {
   });
 });
 
+describe("SQL Integration - HAVING with projections", () => {
+  it("HAVING references aggregate column not in SELECT", async () => {
+    const df = buildSqlDataFrame(
+      "SELECT dept FROM data GROUP BY dept HAVING SUM(salary) > 300000",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    // eng: 120k+95k+130k = 345k > 300k ✓, sales: 110k+105k = 215k < 300k ✗
+    expect(result.rowCount).toBe(1);
+    expect(result.rows[0].dept).toBe("eng");
+    // sum_salary should NOT be in final output since it's not in SELECT
+    expect(result.columns).toEqual(["dept"]);
+  });
+
+  it("HAVING with COUNT not in SELECT", async () => {
+    const df = buildSqlDataFrame(
+      "SELECT dept FROM data GROUP BY dept HAVING COUNT(*) >= 3",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    // eng: 3 rows ✓, sales: 2 rows ✗
+    expect(result.rowCount).toBe(1);
+    expect(result.rows[0].dept).toBe("eng");
+  });
+
+  it("ORDER BY column not in SELECT", async () => {
+    const df = buildSqlDataFrame(
+      "SELECT name FROM data ORDER BY age ASC, salary DESC",
+      makeExecutor(),
+    );
+    const result = await df.collect();
+    // Bob(25), Diana(28), Alice(30), Eve(32), Charlie(35)
+    expect(result.rows.map(r => r.name)).toEqual(["Bob", "Diana", "Alice", "Eve", "Charlie"]);
+    expect(result.columns).toEqual(["name"]);
+  });
+});
+
 describe("SQL Integration - CTEs", () => {
   it("CTE inlines filters into main query", async () => {
     const df = buildSqlDataFrame(

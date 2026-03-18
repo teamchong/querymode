@@ -130,6 +130,10 @@ export class LocalExecutor implements QueryExecutor {
         const arr = new BigInt64Array(rows.length);
         for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as bigint;
         columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
+      } else if (typeof sample === "boolean") {
+        const arr = new BigInt64Array(rows.length);
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v === null || v === undefined ? 0n : v ? 1n : 0n; }
+        columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
       } else if (typeof sample === "string") {
         const enc = textEncoder;
         const parts: Uint8Array[] = [];

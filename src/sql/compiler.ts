@@ -152,8 +152,10 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
   }
 
   // HAVING — rewrite aggregate calls to column refs for post-aggregation evaluation
+  // Also extract any aggregates referenced in HAVING that aren't already in SELECT
   let havingExpr: SqlExpr | undefined;
   if (stmt.groupBy?.having) {
+    extractAggregatesFromExpr(stmt.groupBy.having, aggregates);
     havingExpr = rewriteAggregatesAsColumns(stmt.groupBy.having);
   }
 
@@ -233,6 +235,48 @@ function extractColumnName(expr: SqlExpr): string | undefined {
 
 function isAggregateCall(name: string): boolean {
   return AGGREGATE_FNS.has(name.toUpperCase());
+}
+
+/** Walk an expression and add any aggregate calls to the list (deduped by fn+column). */
+function extractAggregatesFromExpr(expr: SqlExpr, aggregates: AggregateOp[]): void {
+  switch (expr.kind) {
+    case "call":
+      if (isAggregateCall(expr.name)) {
+        const agg = compileAggregate(expr);
+        // Dedupe: don't add if an equivalent aggregate already exists
+        const exists = aggregates.some(a => a.fn === agg.fn && a.column === agg.column);
+        if (!exists) aggregates.push(agg);
+      }
+      for (const arg of expr.args) extractAggregatesFromExpr(arg, aggregates);
+      return;
+    case "binary":
+      extractAggregatesFromExpr(expr.left, aggregates);
+      extractAggregatesFromExpr(expr.right, aggregates);
+      return;
+    case "unary":
+      extractAggregatesFromExpr(expr.operand, aggregates);
+      return;
+    case "between":
+      extractAggregatesFromExpr(expr.expr, aggregates);
+      extractAggregatesFromExpr(expr.low, aggregates);
+      extractAggregatesFromExpr(expr.high, aggregates);
+      return;
+    case "in_list":
+      extractAggregatesFromExpr(expr.expr, aggregates);
+      for (const v of expr.values) extractAggregatesFromExpr(v, aggregates);
+      return;
+    case "case_expr":
+      if (expr.operand) extractAggregatesFromExpr(expr.operand, aggregates);
+      for (const w of expr.whenClauses) {
+        extractAggregatesFromExpr(w.condition, aggregates);
+        extractAggregatesFromExpr(w.result, aggregates);
+      }
+      if (expr.elseResult) extractAggregatesFromExpr(expr.elseResult, aggregates);
+      return;
+    case "cast":
+      extractAggregatesFromExpr(expr.expr, aggregates);
+      return;
+  }
 }
 
 function compileAggregate(expr: SqlExpr & { kind: "call" }, alias?: string): AggregateOp {

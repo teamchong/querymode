@@ -55,10 +55,13 @@ export class SqlWrappingExecutor implements QueryExecutor {
       delete innerQuery.groupBy;
     }
 
-    // If we have computed expressions, we need all columns for evaluation
-    // — strip projections from inner query and apply them after computing
+    // Strip projections when we need columns not in SELECT:
+    // - computedExprs reference arbitrary columns for CASE/CAST/arithmetic
+    // - havingExpr references aggregate columns that may not be in SELECT
+    // - multi-column ORDER BY may sort on columns not in SELECT
+    // Projections are re-applied after HAVING and ORDER BY (step 5b).
     let savedProjections: string[] | undefined;
-    if (this.opts.computedExprs && this.opts.computedExprs.length > 0) {
+    if ((this.opts.computedExprs && this.opts.computedExprs.length > 0) || this.opts.havingExpr || hasMultiSort) {
       savedProjections = innerQuery.projections;
       innerQuery.projections = [];
     }
@@ -105,16 +108,6 @@ export class SqlWrappingExecutor implements QueryExecutor {
       });
     }
 
-    // 3b. Apply deferred projections (after computed expressions added their columns)
-    if (savedProjections && savedProjections.length > 0) {
-      const keep = new Set([...savedProjections, ...((this.opts.computedExprs ?? []).map(e => e.alias))]);
-      rows = rows.map(row => {
-        const out: Row = {};
-        for (const k of keep) if (k in row) out[k] = row[k];
-        return out;
-      });
-    }
-
     // 4. HAVING filter (post-aggregation)
     if (this.opts.havingExpr) {
       const havingExpr = this.opts.havingExpr;
@@ -143,13 +136,26 @@ export class SqlWrappingExecutor implements QueryExecutor {
       });
     }
 
+    // 5b. Apply deferred projections (after HAVING/ORDER BY which may reference non-SELECT columns)
+    if (savedProjections && savedProjections.length > 0) {
+      const keep = new Set([...savedProjections, ...((this.opts.computedExprs ?? []).map(e => e.alias))]);
+      rows = rows.map(row => {
+        const out: Row = {};
+        for (const k of keep) if (k in row) out[k] = row[k];
+        return out;
+      });
+    }
+
     // 6. Re-apply offset + limit (stripped when post-filtering or multi-sorting)
     if (needsExternalLimit) {
       if (externalOffset) rows = rows.slice(externalOffset);
       if (externalLimit !== undefined) rows = rows.slice(0, externalLimit);
     }
 
-    return { ...result, rows, rowCount: rows.length };
+    const finalColumns = savedProjections && savedProjections.length > 0
+      ? [...new Set([...savedProjections, ...((this.opts.computedExprs ?? []).map(e => e.alias))])]
+      : result.columns;
+    return { ...result, rows, rowCount: rows.length, columns: finalColumns };
   }
 
   async explain(query: QueryDescriptor): Promise<import("../types.js").ExplainResult> {
