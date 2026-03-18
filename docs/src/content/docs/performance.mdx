@@ -8,12 +8,12 @@ description: How to get the most out of QueryMode — pruning, budgets, operator
 Every query flows through these stages. Each is an optimization opportunity:
 
 ```
-1. Partition pruning  → skip entire files (O(1) catalog lookup)
-2. Min/max pruning    → skip files by column stats
-3. Page-level skip    → skip pages within a file by page stats
-4. WASM SIMD scan     → decode + filter in one pass (no Row[] intermediate)
-5. Columnar merge     → k-way merge on typed arrays (no Row[] until exit)
-6. Row materialization → only at final response boundary
+1. Partition pruning    → skip entire files by partition key (O(1) catalog lookup)
+2. Fragment-level skip  → skip files by column min/max across all pages (canSkipFragment)
+3. Page-level skip      → skip pages within a file by per-page stats (canSkipPage)
+4. WASM SIMD scan       → decode + filter in one pass (no Row[] intermediate)
+5. Columnar merge       → k-way merge on typed arrays (no Row[] until exit)
+6. Row materialization  → only at final response boundary
 ```
 
 The most expensive step is always I/O (R2 reads). Everything else optimizes around reducing I/O.
@@ -40,15 +40,14 @@ Operators that accumulate state accept a memory budget (bytes). When exceeded, t
 
 | Operator | Default budget | What it accumulates |
 |----------|---------------|-------------------|
-| `ExternalSortOperator` | 32 MB | All rows until sorted |
-| `HashJoinOperator` | 32 MB | Build side hash table |
+| `ExternalSortOperator` | 256 MB | All rows until sorted |
+| `HashJoinOperator` | 256 MB | Build side hash table |
 | `AggregateOperator` | unbounded | Group states (usually small) |
 | `DistinctOperator` | unbounded | Seen-values hash set |
 
 **Sizing guidance:**
-- **32 MB** works for most queries up to ~5M rows of numeric data
-- **128 MB** for string-heavy datasets or large joins
-- Cloudflare DO limit is 128 MB total — leave headroom for page buffers and WASM memory
+- **256 MB** (default) works for most queries — covers ~20M rows of numeric data or ~5M string rows
+- Reduce to **64–128 MB** on Cloudflare DOs to leave headroom for page buffers and WASM memory (DO limit is 128 MB)
 - Local mode (Node/Bun) has no practical limit — set budget to available RAM
 
 ```typescript
@@ -84,6 +83,20 @@ The DataFrame API picks automatically: `.sort().limit(k)` uses TopK when k is sm
 | No GROUP BY | Single accumulator per aggregate — O(1) memory |
 | GROUP BY with few groups (< 10K) | Hash map of accumulators — fast |
 | GROUP BY with many groups (> 100K) | Memory grows with cardinality — consider pre-filtering |
+
+## Fragment-level skip
+
+Before reading any page data, `canSkipFragment` aggregates min/max/nullCount across all pages in a fragment and checks if the entire fragment can be eliminated. This reuses the same `canSkipPage` logic but on fragment-wide stats — one check to skip potentially thousands of pages.
+
+```
+Fragment columns: [{min: 100, max: 500}, {min: 600, max: 900}]  →  aggregated: min=100, max=900
+Filter: amount > 1000
+→ Skip entire fragment (no R2 reads at all)
+```
+
+Fragment-level skip is automatic and costs nothing — it runs before any R2 I/O. For datasets with many small fragments (e.g., append-heavy workloads), this is often more effective than page-level skip because it eliminates entire R2 reads rather than individual pages within a read.
+
+In explain output, `fragmentsSkipped` counts fragments eliminated by both partition pruning and fragment-level skip combined.
 
 ## Page-level skip
 
@@ -175,7 +188,7 @@ Key fields in `ExplainResult`:
 |-------|------------------|
 | `totalRows` | Total rows in the table |
 | `estimatedRows` | Rows remaining after pruning |
-| `fragments` / `fragmentsSkipped` | How many fragments partition pruning eliminated |
+| `fragments` / `fragmentsSkipped` | Fragments eliminated by partition pruning + fragment-level skip |
 | `pagesTotal` / `pagesSkipped` | How many pages min/max pruning eliminated |
 | `estimatedBytes` / `estimatedR2Reads` | Actual I/O cost (bytes and coalesced R2 reads) |
 | `filters[].pushable` | Whether each filter is pushed to the scan layer |
@@ -190,7 +203,7 @@ Key fields in `ExplainResult`:
 
 CI runs head-to-head benchmarks against DuckDB on every push. Typical results at 1M-5M rows:
 
-| Operation | QueryMode (Miniflare) | DuckDB (native) |
+| Operation | QueryMode (workerd) | DuckDB (native) |
 |-----------|----------------------|-----------------|
 | Filter (numeric) | ~200ms | ~100ms |
 | GROUP BY + sum | ~300ms | ~150ms |

@@ -28,7 +28,8 @@ const result = await query.collect()
 | `.count()` | Return row count without materializing | Counting without data transfer |
 | `.exists()` | Return true if any row matches | Cheapest existence check |
 | `.lazy()` | Return a `LazyResultHandle` for paging | Large results, on-demand pages |
-| `.cursor()` | Return `AsyncIterable<Row[]>` for streaming | Process rows in batches without loading all |
+| `.stream()` | Yield `Row[]` batches via `AsyncGenerator` | Process rows without loading all into memory |
+| `.cursor()` | Return `AsyncIterable<Row[]>` for streaming | Same as stream, requires executor cursor support |
 | `.explain()` | Return query plan without executing | Debugging, inspect pruning |
 
 ## Lazy result handle
@@ -61,12 +62,10 @@ Each `.page()` call is a separate query execution with `offset` and `limit`. No 
 
 ## Streaming iteration
 
-`.stream()` on a lazy handle yields batches until exhausted:
+`.stream()` works directly on the DataFrame — no `.lazy()` needed:
 
 ```typescript
-const handle = await qm.table("events").lazy()
-
-for await (const batch of handle.stream(500)) {
+for await (const batch of qm.table("events").stream(500)) {
   // batch is Row[] with up to 500 rows
   process(batch)
   // Break early to stop fetching
@@ -74,9 +73,21 @@ for await (const batch of handle.stream(500)) {
 }
 ```
 
+If the executor supports cursors, `.stream()` fetches batches incrementally. Otherwise it falls back to `.collect()` and yields slices — still useful for processing without holding all rows in your code at once.
+
+`.stream()` is also available on `LazyResultHandle`:
+
+```typescript
+const handle = await qm.table("events").lazy()
+
+for await (const batch of handle.stream(500)) {
+  process(batch)
+}
+```
+
 ## Cursor
 
-`.cursor()` is similar but works directly on the DataFrame without an intermediate handle:
+`.cursor()` is the low-level streaming primitive. It requires an executor with cursor support (e.g., edge mode) and throws if not available:
 
 ```typescript
 for await (const batch of qm.table("events").cursor({ batchSize: 1000 })) {
@@ -84,7 +95,7 @@ for await (const batch of qm.table("events").cursor({ batchSize: 1000 })) {
 }
 ```
 
-Requires an executor with cursor support (e.g., edge mode). Throws if not available.
+Prefer `.stream()` unless you need to guarantee incremental fetching.
 
 ## Keyset pagination
 
@@ -106,4 +117,4 @@ const page2 = await qm.table("events")
   .collect()
 ```
 
-`.after(value)` translates to a `gt` filter on the sort column, which benefits from page-level skip. Every page is equally fast regardless of depth.
+`.after(value)` translates to a `gt` filter on the sort column (or `lt` for descending sorts), which benefits from page-level skip. Every page is equally fast regardless of depth.
