@@ -154,6 +154,17 @@ describe("error messages", () => {
     expect(err.message).toContain(".csv");
     expect(err.message).toContain(".json");
   });
+
+  it("QUERY_TIMEOUT from withTimeout-style capital-T message", () => {
+    const err = QueryModeError.from(new Error("Timeout after 10000ms"), { table: "events" });
+    expect(err.code).toBe("QUERY_TIMEOUT");
+    expect(err.message).toContain("events");
+  });
+
+  it("NETWORK_TIMEOUT when message mentions R2", () => {
+    const err = QueryModeError.from(new Error("R2 read timeout"), { table: "events" });
+    expect(err.code).toBe("NETWORK_TIMEOUT");
+  });
 });
 
 describe("DataFrame Pandas-like methods", () => {

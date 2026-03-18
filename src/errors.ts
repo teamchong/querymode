@@ -70,9 +70,10 @@ export class QueryModeError extends Error {
       );
     }
 
-    // Timeouts
-    if (msg.includes("timeout") || msg.includes("timed out") || msg.includes("TIMEOUT")) {
-      const code = msg.includes("network") || msg.includes("R2") ? "NETWORK_TIMEOUT" : "QUERY_TIMEOUT";
+    // Timeouts — case-insensitive (withTimeout throws "Timeout after ...")
+    const msgLower = msg.toLowerCase();
+    if (msgLower.includes("timeout") || msgLower.includes("timed out")) {
+      const code = msgLower.includes("network") || msgLower.includes("r2") ? "NETWORK_TIMEOUT" : "QUERY_TIMEOUT";
       return new QueryModeError(
         code,
         `${code === "NETWORK_TIMEOUT" ? "Network" : "Query"} timeout${table ? ` on ${table}` : ""}: ${msg}`,
