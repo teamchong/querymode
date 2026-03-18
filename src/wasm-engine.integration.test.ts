@@ -4,7 +4,7 @@
  * Skips gracefully if binary not found.
  */
 import { describe, it, expect, beforeAll } from "vitest";
-import { instantiateWasm, queryToSql, type WasmEngine } from "./wasm-engine.js";
+import { instantiateWasm, queryToSql, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
 import type { QueryDescriptor } from "./client.js";
 import type { PageInfo } from "./types.js";
 import * as fs from "node:fs/promises";
@@ -406,5 +406,87 @@ describe("queryToSql", () => {
     });
     expect(sql).toContain("NEAR [");
     expect(sql).toContain("TOPK 10");
+  });
+});
+
+// Pure-TS tests — no WASM binary required
+describe("rowsToColumnArrays", () => {
+  it("builds null bitmap for int64 columns with null values", () => {
+    const rows = [{ x: 10 }, { x: null }, { x: 30 }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols.length).toBe(1);
+    expect(cols[0].dtype).toBe("int64");
+    expect(cols[0].nullBitmap).toBeDefined();
+    // Validity bitmap: row 0 valid, row 1 null, row 2 valid → bits 0,2 set = 0b101 = 5
+    expect(cols[0].nullBitmap![0]).toBe(0b00000101);
+    // Null positions have 0n in data buffer (bitmap marks them invalid)
+    const data = new BigInt64Array(cols[0].values);
+    expect(data[0]).toBe(10n);
+    expect(data[1]).toBe(0n);
+    expect(data[2]).toBe(30n);
+  });
+
+  it("builds null bitmap for float64 columns with null values", () => {
+    const rows = [{ v: 1.5 }, { v: undefined }, { v: 3.5 }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols[0].dtype).toBe("float64");
+    expect(cols[0].nullBitmap).toBeDefined();
+    expect(cols[0].nullBitmap![0]).toBe(0b00000101);
+  });
+
+  it("builds null bitmap for string columns with null values", () => {
+    const rows = [{ s: "hello" }, { s: null }, { s: "world" }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols[0].dtype).toBe("utf8");
+    expect(cols[0].nullBitmap).toBeDefined();
+    expect(cols[0].nullBitmap![0]).toBe(0b00000101);
+  });
+
+  it("builds null bitmap for bool columns with null values", () => {
+    const rows = [{ b: true }, { b: null }, { b: false }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols[0].dtype).toBe("bool");
+    expect(cols[0].nullBitmap).toBeDefined();
+    expect(cols[0].nullBitmap![0]).toBe(0b00000101);
+  });
+
+  it("builds null bitmap for bigint columns with null values", () => {
+    const rows = [{ n: 100n }, { n: null }, { n: 300n }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols[0].dtype).toBe("int64");
+    expect(cols[0].nullBitmap).toBeDefined();
+    expect(cols[0].nullBitmap![0]).toBe(0b00000101);
+  });
+
+  it("omits null bitmap when all values are non-null", () => {
+    const rows = [{ x: 1 }, { x: 2 }, { x: 3 }];
+    const cols = rowsToColumnArrays(rows);
+    expect(cols[0].nullBitmap).toBeUndefined();
+  });
+
+  it("handles all-null columns by skipping (no non-null sample)", () => {
+    const rows = [{ x: null }, { x: null }];
+    const cols = rowsToColumnArrays(rows);
+    // Column skipped because no non-null sample to infer type
+    expect(cols.length).toBe(0);
+  });
+
+  it("handles mixed types in same row — each column gets own bitmap", () => {
+    const rows = [
+      { id: 1, name: "alice", score: 95.0 },
+      { id: null, name: "bob", score: null },
+      { id: 3, name: null, score: 85.0 },
+    ];
+    const cols = rowsToColumnArrays(rows);
+    const idCol = cols.find(c => c.name === "id")!;
+    const nameCol = cols.find(c => c.name === "name")!;
+    const scoreCol = cols.find(c => c.name === "score")!;
+
+    // id: valid at 0,2 → 0b101
+    expect(idCol.nullBitmap![0]).toBe(0b00000101);
+    // name: valid at 0,1 → 0b011
+    expect(nameCol.nullBitmap![0]).toBe(0b00000011);
+    // score: valid at 0,2 → 0b101
+    expect(scoreCol.nullBitmap![0]).toBe(0b00000101);
   });
 });

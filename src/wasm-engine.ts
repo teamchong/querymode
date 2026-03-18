@@ -814,9 +814,9 @@ export class WasmEngine {
    * Returns the raw Lance binary bytes ready to write to R2/disk.
    */
   buildFragment(columns: FragmentColumn[]): Uint8Array {
-    // Estimate capacity: sum of all values plus overhead
+    // Estimate capacity: sum of all values + null bitmaps + overhead
     let totalBytes = 0;
-    for (const col of columns) totalBytes += col.values.byteLength;
+    for (const col of columns) totalBytes += col.values.byteLength + (col.nullBitmap?.byteLength ?? 0);
     const capacity = totalBytes + columns.length * 256 + 4096; // metadata overhead
 
     if (!this.exports.fragmentBegin(capacity)) {
@@ -827,6 +827,15 @@ export class WasmEngine {
       const { ptr: namePtr, len: nameLen } = this.writeString(col.name);
       if (!namePtr) throw new Error(`WASM OOM writing column name "${col.name}"`);
 
+      // Write null bitmap to WASM if present
+      let nullablePtr = 0;
+      if (col.nullBitmap) {
+        nullablePtr = this.safeAlloc(col.nullBitmap.byteLength);
+        if (!nullablePtr) throw new Error("WASM OOM writing null bitmap");
+        new Uint8Array(this.exports.memory.buffer, nullablePtr, col.nullBitmap.byteLength)
+          .set(col.nullBitmap);
+      }
+
       let result = 0;
       switch (col.dtype) {
         case "int64": {
@@ -835,7 +844,7 @@ export class WasmEngine {
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          result = this.exports.fragmentAddInt64Column(namePtr, nameLen, dataPtr, i64.length, 0);
+          result = this.exports.fragmentAddInt64Column(namePtr, nameLen, dataPtr, i64.length, nullablePtr);
           break;
         }
         case "int32": {
@@ -844,7 +853,7 @@ export class WasmEngine {
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          result = this.exports.fragmentAddInt32Column(namePtr, nameLen, dataPtr, i32.length, 0);
+          result = this.exports.fragmentAddInt32Column(namePtr, nameLen, dataPtr, i32.length, nullablePtr);
           break;
         }
         case "float64": {
@@ -853,7 +862,7 @@ export class WasmEngine {
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          result = this.exports.fragmentAddFloat64Column(namePtr, nameLen, dataPtr, f64.length, 0);
+          result = this.exports.fragmentAddFloat64Column(namePtr, nameLen, dataPtr, f64.length, nullablePtr);
           break;
         }
         case "float32": {
@@ -862,7 +871,7 @@ export class WasmEngine {
           if (!dataPtr) throw new Error("WASM OOM");
           new Uint8Array(this.exports.memory.buffer, dataPtr, col.values.byteLength)
             .set(new Uint8Array(col.values instanceof ArrayBuffer ? col.values : col.values.slice(0)));
-          result = this.exports.fragmentAddFloat32Column(namePtr, nameLen, dataPtr, f32.length, 0);
+          result = this.exports.fragmentAddFloat32Column(namePtr, nameLen, dataPtr, f32.length, nullablePtr);
           break;
         }
         case "utf8": case "string": {
@@ -901,7 +910,7 @@ export class WasmEngine {
           new Uint8Array(this.exports.memory.buffer, offsetsPtr, offsets.byteLength)
             .set(new Uint8Array(offsets.buffer));
           result = this.exports.fragmentAddStringColumn(
-            namePtr, nameLen, dataPtr, totalStrBytes, offsetsPtr / 4, count, 0,
+            namePtr, nameLen, dataPtr, totalStrBytes, offsetsPtr / 4, count, nullablePtr,
           );
           break;
         }
@@ -913,7 +922,7 @@ export class WasmEngine {
           const byteCount = col.values.byteLength;
           // rowCount must be provided for exact count; byteCount * 8 overestimates when rows % 8 != 0
           const rowCount = col.rowCount ?? byteCount * 8;
-          result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, byteCount, rowCount, 0);
+          result = this.exports.fragmentAddBoolColumn(namePtr, nameLen, dataPtr, byteCount, rowCount, nullablePtr);
           break;
         }
         default:
@@ -1041,6 +1050,8 @@ export interface FragmentColumn {
   values: ArrayBufferLike;
   /** Required for bool columns (byteCount*8 overestimates when rows%8!=0). */
   rowCount?: number;
+  /** Validity bitmap — bit i set means row i is valid (non-null). Absent = all valid. */
+  nullBitmap?: Uint8Array;
 }
 
 /**
@@ -1056,33 +1067,45 @@ export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentCol
     const sample = rows.find(r => r[colName] != null)?.[colName];
     if (sample === undefined) continue;
 
+    // Build null bitmap for columns with null/undefined values
+    const bitmapBytes = Math.ceil(rows.length / 8);
+    let hasNull = false;
+    const nullBitmap = new Uint8Array(bitmapBytes);
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][colName] != null) {
+        nullBitmap[i >> 3] |= 1 << (i & 7); // bit set = valid
+      } else {
+        hasNull = true;
+      }
+    }
+
     if (typeof sample === "number") {
       if (Number.isInteger(sample)) {
         const arr = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = typeof v === "bigint" ? v as bigint : BigInt(Math.trunc(Number(v ?? 0))); }
-        result.push({ name: colName, dtype: "int64", values: arr.buffer });
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? (typeof v === "bigint" ? v as bigint : BigInt(Math.trunc(Number(v)))) : 0n; }
+        result.push({ name: colName, dtype: "int64", values: arr.buffer, ...(hasNull && { nullBitmap }) });
       } else {
         const arr = new Float64Array(rows.length);
         for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as number : 0; }
-        result.push({ name: colName, dtype: "float64", values: arr.buffer });
+        result.push({ name: colName, dtype: "float64", values: arr.buffer, ...(hasNull && { nullBitmap }) });
       }
     } else if (typeof sample === "bigint") {
       const arr = new BigInt64Array(rows.length);
       for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as bigint : 0n; }
-      result.push({ name: colName, dtype: "int64", values: arr.buffer });
+      result.push({ name: colName, dtype: "int64", values: arr.buffer, ...(hasNull && { nullBitmap }) });
     } else if (typeof sample === "boolean") {
       const byteCount = Math.ceil(rows.length / 8);
       const boolBuf = new Uint8Array(byteCount);
       for (let i = 0; i < rows.length; i++) {
         if (rows[i][colName]) boolBuf[i >> 3] |= 1 << (i & 7);
       }
-      result.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length });
+      result.push({ name: colName, dtype: "bool", values: boolBuf.buffer, rowCount: rows.length, ...(hasNull && { nullBitmap }) });
     } else if (typeof sample === "string") {
       const enc = textEncoder;
       const encoded: Uint8Array[] = new Array(rows.length);
       let totalLen = 0;
       for (let i = 0; i < rows.length; i++) {
-        encoded[i] = enc.encode(String(rows[i][colName] ?? ""));
+        encoded[i] = enc.encode(rows[i][colName] != null ? String(rows[i][colName]) : "");
         totalLen += 4 + encoded[i].length;
       }
       const buf = new Uint8Array(totalLen);
@@ -1094,7 +1117,7 @@ export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentCol
         buf.set(encoded[i], off);
         off += encoded[i].length;
       }
-      result.push({ name: colName, dtype: "utf8", values: buf.buffer });
+      result.push({ name: colName, dtype: "utf8", values: buf.buffer, ...(hasNull && { nullBitmap }) });
     }
   }
   return result;
