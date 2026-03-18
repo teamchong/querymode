@@ -1,0 +1,107 @@
+---
+title: Postgres Wire Protocol
+description: Connect with psql, DBeaver, or any BI tool that speaks PostgreSQL.
+---
+
+QueryMode includes a PostgreSQL wire protocol server. Any tool that connects to Postgres — `psql`, DBeaver, Metabase, Grafana, TablePlus, DataGrip — can query your data without code changes.
+
+## Quick start
+
+```bash
+# Start the pg-wire server (reads files from current directory)
+npx tsx src/pg-wire/server.ts
+
+# Connect with psql
+psql -h localhost -p 5433 -U querymode
+```
+
+Then query as normal SQL:
+
+```sql
+SELECT * FROM './data/events.parquet' WHERE region = 'us' LIMIT 10;
+SELECT region, COUNT(*), AVG(amount) FROM './data/orders.lance' GROUP BY region;
+```
+
+## Configuration
+
+| Environment variable | Default | Description |
+|---------------------|---------|-------------|
+| `PG_PORT` | `5433` | Listen port |
+| `PG_HOST` | `127.0.0.1` | Bind address |
+
+```bash
+PG_PORT=5432 PG_HOST=0.0.0.0 npx tsx src/pg-wire/server.ts
+```
+
+## Supported SQL
+
+The pg-wire server uses QueryMode's SQL parser, so all [SQL syntax](/querymode/sql/) is supported:
+
+- `SELECT`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`
+- `JOIN` (inner, left, right, full, cross)
+- Window functions (`ROW_NUMBER`, `RANK`, `LAG`, `LEAD`, rolling aggregates)
+- CTEs (`WITH ... AS`)
+- Set operations (`UNION`, `INTERSECT`, `EXCEPT`)
+- Vector search (`WHERE embedding NEAR [...] TOPK 10`)
+- All 14 filter operators, `CASE`, `CAST`, arithmetic, `||` concatenation
+- `--` line comments and `/* */` block comments
+
+### Compatibility commands
+
+These are accepted and acknowledged for BI tool compatibility but have no effect:
+
+- `SET client_encoding TO 'UTF8'`
+- `RESET ALL`
+- `DISCARD ALL`
+- `SHOW <parameter>` (returns `"on"` for all parameters)
+
+## Programmatic use
+
+The `PgConnectionHandler` class can be embedded in any Node.js TCP server or WebSocket bridge:
+
+```typescript
+import { QueryMode } from "querymode/local"
+import { PgConnectionHandler } from "querymode"
+import * as net from "node:net"
+
+const qm = QueryMode.local()
+
+net.createServer((socket) => {
+  const handler = new PgConnectionHandler({
+    executor: qm.getExecutor(),
+    send: (data) => socket.write(data),
+  })
+
+  socket.on("data", async (chunk) => {
+    await handler.onData(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+  })
+}).listen(5433)
+```
+
+The handler manages the full connection lifecycle:
+1. **Startup** — SSL negotiation (rejected), authentication (always ok), server parameters
+2. **Query** — SQL parsing, compilation, execution via the QueryMode pipeline
+3. **Response** — `RowDescription` + `DataRow` messages with proper type OIDs
+4. **Error** — SQL errors return `ErrorResponse` and the connection stays open
+
+## Type mapping
+
+QueryMode types map to PostgreSQL type OIDs:
+
+| QueryMode type | Postgres type | OID |
+|---------------|--------------|-----|
+| `int8`, `int16` | `INT2` | 21 |
+| `int32` | `INT4` | 23 |
+| `int64` | `INT8` | 20 |
+| `float32` | `FLOAT4` | 700 |
+| `float64` | `FLOAT8` | 701 |
+| `utf8` | `TEXT` | 25 |
+| `bool` | `BOOL` | 16 |
+| `binary` | `BYTEA` | 17 |
+
+## Limitations
+
+- **Simple Query protocol only** — extended query protocol (prepared statements, `DESCRIBE`, `BIND`) is not supported. Most BI tools fall back to Simple Query automatically.
+- **No authentication** — all connections are accepted. Run behind a firewall or SSH tunnel for production use.
+- **No SSL/TLS** — SSL requests are rejected; clients retry in plaintext. Use an SSH tunnel or reverse proxy for encrypted connections.
+- **Local mode only** — the built-in server uses `LocalExecutor`. For edge mode, build a custom server that passes a `RemoteExecutor` to `PgConnectionHandler`.

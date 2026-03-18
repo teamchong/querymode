@@ -32,6 +32,7 @@ export default defineConfig({
         { label: "Error Handling", slug: "error-handling" },
         { label: "Vector Search", slug: "vector-search" },
         { label: "Write Path", slug: "write-path" },
+        { label: "Postgres Wire Protocol", slug: "pg-wire" },
         { label: "Deployment", slug: "deployment" },
       ],
     }),

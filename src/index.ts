@@ -41,6 +41,8 @@ export type { LocalTimingInfo } from "./format.js";
 export { sqlToDescriptor } from "./sql/index.js";
 export { parse as parseSql } from "./sql/index.js";
 export { SqlParseError, SqlLexerError } from "./sql/index.js";
+export { PgConnectionHandler } from "./pg-wire/handler.js";
+export type { PgConnectionOptions } from "./pg-wire/handler.js";
 export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js";
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
