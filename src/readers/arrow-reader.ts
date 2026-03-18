@@ -283,21 +283,6 @@ function parseRecordBatchMessage(buf: DataView, msgTable: number): RecordBatchMe
   return { length, nodes, buffers };
 }
 
-// ---------------------------------------------------------------------------
-// Bytes-per-value helper
-// ---------------------------------------------------------------------------
-
-function bytesPerValue(dtype: DataType): number {
-  switch (dtype) {
-    case "int8": case "uint8": return 1;
-    case "int16": case "uint16": case "float16": return 2;
-    case "int32": case "uint32": case "float32": return 4;
-    case "int64": case "uint64": case "float64": return 8;
-    case "bool": return 0; // bit-packed
-    default: return 0; // variable-length
-  }
-}
-
 /** Check whether a DataType uses variable-length encoding (offsets buffer). */
 function isVariableLength(dtype: DataType): boolean {
   return dtype === "utf8" || dtype === "binary";
@@ -420,9 +405,7 @@ export class ArrowReader implements FormatReader {
   }
 
   async createFragments(source: DataSource, projected: ColumnMeta[]): Promise<FragmentSource[]> {
-    const projectedNames = new Set(projected.map(c => c.name));
-    const filteredCols = projected.filter(c => projectedNames.has(c.name));
-    return [new ArrowFragmentSource(filteredCols, source)];
+    return [new ArrowFragmentSource(projected, source)];
   }
 
   // -------------------------------------------------------------------------
