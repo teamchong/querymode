@@ -763,7 +763,7 @@ export class QueryDO extends DurableObject<Env> {
       pagesScanned: pagesTotal - pagesSkipped,
       estimatedBytes,
       estimatedR2Reads: coalesced.length,
-      estimatedRows: meta.totalRows,
+      estimatedRows: estimatedRowsAfterPrune,
       fragments: totalFragments,
       fragmentsSkipped,
       fragmentsScanned,
@@ -1694,9 +1694,7 @@ export class QueryDO extends DurableObject<Env> {
     const fragments = allFragments.filter(meta =>
       !canSkipFragment(meta, query.filters, query.filterGroups),
     );
-    const fragmentsSkipped = (candidateFragmentIds
-      ? dataset.fragmentMetas.size
-      : allFragments.length) - fragments.length;
+    const fragmentsSkipped = allFragments.length - fragments.length;
     if (fragmentsSkipped > 0) {
       this.log("info", "fragment_prune", {
         total: allFragments.length, skipped: fragmentsSkipped, remaining: fragments.length,

@@ -310,9 +310,14 @@ export class LocalExecutor implements QueryExecutor {
       columns: projectedColumns,
       async readPage(_col: ColumnMeta, page: PageInfo): Promise<ArrayBuffer> {
         if (!cachedHandle) cachedHandle = await fsMod.open(table, "r");
-        const buf = Buffer.alloc(page.byteLength);
-        await cachedHandle.read(buf, 0, page.byteLength, Number(page.byteOffset));
-        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        try {
+          const buf = Buffer.alloc(page.byteLength);
+          await cachedHandle.read(buf, 0, page.byteLength, Number(page.byteOffset));
+          return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        } catch (err) {
+          if (cachedHandle) { await cachedHandle.close().catch(() => {}); cachedHandle = null; }
+          throw err;
+        }
       },
       async close(): Promise<void> {
         if (cachedHandle) { await cachedHandle.close(); cachedHandle = null; }
