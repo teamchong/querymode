@@ -7,6 +7,7 @@
  */
 
 import type { ColumnMeta, DataType } from "./types.js";
+import { safeBigInt } from "./types.js";
 import type { FragmentSource } from "./operators.js";
 
 const textEncoder = new TextEncoder();
@@ -216,7 +217,7 @@ export function encodeColumnBuffer(
       const arr = new BigInt64Array(values.length);
       for (let i = 0; i < values.length; i++) {
         const v = values[i];
-        arr[i] = typeof v === "bigint" ? v : BigInt(Math.trunc(Number(v ?? 0)));
+        arr[i] = typeof v === "bigint" ? v : safeBigInt(Number(v ?? 0));
       }
       return arr.buffer;
     }
@@ -224,7 +225,7 @@ export function encodeColumnBuffer(
       const arr = new BigUint64Array(values.length);
       for (let i = 0; i < values.length; i++) {
         const v = values[i];
-        arr[i] = typeof v === "bigint" ? BigInt.asUintN(64, v) : BigInt(Math.trunc(Number(v ?? 0)));
+        arr[i] = typeof v === "bigint" ? BigInt.asUintN(64, v) : safeBigInt(Number(v ?? 0));
       }
       return arr.buffer;
     }

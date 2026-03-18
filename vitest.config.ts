@@ -40,7 +40,6 @@ export default defineConfig({
       "src/parquet-decode.test.ts",
       "src/parquet.test.ts",
       "src/partial-agg.test.ts",
-      "src/umami-conformance.test.ts",
       "src/vip-cache.test.ts",
       "src/hnsw.test.ts",
       "src/readers/readers.test.ts",

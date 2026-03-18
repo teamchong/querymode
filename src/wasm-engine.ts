@@ -4,6 +4,7 @@
  */
 
 import type { Row, DataType, PageInfo, FilterOp } from "./types.js";
+import { safeBigInt } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { wasmResultToQMCB } from "./columnar.js";
 import { QueryModeError } from "./errors.js";
@@ -542,7 +543,7 @@ export class WasmEngine {
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
         for (let i = 0; i < rowCount; i++) {
           const v = values[i];
-          dst[i] = v == null ? 0n : typeof v === "bigint" ? v : BigInt(Math.trunc(v as number));
+          dst[i] = v == null ? 0n : typeof v === "bigint" ? v : safeBigInt(v as number);
         }
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
         return true;
@@ -553,7 +554,7 @@ export class WasmEngine {
         const dataPtr = this.safeAlloc(rowCount * 8);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
-        for (let i = 0; i < rowCount; i++) dst[i] = BigInt(Math.trunc((values[i] as number) ?? 0));
+        for (let i = 0; i < rowCount; i++) dst[i] = safeBigInt((values[i] as number) ?? 0);
         this.exports.registerTableInt64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
         return true;
       }
@@ -1083,7 +1084,7 @@ export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentCol
     if (typeof sample === "number") {
       if (Number.isInteger(sample)) {
         const arr = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? (typeof v === "bigint" ? v as bigint : BigInt(Math.trunc(Number(v)))) : 0n; }
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? (typeof v === "bigint" ? v as bigint : safeBigInt(Number(v))) : 0n; }
         result.push({ name: colName, dtype: "int64", values: arr.buffer, ...(hasNull && { nullBitmap }) });
       } else {
         const arr = new Float64Array(rows.length);

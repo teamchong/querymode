@@ -1,5 +1,5 @@
 import type { Row } from "./types.js";
-import { groupKey, groupKeyFrom, NULL_SENTINEL } from "./types.js";
+import { groupKey, groupKeyFrom, NULL_SENTINEL, safeBigInt } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { ColumnarBatch, DecodedValue } from "./operators.js";
 import { identityIndices } from "./operators.js";
@@ -110,7 +110,7 @@ function resolveValue(state: PartialAggState): number | bigint | string | null {
   if (state.count === 0) return null;
   const hasBig = state.bigSum !== undefined;
   switch (state.fn) {
-    case "sum": return hasBig ? (state.bigSum! + BigInt(Math.trunc(state.sum))) : state.sum;
+    case "sum": return hasBig ? (state.bigSum! + safeBigInt(state.sum)) : state.sum;
     case "avg": return hasBig ? bigAvg(state.bigSum!, state.sum, state.count) : state.sum / state.count;
     case "min": return state.strMin !== undefined ? state.strMin : hasBig ? state.bigMin! : state.min;
     case "max": return state.strMax !== undefined ? state.strMax : hasBig ? state.bigMax! : state.max;

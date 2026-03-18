@@ -8,7 +8,7 @@
  */
 
 import type { ColumnMeta, FilterOp, PageInfo, Row } from "./types.js";
-import { NULL_SENTINEL, rowComparator, groupKey } from "./types.js";
+import { NULL_SENTINEL, rowComparator, groupKey, safeBigInt } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import type { WasmEngine } from "./wasm-engine.js";
 import { canSkipPage, matchesFilter, rowPassesFilters, decodePage } from "./decode.js";
@@ -582,12 +582,13 @@ function wasmFilterNumeric(
       const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
       for (let i = 0; i < rowCount; i++) {
         const v = values[i];
-        dst[i] = typeof v === "bigint" ? v : BigInt(Math.trunc((v as number) ?? 0));
+        dst[i] = typeof v === "bigint" ? v : safeBigInt((v as number) ?? 0);
       }
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
+      if (typeof filterValue === "number" && !Number.isFinite(filterValue)) return null;
       const count = wasm.exports.filterInt64Buffer(
-        dataPtr, rowCount, op, BigInt(Math.trunc(filterValue as number)), outPtr, rowCount,
+        dataPtr, rowCount, op, safeBigInt(filterValue as number), outPtr, rowCount,
       );
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
@@ -639,12 +640,13 @@ function wasmFilterRange(
       const dst = new BigInt64Array(wasm.exports.memory.buffer, dataPtr, rowCount);
       for (let i = 0; i < rowCount; i++) {
         const v = values[i];
-        dst[i] = typeof v === "bigint" ? v : BigInt(Math.trunc((v as number) ?? 0));
+        dst[i] = typeof v === "bigint" ? v : safeBigInt((v as number) ?? 0);
       }
       const outPtr = wasm.exports.alloc(rowCount * 4);
       if (!outPtr) return null;
+      if ((typeof low === "number" && !Number.isFinite(low)) || (typeof high === "number" && !Number.isFinite(high))) return null;
       const fn = negate ? wasm.exports.filterInt64NotRange : wasm.exports.filterInt64Range;
-      const count = fn(dataPtr, rowCount, BigInt(Math.trunc(low as number)), BigInt(Math.trunc(high as number)), outPtr, rowCount);
+      const count = fn(dataPtr, rowCount, safeBigInt(low as number), safeBigInt(high as number), outPtr, rowCount);
       return new Uint32Array(wasm.exports.memory.buffer.slice(outPtr, outPtr + count * 4));
     }
 
@@ -1108,7 +1110,7 @@ export class WindowOperator implements Operator {
       for (let i = 0; i < indices.length; i++) {
         const val = rows[indices[i]][col];
         if (val !== null && val !== undefined) {
-          const n = typeof val === "bigint" ? val : BigInt(Math.trunc(val as number));
+          const n = typeof val === "bigint" ? val : safeBigInt(val as number);
           runSum += n;
           runCount++;
           if (runMin === undefined || n < runMin) runMin = n;
@@ -1132,7 +1134,7 @@ export class WindowOperator implements Operator {
       for (let j = start; j <= end; j++) {
         const val = rows[indices[j]][col];
         if (val === null || val === undefined) continue;
-        const n = typeof val === "bigint" ? val : BigInt(Math.trunc(val as number));
+        const n = typeof val === "bigint" ? val : safeBigInt(val as number);
         sum += n;
         count++;
         if (min === undefined || n < min) min = n;
@@ -2150,9 +2152,11 @@ export class WasmAggregateOperator implements Operator {
             ? this.wasm.exports.filterFloat64NotRange(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount)
             : this.wasm.exports.filterFloat64Range(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount);
         } else if (col.dtype === "int64") {
+          const lo = f.value[0] as number, hi = f.value[1] as number;
+          if ((typeof lo === "number" && !Number.isFinite(lo)) || (typeof hi === "number" && !Number.isFinite(hi))) return new Uint32Array(0);
           count = isNotBetween
-            ? this.wasm.exports.filterInt64NotRange(dataPtr, rowCount, BigInt(Math.trunc(f.value[0] as number)), BigInt(Math.trunc(f.value[1] as number)), outPtr, rowCount)
-            : this.wasm.exports.filterInt64Range(dataPtr, rowCount, BigInt(Math.trunc(f.value[0] as number)), BigInt(Math.trunc(f.value[1] as number)), outPtr, rowCount);
+            ? this.wasm.exports.filterInt64NotRange(dataPtr, rowCount, safeBigInt(lo), safeBigInt(hi), outPtr, rowCount)
+            : this.wasm.exports.filterInt64Range(dataPtr, rowCount, safeBigInt(lo), safeBigInt(hi), outPtr, rowCount);
         } else {
           count = isNotBetween
             ? this.wasm.exports.filterInt32NotRange(dataPtr, rowCount, f.value[0] as number, f.value[1] as number, outPtr, rowCount)
@@ -2164,7 +2168,8 @@ export class WasmAggregateOperator implements Operator {
         if (col.dtype === "float64") {
           count = this.wasm.exports.filterFloat64Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
         } else if (col.dtype === "int64") {
-          count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, BigInt(Math.trunc(f.value as number)), outPtr, rowCount);
+          if (typeof f.value === "number" && !Number.isFinite(f.value)) return new Uint32Array(0);
+          count = this.wasm.exports.filterInt64Buffer(dataPtr, rowCount, wasmOp, safeBigInt(f.value as number), outPtr, rowCount);
         } else {
           count = this.wasm.exports.filterInt32Buffer(dataPtr, rowCount, wasmOp, f.value as number, outPtr, rowCount);
         }

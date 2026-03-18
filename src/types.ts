@@ -17,6 +17,11 @@ export function groupKeyFrom(count: number, getValue: (g: number) => unknown): s
   return key;
 }
 
+/** Safely convert a number to BigInt — NaN/Infinity become 0n instead of throwing RangeError. */
+export function safeBigInt(v: number): bigint {
+  return Number.isFinite(v) ? BigInt(Math.trunc(v)) : 0n;
+}
+
 /** Nulls-last row comparator for a single sort column. */
 export function rowComparator(col: string, desc: boolean): (a: Row, b: Row) => number {
   const dir = desc ? -1 : 1;
