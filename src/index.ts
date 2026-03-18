@@ -29,6 +29,7 @@ export {
 } from "./operators.js";
 export type { Operator, RowBatch, FragmentSource, PipelineOptions, PipelineResult } from "./operators.js";
 export { QueryModeError } from "./errors.js";
+import { QueryModeError } from "./errors.js";
 export type { ErrorCode } from "./errors.js";
 export { LocalExecutor } from "./local-executor.js";
 export { bigIntReplacer } from "./decode.js";
@@ -168,10 +169,15 @@ export class QueryMode {
   /** List all known tables with column names and row counts (edge mode only). */
   async tables(): Promise<{ name: string; columns: string[]; totalRows: number; updatedAt?: number; accessCount?: number }[]> {
     if (!(this.executor instanceof RemoteExecutor)) {
-      throw new Error("tables() is only available in edge mode. Use .table(path).describe() for local files.");
+      throw new QueryModeError("QUERY_FAILED", "tables() is only available in edge mode. Use .table(path).describe() for local files.");
     }
     const result = await (this.executor as RemoteExecutor).listTables();
     return result.tables as { name: string; columns: string[]; totalRows: number; updatedAt?: number; accessCount?: number }[];
+  }
+
+  /** @internal Get the underlying executor (for pg-wire and similar integrations). */
+  getExecutor(): QueryExecutor {
+    return this.executor;
   }
 }
 
@@ -212,7 +218,7 @@ class RemoteExecutor implements QueryExecutor {
   /** Append rows via RPC to Master DO. Partitioned writes fan out to separate MasterDOs. */
   async append(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
     if (!this.masterNamespace) {
-      throw new Error("append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
+      throw new QueryModeError("QUERY_FAILED", "append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
 
     // Partitioned writes: split by partition key, route each group to a different MasterDO
@@ -252,7 +258,7 @@ class RemoteExecutor implements QueryExecutor {
   /** Drop a table via RPC to Master DO — deletes all R2 objects and metadata. */
   async drop(table: string): Promise<DropResult> {
     if (!this.masterNamespace) {
-      throw new Error("drop() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
+      throw new QueryModeError("QUERY_FAILED", "drop() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
     const id = this.masterNamespace.idFromName("master");
     const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;

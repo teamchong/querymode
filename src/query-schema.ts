@@ -6,6 +6,7 @@
  * bad aggregate fns, etc. with clear error messages.
  */
 import { z } from "zod/v4";
+import { QueryModeError } from "./errors.js";
 
 const filterOpSchema = z.object({
   column: z.string().min(1, "Filter column name cannot be empty"),
@@ -76,7 +77,7 @@ export function parseAndValidateQuery(body: unknown): {
     const issues = result.error.issues.map(i =>
       `${i.path.join(".")}: ${i.message}`
     ).join("; ");
-    throw new Error(`Invalid query: ${issues}`);
+    throw new QueryModeError("INVALID_FILTER", `Invalid query: ${issues}`);
   }
 
   const data = result.data;
