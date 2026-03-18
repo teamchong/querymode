@@ -18,8 +18,8 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
     let val = filter.value;
     if (typeof val === "object" && !Array.isArray(val)) continue;
 
-    // Coerce bigint↔number for cross-type comparisons
-    if (typeof min === "bigint" && typeof val === "number") val = BigInt(Math.trunc(val as number));
+    // Coerce bigint↔number for cross-type comparisons (skip non-finite numbers — BigInt(NaN) throws)
+    if (typeof min === "bigint" && typeof val === "number") { if (!Number.isFinite(val)) continue; val = BigInt(Math.trunc(val as number)); }
     else if (typeof min === "number" && typeof val === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
 
     switch (filter.op) {
@@ -35,7 +35,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value)) break;
         if (filter.value.every(v => {
           let cv = v;
-          if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
+          if (typeof min === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
           else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
           return cv < min || cv > max;
         })) return true;
@@ -46,7 +46,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value) || min !== max) break;
         if (filter.value.some(v => {
           let cv = v;
-          if (typeof min === "bigint" && typeof cv === "number") cv = BigInt(Math.trunc(cv));
+          if (typeof min === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
           else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
           return cv === min;
         })) return true;
@@ -56,7 +56,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
         let lo = filter.value[0];
         let hi = filter.value[1];
-        if (typeof min === "bigint" && typeof lo === "number") { lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
+        if (typeof min === "bigint" && typeof lo === "number") { if (!Number.isFinite(lo) || !Number.isFinite(hi as number)) break; lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
         else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
         if (max < lo || min > hi) return true;
         break;
@@ -65,7 +65,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value) || filter.value.length !== 2) break;
         let lo = filter.value[0];
         let hi = filter.value[1];
-        if (typeof min === "bigint" && typeof lo === "number") { lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
+        if (typeof min === "bigint" && typeof lo === "number") { if (!Number.isFinite(lo) || !Number.isFinite(hi as number)) break; lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
         else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
         // Skip if all values are within [lo, hi] — NOT BETWEEN would exclude them all
         if (min >= lo && max <= hi) return true;
