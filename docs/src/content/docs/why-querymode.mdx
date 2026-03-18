@@ -68,7 +68,7 @@ These do real query optimization work:
 - **Predicate pushdown** — filters run inside the WASM engine, not JavaScript
 - **SIMD vectorized decode** — Zig WASM processes columns with SIMD instructions
 - **Coalesced I/O** — adjacent page reads merge into single range requests
-- **Prefetch** — fetch page N+1 while decoding page N, with up to 8 concurrent R2 range reads per page
+- **Prefetch** — fetch page N+1 while decoding page N, one concurrent range read per column
 - **Partial aggregation** — Fragment DOs aggregate locally, Query DO merges
 - **Memory-bounded spill** — sort and join spill to R2 via Grace hash partitioning when they exceed budget
 
