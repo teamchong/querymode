@@ -123,12 +123,12 @@ export class LocalExecutor implements QueryExecutor {
           columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
         } else {
           const arr = new Float64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as number;
+          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as number : 0; }
           columnArrays.push({ name: colName, dtype: "float64", values: arr.buffer });
         }
       } else if (typeof sample === "bigint") {
         const arr = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) arr[i] = rows[i][colName] as bigint;
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; arr[i] = v != null ? v as bigint : 0n; }
         columnArrays.push({ name: colName, dtype: "int64", values: arr.buffer });
       } else if (typeof sample === "boolean") {
         const arr = new BigInt64Array(rows.length);

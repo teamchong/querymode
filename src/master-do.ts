@@ -161,12 +161,12 @@ export class MasterDO extends DurableObject<Env> {
           columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
         } else {
           const f64 = new Float64Array(rows.length);
-          for (let i = 0; i < rows.length; i++) f64[i] = rows[i][colName] as number;
+          for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; f64[i] = v != null ? v as number : 0; }
           columnArrays.push({ name: colName, dtype: "float64", values: f64.buffer });
         }
       } else if (typeof sampleValue === "bigint") {
         const i64 = new BigInt64Array(rows.length);
-        for (let i = 0; i < rows.length; i++) i64[i] = rows[i][colName] as bigint;
+        for (let i = 0; i < rows.length; i++) { const v = rows[i][colName]; i64[i] = v != null ? v as bigint : 0n; }
         columnArrays.push({ name: colName, dtype: "int64", values: i64.buffer });
       } else if (typeof sampleValue === "string") {
         // Length-prefixed encoding
