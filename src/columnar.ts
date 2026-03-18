@@ -499,17 +499,30 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
       let row = 0;
       for (const batch of batches) {
         const col = batch.columns[ci];
-        const srcOffsets = col.offsets!;
         const srcData = new Uint8Array(col.data);
-        for (let r = 0; r < batch.rowCount; r++) {
+        if (col.offsets) {
+          for (let r = 0; r < batch.rowCount; r++) {
+            offsets[row] = strOffset;
+            const start = col.offsets[r];
+            const end = col.offsets[r + 1];
+            if (end > start) {
+              strBuf.set(srcData.subarray(start, end), strOffset);
+              strOffset += end - start;
+            }
+            row++;
+          }
+        } else {
+          // No offsets — treat entire data as a single string for row 0, empty for rest
           offsets[row] = strOffset;
-          const start = srcOffsets[r];
-          const end = srcOffsets[r + 1];
-          if (end > start) {
-            strBuf.set(srcData.subarray(start, end), strOffset);
-            strOffset += end - start;
+          if (srcData.byteLength > 0) {
+            strBuf.set(srcData, strOffset);
+            strOffset += srcData.byteLength;
           }
           row++;
+          for (let r = 1; r < batch.rowCount; r++) {
+            offsets[row] = strOffset;
+            row++;
+          }
         }
       }
       offsets[totalRows] = strOffset;

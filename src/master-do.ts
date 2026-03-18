@@ -8,6 +8,7 @@ import type { QueryDORpc } from "./types.js";
 import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
 import { resolveBucket } from "./bucket.js";
 import { withTimeout } from "./coalesce.js";
+import { QueryModeError } from "./errors.js";
 import wasmModule from "./wasm-module.js";
 
 const textEncoder = new TextEncoder();
@@ -41,7 +42,7 @@ export class MasterDO extends DurableObject<Env> {
   async writeRpc(body: unknown): Promise<unknown> {
     const { r2Key } = body as { r2Key: string };
     if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
-      throw new Error("Invalid r2Key");
+      throw new QueryModeError("QUERY_FAILED", "Invalid r2Key");
     }
 
     // Check if this is a dataset directory (ends with / or .lance/)
@@ -50,7 +51,7 @@ export class MasterDO extends DurableObject<Env> {
     }
 
     const result = await this.readFooterAndColumns(r2Key);
-    if (!result) throw new Error("Failed to read footer");
+    if (!result) throw new QueryModeError("INVALID_FORMAT", `Failed to read footer for "${r2Key}"`);
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     const totalRows = result.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? 0;
@@ -72,14 +73,14 @@ export class MasterDO extends DurableObject<Env> {
     const manifestKeys = listed.objects
       .filter(o => o.key.endsWith(".manifest"))
       .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
-    if (manifestKeys.length === 0) throw new Error("No manifests found");
+    if (manifestKeys.length === 0) throw new QueryModeError("TABLE_NOT_FOUND", `No manifests found in "${r2Prefix}"`);
 
     const latestKey = manifestKeys[manifestKeys.length - 1].key;
     const manifestObj = await resolveBucket(this.env, latestKey).get(latestKey);
-    if (!manifestObj) throw new Error("Failed to read manifest");
+    if (!manifestObj) throw new QueryModeError("TABLE_NOT_FOUND", `Failed to read manifest "${latestKey}"`);
 
     const manifest = parseManifest(await manifestObj.arrayBuffer());
-    if (!manifest) throw new Error("Failed to parse manifest");
+    if (!manifest) throw new QueryModeError("INVALID_FORMAT", `Failed to parse manifest "${latestKey}"`);
 
     // Read first fragment's footer to broadcast (Query DOs will discover the rest)
     if (manifest.fragments.length > 0) {
@@ -111,7 +112,7 @@ export class MasterDO extends DurableObject<Env> {
 
   /** Core append logic. Supports partitioned writes via options.partitionBy. */
   private async executeAppend(table: string, rows: Record<string, unknown>[], options?: AppendOptions): Promise<AppendResult> {
-    if (!rows?.length) throw new Error("No rows provided");
+    if (!rows?.length) throw new QueryModeError("QUERY_FAILED", "No rows provided for append");
 
     // Partition-aware ingest: split rows by partition value, write separate fragments
     if (options?.partitionBy) {
@@ -245,7 +246,7 @@ export class MasterDO extends DurableObject<Env> {
       }
     }
 
-    throw new Error("CAS failed after max retries");
+    throw new QueryModeError("QUERY_FAILED", `CAS failed after ${MAX_RETRIES} retries for table "${table}"`);
   }
 
   /** Build a simple binary manifest for the _versions/ directory. */
@@ -317,10 +318,10 @@ export class MasterDO extends DurableObject<Env> {
   async refreshRpc(body: unknown): Promise<unknown> {
     const { r2Key } = body as { r2Key: string };
     if (!r2Key || typeof r2Key !== "string" || r2Key.includes("..")) {
-      throw new Error("Invalid r2Key");
+      throw new QueryModeError("QUERY_FAILED", "Invalid r2Key");
     }
     const result = await this.readFooterAndColumns(r2Key);
-    if (!result) throw new Error("Failed to read footer");
+    if (!result) throw new QueryModeError("INVALID_FORMAT", `Failed to read footer for "${r2Key}"`);
 
     const tableName = r2Key.replace(/\.(lance|parquet)$/, "").split("/").pop() ?? r2Key;
     await this.broadcast(tableName, r2Key, result);
