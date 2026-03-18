@@ -5,6 +5,7 @@ import {
   encodeColumnarBatch,
   columnarBatchToRows,
   concatQMCBBatches,
+  concatColumnarBatches,
   columnarKWayMerge,
   sliceColumnarBatch,
   readColumnValue,
@@ -14,6 +15,7 @@ import {
   DTYPE_UTF8,
   DTYPE_BOOL,
   type ColumnarBatch,
+  type ColumnarColumn,
 } from "./columnar.js";
 
 // ============================================================================
@@ -578,6 +580,87 @@ describe("columnar", () => {
       const empty: ColumnarBatch = { columns: [{ name: "x", dtype: DTYPE_F64, data: new ArrayBuffer(0), rowCount: 0 }], rowCount: 0 };
       const merged = columnarKWayMerge([b1, empty], "x", "asc", 100);
       expect(merged.rowCount).toBe(2);
+    });
+  });
+
+  describe("null bitmap propagation", () => {
+    function makeNullableBatch(values: (number | null)[]): ColumnarBatch {
+      const rowCount = values.length;
+      const data = new Float64Array(rowCount);
+      const nullBitmap = new Uint8Array(Math.ceil(rowCount / 8));
+      for (let i = 0; i < rowCount; i++) {
+        if (values[i] === null) {
+          nullBitmap[i >> 3] |= 1 << (i & 7);
+        } else {
+          data[i] = values[i]!;
+        }
+      }
+      return {
+        rowCount,
+        columns: [{ name: "x", dtype: DTYPE_F64, rowCount, data: data.buffer as ArrayBuffer, nullBitmap }],
+      };
+    }
+
+    it("concatColumnarBatches preserves null bitmaps", () => {
+      const b1 = makeNullableBatch([1, null, 3]);
+      const b2 = makeNullableBatch([null, 5]);
+      const merged = concatColumnarBatches([b1, b2])!;
+      const rows = columnarBatchToRows(merged);
+      expect(rows[0].x).toBe(1);
+      expect(rows[1].x).toBeNull();
+      expect(rows[2].x).toBe(3);
+      expect(rows[3].x).toBeNull();
+      expect(rows[4].x).toBe(5);
+    });
+
+    it("concatColumnarBatches handles mix of nullable and non-nullable", () => {
+      const b1 = makeNullableBatch([null, 2]);
+      const b2 = makeBatch([{ name: "x", type: 1, values: [3, 4] }]); // no null bitmap
+      const merged = concatColumnarBatches([b1, b2])!;
+      const rows = columnarBatchToRows(merged);
+      expect(rows[0].x).toBeNull();
+      expect(rows[1].x).toBe(2);
+      expect(rows[2].x).toBe(3);
+      expect(rows[3].x).toBe(4);
+    });
+
+    it("sliceColumnarBatch preserves null bitmaps", () => {
+      const batch = makeNullableBatch([1, null, 3, null, 5]);
+      const sliced = sliceColumnarBatch(batch, 1, 3);
+      const rows = columnarBatchToRows(sliced);
+      expect(rows[0].x).toBeNull();
+      expect(rows[1].x).toBe(3);
+      expect(rows[2].x).toBeNull();
+    });
+
+    it("columnarKWayMerge preserves null bitmaps", () => {
+      const b1 = makeNullableBatch([1, null, 5]);
+      const b2 = makeNullableBatch([2, 4, null]);
+      // Sort column has nulls — nulls sort last
+      const merged = columnarKWayMerge([b1, b2], "x", "asc", 100);
+      const rows = columnarBatchToRows(merged);
+      // Non-null values sorted, nulls at end
+      const nonNull = rows.filter(r => r.x !== null).map(r => r.x);
+      const nullCount = rows.filter(r => r.x === null).length;
+      expect(nonNull).toEqual([1, 2, 4, 5]);
+      expect(nullCount).toBe(2);
+    });
+
+    it("encode/decode round-trip preserves null bitmaps", () => {
+      const batch = makeNullableBatch([1, null, 3]);
+      const qmcb = encodeColumnarBatch(batch);
+      const decoded = decodeColumnarBatch(qmcb)!;
+      const rows = columnarBatchToRows(decoded);
+      expect(rows[0].x).toBe(1);
+      expect(rows[1].x).toBeNull();
+      expect(rows[2].x).toBe(3);
+    });
+
+    it("readColumnValue returns null for null-bitmap entries", () => {
+      const batch = makeNullableBatch([1, null, 3]);
+      expect(readColumnValue(batch.columns[0], 0)).toBe(1);
+      expect(readColumnValue(batch.columns[0], 1)).toBeNull();
+      expect(readColumnValue(batch.columns[0], 2)).toBe(3);
     });
   });
 });

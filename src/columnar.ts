@@ -446,6 +446,23 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
     const name = batches[0].columns[ci].name;
     const bpe = bytesPerElement(dtype);
 
+    // Merge null bitmaps if any batch has one for this column
+    const hasNulls = batches.some(b => b.columns[ci].nullBitmap);
+    let nullBitmap: Uint8Array | undefined;
+    if (hasNulls) {
+      nullBitmap = new Uint8Array(Math.ceil(totalRows / 8));
+      let row = 0;
+      for (const batch of batches) {
+        const col = batch.columns[ci];
+        for (let r = 0; r < batch.rowCount; r++) {
+          if (col.nullBitmap && (col.nullBitmap[r >> 3] & (1 << (r & 7)))) {
+            nullBitmap[row >> 3] |= 1 << (row & 7);
+          }
+          row++;
+        }
+      }
+    }
+
     if (bpe > 0) {
       const buf = new ArrayBuffer(totalRows * bpe);
       const out = new Uint8Array(buf);
@@ -455,7 +472,7 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
         out.set(src, offset);
         offset += src.byteLength;
       }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows });
+      columns.push({ name, dtype, data: buf, rowCount: totalRows, nullBitmap });
     } else if (dtype === DTYPE_BOOL) {
       const buf = new ArrayBuffer(Math.ceil(totalRows / 8));
       const out = new Uint8Array(buf);
@@ -467,7 +484,7 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
           row++;
         }
       }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows });
+      columns.push({ name, dtype, data: buf, rowCount: totalRows, nullBitmap });
     } else if (dtype === DTYPE_UTF8) {
       let totalStrLen = 0;
       for (const batch of batches) {
@@ -494,7 +511,7 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
         }
       }
       offsets[totalRows] = strOffset;
-      columns.push({ name, dtype, data: (strBuf.buffer as ArrayBuffer).slice(0, strOffset), rowCount: totalRows, offsets });
+      columns.push({ name, dtype, data: (strBuf.buffer as ArrayBuffer).slice(0, strOffset), rowCount: totalRows, offsets, nullBitmap });
     } else if (dtype === DTYPE_F32VEC) {
       const dim = batches[0].columns[ci].vectorDim || 0;
       const buf = new ArrayBuffer(totalRows * dim * 4);
@@ -505,9 +522,9 @@ export function concatColumnarBatches(batches: ColumnarBatch[]): ColumnarBatch |
         out.set(src, offset);
         offset += src.byteLength;
       }
-      columns.push({ name, dtype, data: buf, rowCount: totalRows, vectorDim: dim });
+      columns.push({ name, dtype, data: buf, rowCount: totalRows, vectorDim: dim, nullBitmap });
     } else {
-      columns.push({ name, dtype, data: new ArrayBuffer(0), rowCount: totalRows });
+      columns.push({ name, dtype, data: new ArrayBuffer(0), rowCount: totalRows, nullBitmap });
     }
   }
 
@@ -639,11 +656,18 @@ export function columnarKWayMerge(
   // Determine output size (upper bound)
   const totalRows = Math.min(limit, batches.reduce((s, b) => s + b.rowCount, 0));
 
+  // Check which columns need null bitmap propagation
+  const colHasNulls: boolean[] = [];
+  for (let ci = 0; ci < numCols; ci++) {
+    colHasNulls.push(batches.some(b => b.columns[ci].nullBitmap));
+  }
+
   // Allocate output columns
-  const outCols: { data: Uint8Array; offsets?: number[]; strOffset: number; dtype: number; bpe: number; name: string; vectorDim?: number }[] = [];
+  const outCols: { data: Uint8Array; offsets?: number[]; strOffset: number; dtype: number; bpe: number; name: string; vectorDim?: number; nullBitmap?: Uint8Array }[] = [];
   for (let ci = 0; ci < numCols; ci++) {
     const col = batches[0].columns[ci];
     const bpe = bytesPerElement(col.dtype);
+    const nb = colHasNulls[ci] ? new Uint8Array(Math.ceil(totalRows / 8)) : undefined;
     if (col.dtype === DTYPE_UTF8) {
       // Estimate string buffer size: sum of all string data
       let totalStrLen = 0;
@@ -655,6 +679,7 @@ export function columnarKWayMerge(
         dtype: col.dtype,
         bpe: 0,
         name: col.name,
+        nullBitmap: nb,
       });
     } else if (col.dtype === DTYPE_BOOL) {
       outCols.push({
@@ -663,6 +688,7 @@ export function columnarKWayMerge(
         dtype: col.dtype,
         bpe: 0,
         name: col.name,
+        nullBitmap: nb,
       });
     } else if (col.dtype === DTYPE_F32VEC) {
       const dim = col.vectorDim || 0;
@@ -673,6 +699,7 @@ export function columnarKWayMerge(
         bpe: dim * 4,
         name: col.name,
         vectorDim: dim,
+        nullBitmap: nb,
       });
     } else {
       outCols.push({
@@ -681,6 +708,7 @@ export function columnarKWayMerge(
         dtype: col.dtype,
         bpe,
         name: col.name,
+        nullBitmap: nb,
       });
     }
   }
@@ -693,6 +721,13 @@ export function columnarKWayMerge(
     // Copy all columns for this row
     for (let ci = 0; ci < numCols; ci++) {
       copyColumnValue(outCols[ci], batch.columns[ci], top.rowIdx, outRow, outCols[ci].dtype, outCols[ci].bpe);
+      // Propagate null bitmap
+      if (outCols[ci].nullBitmap) {
+        const srcCol = batch.columns[ci];
+        if (srcCol.nullBitmap && (srcCol.nullBitmap[top.rowIdx >> 3] & (1 << (top.rowIdx & 7)))) {
+          outCols[ci].nullBitmap![outRow >> 3] |= 1 << (outRow & 7);
+        }
+      }
     }
     outRow++;
 
@@ -714,20 +749,22 @@ export function columnarKWayMerge(
   const columns: ColumnarColumn[] = [];
   for (let ci = 0; ci < numCols; ci++) {
     const oc = outCols[ci];
+    const nb = oc.nullBitmap ? oc.nullBitmap.subarray(0, Math.ceil(outRow / 8)) : undefined;
     if (oc.dtype === DTYPE_UTF8) {
       oc.offsets![outRow] = oc.strOffset;
       columns.push({
         name: oc.name, dtype: oc.dtype, rowCount: outRow,
         data: (oc.data.buffer as ArrayBuffer).slice(0, oc.strOffset),
         offsets: new Uint32Array(oc.offsets!.slice(0, outRow + 1)),
+        nullBitmap: nb,
       });
     } else if (oc.dtype === DTYPE_BOOL) {
-      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, Math.ceil(outRow / 8)) });
+      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, Math.ceil(outRow / 8)), nullBitmap: nb });
     } else if (oc.dtype === DTYPE_F32VEC) {
       const dim = oc.vectorDim || 0;
-      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, outRow * dim * 4), vectorDim: dim });
+      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, outRow * dim * 4), vectorDim: dim, nullBitmap: nb });
     } else {
-      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, outRow * oc.bpe) });
+      columns.push({ name: oc.name, dtype: oc.dtype, rowCount: outRow, data: (oc.data.buffer as ArrayBuffer).slice(0, outRow * oc.bpe), nullBitmap: nb });
     }
   }
 
@@ -749,8 +786,21 @@ export function sliceColumnarBatch(batch: ColumnarBatch, offset: number, limit?:
   const columns: ColumnarColumn[] = [];
   for (const col of batch.columns) {
     const bpe = bytesPerElement(col.dtype);
+
+    // Slice null bitmap if present
+    let nullBitmap: Uint8Array | undefined;
+    if (col.nullBitmap) {
+      nullBitmap = new Uint8Array(Math.ceil(rowCount / 8));
+      for (let r = 0; r < rowCount; r++) {
+        const sr = start + r;
+        if (col.nullBitmap[sr >> 3] & (1 << (sr & 7))) {
+          nullBitmap[r >> 3] |= 1 << (r & 7);
+        }
+      }
+    }
+
     if (bpe > 0) {
-      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(start * bpe, end * bpe) });
+      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(start * bpe, end * bpe), nullBitmap });
     } else if (col.dtype === DTYPE_BOOL) {
       // Re-pack bits
       const src = new Uint8Array(col.data);
@@ -759,19 +809,19 @@ export function sliceColumnarBatch(batch: ColumnarBatch, offset: number, limit?:
         const sr = start + r;
         if (src[sr >> 3] & (1 << (sr & 7))) dst[r >> 3] |= 1 << (r & 7);
       }
-      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: dst.buffer });
+      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: dst.buffer, nullBitmap });
     } else if (col.dtype === DTYPE_UTF8) {
       const srcOffsets = col.offsets!;
       const strStart = srcOffsets[start];
       const strEnd = srcOffsets[end];
       const offsets = new Uint32Array(rowCount + 1);
       for (let r = 0; r <= rowCount; r++) offsets[r] = srcOffsets[start + r] - strStart;
-      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(strStart, strEnd), offsets });
+      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(strStart, strEnd), offsets, nullBitmap });
     } else if (col.dtype === DTYPE_F32VEC) {
       const dim = col.vectorDim || 0;
-      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(start * dim * 4, end * dim * 4), vectorDim: dim });
+      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: col.data.slice(start * dim * 4, end * dim * 4), vectorDim: dim, nullBitmap });
     } else {
-      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: new ArrayBuffer(0) });
+      columns.push({ name: col.name, dtype: col.dtype, rowCount, data: new ArrayBuffer(0), nullBitmap });
     }
   }
   return { columns, rowCount };
