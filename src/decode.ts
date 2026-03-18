@@ -76,9 +76,14 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (typeof filter.value !== "string" || typeof min !== "string") break;
         const prefix = extractLikePrefix(filter.value);
         if (!prefix) break;
-        // Page max < prefix or page min >= prefix + '\uffff' → no match possible
-        const prefixEnd = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
-        if ((max as string) < prefix || (min as string) >= prefixEnd) return true;
+        // Page max < prefix → no match possible
+        if ((max as string) < prefix) { return true; }
+        // Page min >= prefix successor → no match possible (guard U+FFFF overflow)
+        const lastCode = prefix.charCodeAt(prefix.length - 1);
+        if (lastCode < 0xffff) {
+          const prefixEnd = prefix.slice(0, -1) + String.fromCharCode(lastCode + 1);
+          if ((min as string) >= prefixEnd) return true;
+        }
         break;
       }
       // not_like: skip uniform pages where the single value matches the pattern
@@ -582,9 +587,24 @@ const likeRegexCache = new Map<string, RegExp>();
 export function compileLikeRegex(pattern: string): RegExp {
   let cached = likeRegexCache.get(pattern);
   if (cached) return cached;
-  // Escape regex metacharacters, then replace SQL wildcards
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\*]/g, "\\$&");
-  const re = new RegExp("^" + escaped.replace(/%/g, ".*").replace(/_/g, ".") + "$", "s");
+  // Walk character-by-character to handle SQL escape sequences (\%, \_)
+  let reStr = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "\\" && i + 1 < pattern.length) {
+      // SQL escape: \% → literal %, \_ → literal _, \\ → literal \
+      const next = pattern[++i];
+      reStr += next.replace(/[.+?^${}()|[\]\\*]/g, "\\$&");
+    } else if (ch === "%") {
+      reStr += ".*";
+    } else if (ch === "_") {
+      reStr += ".";
+    } else {
+      reStr += ch.replace(/[.+?^${}()|[\]\\*]/g, "\\$&");
+    }
+  }
+  reStr += "$";
+  const re = new RegExp(reStr, "s");
   likeRegexCache.set(pattern, re);
   if (likeRegexCache.size > 1000) likeRegexCache.clear(); // prevent unbounded growth
   return re;

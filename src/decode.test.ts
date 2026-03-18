@@ -530,6 +530,23 @@ describe("matchesFilter", () => {
     expect(matchesFilter("Alice", { column: "x", op: "not_like", value: "Ali%" })).toBe(false);
     expect(matchesFilter("alice", { column: "x", op: "not_like", value: "Ali%" })).toBe(true);
   });
+
+  it("LIKE with escaped percent (\\%) matches literal %", () => {
+    expect(matchesFilter("100%", { column: "x", op: "like", value: "100\\%" })).toBe(true);
+    expect(matchesFilter("100abc", { column: "x", op: "like", value: "100\\%" })).toBe(false);
+    expect(matchesFilter("100%done", { column: "x", op: "like", value: "100\\%%"})).toBe(true);
+  });
+
+  it("LIKE with escaped underscore (\\_) matches literal _", () => {
+    expect(matchesFilter("a_b", { column: "x", op: "like", value: "a\\_b" })).toBe(true);
+    expect(matchesFilter("axb", { column: "x", op: "like", value: "a\\_b" })).toBe(false);
+  });
+
+  it("LIKE with regex metacharacters in pattern", () => {
+    expect(matchesFilter("hello.world", { column: "x", op: "like", value: "hello.world" })).toBe(true);
+    expect(matchesFilter("helloXworld", { column: "x", op: "like", value: "hello.world" })).toBe(false);
+    expect(matchesFilter("(test)", { column: "x", op: "like", value: "(test)" })).toBe(true);
+  });
 });
 
 describe("bigIntReplacer", () => {
