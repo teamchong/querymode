@@ -96,7 +96,7 @@ export class PgConnectionHandler {
   }
 
   private async handleMessage(msg: FrontendMessage): Promise<void> {
-    if (msg.type === "terminate") return;
+    if (msg.type === "terminate" || msg.type === "skip") return;
 
     if (msg.type === "query") {
       await this.handleQuery(msg.sql);

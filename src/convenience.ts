@@ -19,7 +19,11 @@ export function createFromJSON<T extends Record<string, unknown>>(
     return new DataFrame(tableName, new MaterializedExecutor(result));
   }
 
-  const columns = Object.keys(data[0]);
+  const columnSet = new Set<string>();
+  for (const item of data) {
+    for (const key of Object.keys(item)) columnSet.add(key);
+  }
+  const columns = [...columnSet];
   const rows: Row[] = data.map(item => {
     const row: Row = {};
     for (const col of columns) {

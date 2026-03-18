@@ -30,7 +30,11 @@ export interface SSLRequest {
   type: "ssl_request";
 }
 
-export type FrontendMessage = StartupMessage | QueryMessage | TerminateMessage | SSLRequest;
+export interface SkipMessage {
+  type: "skip";
+}
+
+export type FrontendMessage = StartupMessage | QueryMessage | TerminateMessage | SSLRequest | SkipMessage;
 
 // ── Parsing ─────────────────────────────────────────────────────────────
 
@@ -95,8 +99,8 @@ export function parseFrontendMessage(buf: Uint8Array): [FrontendMessage, number]
     case 0x58: // 'X' — Terminate
       return [{ type: "terminate" }, totalLen];
     default:
-      // Skip unknown messages
-      return [{ type: "terminate" }, totalLen];
+      // Skip unknown/unsupported messages (extended query protocol, etc.)
+      return [{ type: "skip" }, totalLen];
   }
 }
 
