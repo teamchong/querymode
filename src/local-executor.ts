@@ -7,6 +7,7 @@
  */
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
+import { queryReferencedColumns } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
 import { parseManifest } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
@@ -209,21 +210,7 @@ export class LocalExecutor implements QueryExecutor {
   async explain(query: QueryDescriptor): Promise<ExplainResult> {
     const meta = await this.getOrLoadMeta(query.table);
     const { columns } = meta;
-    const neededCols = new Set(query.projections.length > 0 ? query.projections : columns.map(c => c.name));
-    for (const f of query.filters) neededCols.add(f.column);
-    if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededCols.add(f.column);
-    if (query.sortColumn) neededCols.add(query.sortColumn);
-    if (query.groupBy) for (const g of query.groupBy) neededCols.add(g);
-    if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededCols.add(a.column);
-    if (query.distinct) for (const d of query.distinct) neededCols.add(d);
-    if (query.windows) for (const w of query.windows) {
-      if (w.column) neededCols.add(w.column);
-      for (const p of w.partitionBy) neededCols.add(p);
-      for (const o of w.orderBy) neededCols.add(o.column);
-    }
-    if (query.join) neededCols.add(query.join.leftKey);
-    if (query.subqueryIn) for (const sq of query.subqueryIn) neededCols.add(sq.column);
-    if (query.vectorSearch) neededCols.add(query.vectorSearch.column);
+    const neededCols = queryReferencedColumns(query, columns.map(c => c.name));
     const projectedColumns = columns.filter(c => neededCols.has(c.name));
 
     let pagesTotal = 0;
@@ -496,21 +483,7 @@ export class LocalExecutor implements QueryExecutor {
     }
 
     // Step 2: Determine columns to fetch (projection + all referenced columns)
-    const neededColumns = new Set(query.projections.length > 0 ? query.projections : columns.map(c => c.name));
-    for (const f of query.filters) neededColumns.add(f.column);
-    if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededColumns.add(f.column);
-    if (query.sortColumn) neededColumns.add(query.sortColumn);
-    if (query.groupBy) for (const g of query.groupBy) neededColumns.add(g);
-    if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededColumns.add(a.column);
-    if (query.distinct) for (const d of query.distinct) neededColumns.add(d);
-    if (query.windows) for (const w of query.windows) {
-      if (w.column) neededColumns.add(w.column);
-      for (const p of w.partitionBy) neededColumns.add(p);
-      for (const o of w.orderBy) neededColumns.add(o.column);
-    }
-    if (query.join) { neededColumns.add(query.join.leftKey); }
-    if (query.subqueryIn) for (const sq of query.subqueryIn) neededColumns.add(sq.column);
-    if (query.vectorSearch) neededColumns.add(query.vectorSearch.column);
+    const neededColumns = queryReferencedColumns(query, columns.map(c => c.name));
     const projectedColumns = columns.filter(c => neededColumns.has(c.name));
 
     // Vector search still uses the legacy all-at-once path (needs full embeddings for WASM SIMD)
@@ -956,21 +929,7 @@ export class LocalExecutor implements QueryExecutor {
       // Skip entire fragment if min/max stats eliminate it
       if (canSkipFragment(meta, query.filters, query.filterGroups)) continue;
 
-      const neededCols = new Set(query.projections.length > 0 ? query.projections : meta.columns.map(c => c.name));
-      for (const f of query.filters) neededCols.add(f.column);
-      if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededCols.add(f.column);
-      if (query.sortColumn) neededCols.add(query.sortColumn);
-      if (query.groupBy) for (const g of query.groupBy) neededCols.add(g);
-      if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededCols.add(a.column);
-      if (query.distinct) for (const d of query.distinct) neededCols.add(d);
-      if (query.windows) for (const w of query.windows) {
-        if (w.column) neededCols.add(w.column);
-        for (const p of w.partitionBy) neededCols.add(p);
-        for (const o of w.orderBy) neededCols.add(o.column);
-      }
-      if (query.join) { neededCols.add(query.join.leftKey); }
-      if (query.subqueryIn) for (const sq of query.subqueryIn) neededCols.add(sq.column);
-      if (query.vectorSearch) neededCols.add(query.vectorSearch.column);
+      const neededCols = queryReferencedColumns(query, meta.columns.map(c => c.name));
       const projectedColumns = meta.columns.filter(c => neededCols.has(c.name));
       const filePath = meta.r2Key;
 

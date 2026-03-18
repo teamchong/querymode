@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env, TableMeta, QueryResult, Row } from "./types.js";
+import { queryReferencedColumns } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { instantiateWasm, type WasmEngine } from "./wasm-engine.js";
 import { coalesceRanges, autoCoalesceGap, fetchBounded, withRetry, withTimeout } from "./coalesce.js";
@@ -74,27 +75,7 @@ export class FragmentDO extends DurableObject<Env> {
         this.ctx.storage.put(`frag:${r2Key}`, meta);
       }
 
-      let neededNames: Set<string>;
-      if (query.projections.length > 0) {
-        neededNames = new Set(query.projections);
-        for (const f of query.filters) neededNames.add(f.column);
-        if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) neededNames.add(f.column);
-        if (query.sortColumn) neededNames.add(query.sortColumn);
-        if (query.groupBy) for (const g of query.groupBy) neededNames.add(g);
-        if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") neededNames.add(a.column);
-        if (query.distinct) for (const d of query.distinct) neededNames.add(d);
-        if (query.windows) for (const w of query.windows) {
-          if (w.column) neededNames.add(w.column);
-          for (const p of w.partitionBy) neededNames.add(p);
-          for (const o of w.orderBy) neededNames.add(o.column);
-        }
-        if (query.join) { neededNames.add(query.join.leftKey); }
-        if (query.subqueryIn) for (const sq of query.subqueryIn) neededNames.add(sq.column);
-      } else {
-        neededNames = new Set(effectiveMeta.columns.map(c => c.name));
-      }
-      if (query.vectorSearch) neededNames.add(query.vectorSearch.column);
-
+      const neededNames = queryReferencedColumns(query, effectiveMeta.columns.map(c => c.name));
       let cols = effectiveMeta.columns.filter(c => neededNames.has(c.name));
 
       // Build byte ranges for each page, skipping uniformly across all columns.

@@ -142,6 +142,43 @@ export interface WindowSpec {
   frame?: { type: "rows" | "range"; start: number | "unbounded" | "current"; end: number | "current" | "unbounded" };
 }
 
+/**
+ * Compute the set of column names referenced by a query descriptor.
+ * Includes projections, filters, filterGroups, sort, groupBy, aggregates,
+ * distinct, windows, join, subqueryIn, and vectorSearch.
+ * Used by all scan paths to determine which columns to fetch from storage.
+ */
+export function queryReferencedColumns(query: {
+  projections: string[];
+  filters: FilterOp[];
+  filterGroups?: FilterOp[][];
+  sortColumn?: string;
+  groupBy?: string[];
+  aggregates?: AggregateOp[];
+  distinct?: string[];
+  windows?: WindowSpec[];
+  join?: { leftKey: string };
+  subqueryIn?: { column: string }[];
+  vectorSearch?: { column: string };
+}, allColumnNames: string[]): Set<string> {
+  const s = new Set(query.projections.length > 0 ? query.projections : allColumnNames);
+  for (const f of query.filters) s.add(f.column);
+  if (query.filterGroups) for (const g of query.filterGroups) for (const f of g) s.add(f.column);
+  if (query.sortColumn) s.add(query.sortColumn);
+  if (query.groupBy) for (const g of query.groupBy) s.add(g);
+  if (query.aggregates) for (const a of query.aggregates) if (a.column !== "*") s.add(a.column);
+  if (query.distinct) for (const d of query.distinct) s.add(d);
+  if (query.windows) for (const w of query.windows) {
+    if (w.column) s.add(w.column);
+    for (const p of w.partitionBy) s.add(p);
+    for (const o of w.orderBy) s.add(o.column);
+  }
+  if (query.join) s.add(query.join.leftKey);
+  if (query.subqueryIn) for (const sq of query.subqueryIn) s.add(sq.column);
+  if (query.vectorSearch) s.add(query.vectorSearch.column);
+  return s;
+}
+
 /** Join key specification */
 export interface JoinKeys {
   left: string;
