@@ -494,20 +494,11 @@ export function matchesFilter(
     case "lte": { const [a, b] = coerceCompare(val, t); return (a as number | bigint | string) <= (b as number | bigint | string); }
     case "in": {
       if (!Array.isArray(t)) return false;
-      const set = getInSet(t);
-      if (set.has(val as number | bigint | string)) return true;
-      // bigint/number cross-type: 5n !== 5 for Set.has, so coerce
-      if (typeof val === "bigint") return set.has(Number(val));
-      if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return set.has(BigInt(val));
-      return false;
+      return getInSet(t).has(val as number | bigint | string);
     }
     case "not_in": {
       if (!Array.isArray(t)) return false;
-      const set = getInSet(t);
-      if (set.has(val as number | bigint | string)) return false;
-      if (typeof val === "bigint") return !set.has(Number(val));
-      if (typeof val === "number" && Number.isFinite(val) && Number.isInteger(val)) return !set.has(BigInt(val));
-      return true;
+      return !getInSet(t).has(val as number | bigint | string);
     }
     case "between": {
       if (!Array.isArray(t) || t.length !== 2) return false;
@@ -542,6 +533,18 @@ function getInSet(values: readonly (number | bigint | string)[]): Set<number | b
   let cached = inSetCache.get(values);
   if (cached) return cached;
   const set = new Set<number | bigint | string>(values);
+  // Add cross-type equivalents so set.has() works for both bigint and number
+  // representations without unsafe Number(bigint) coercion that loses precision.
+  for (const v of values) {
+    if (typeof v === "number" && Number.isFinite(v) && Number.isInteger(v)) {
+      set.add(BigInt(v));
+    } else if (typeof v === "bigint") {
+      // Only add Number equivalent if the bigint fits safely
+      if (v >= -9007199254740991n && v <= 9007199254740991n) {
+        set.add(Number(v));
+      }
+    }
+  }
   inSetCache.set(values, set);
   return set;
 }
