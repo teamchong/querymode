@@ -697,7 +697,7 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Core count logic shared by HTTP handler and RPC. */
   private async executeCount(query: QueryDescriptor): Promise<number> {
-    if (query.filters.length === 0) {
+    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
       const meta = this.footerCache.get(query.table)
         ?? (await this.loadTableFromR2(query.table)) ?? undefined;
       if (meta) return meta.columns[0]?.pages.reduce((s, p) => s + p.rowCount, 0) ?? meta.totalRows;
