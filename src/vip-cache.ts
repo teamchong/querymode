@@ -101,7 +101,13 @@ export class VipCache<K, V> {
   }
 
   has(key: K): boolean {
-    return this.map.has(key);
+    const entry = this.map.get(key);
+    if (!entry) return false;
+    if (entry.expiresAt && Date.now() > entry.expiresAt) {
+      if (entry.refCount === 0) this.map.delete(key);
+      return false;
+    }
+    return true;
   }
 
   /** Return the access count for a key without incrementing it. Returns 0 if not present. */
