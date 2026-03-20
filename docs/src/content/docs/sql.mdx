@@ -52,6 +52,7 @@ WHERE name LIKE '%Alice%'
 WHERE id IN (1, 2, 3)
 WHERE id NOT IN (4, 5)
 WHERE amount BETWEEN 100 AND 500
+WHERE amount NOT BETWEEN 100 AND 500
 WHERE email IS NULL
 WHERE email IS NOT NULL
 WHERE NOT (status = 'deleted')
@@ -144,6 +145,8 @@ SELECT * FROM orders LEFT JOIN users ON orders.user_id = users.id
 SELECT * FROM orders RIGHT JOIN users ON orders.user_id = users.id
 SELECT * FROM orders FULL JOIN users ON orders.user_id = users.id
 SELECT * FROM a CROSS JOIN b
+SELECT * FROM orders NATURAL JOIN users
+SELECT * FROM orders JOIN users USING (id)
 ```
 
 ### Vector search

@@ -13,6 +13,8 @@ CLI          ──►  Worker (CF Worker)     ──►           │
 DataFrame         LocalExecutor                      QueryDO (per-region)
                   MaterializedExecutor                 │
                                                      FragmentDO (fan-out pool)
+                                                       │
+                                                     WorkerDO (distributed tasks)
 
                   Operator Pipeline                  Core Engine
                   ─────────────────                  ───────────
@@ -42,6 +44,10 @@ One per datacenter region. Caches table footers in memory (~4KB each) with VIP e
 ### FragmentDO (fan-out pool)
 
 One per fragment — scales with data, no hard cap. Each scans its assigned fragments in parallel. Handles column reads, page decode, filter pushdown, and partial aggregation. Idle DOs cost nothing (they hibernate). Slot names are deterministic (`frag-{region}-slot-{N}`) so they get reused across queries with warm footer caches.
+
+### WorkerDO (distributed tasks)
+
+Generic worker for distributed operations that exceed single-DO memory. Handles hash join partition processing, sort partitions, and distinct deduplication across R2-spilled data. Managed by `WorkerPool` which coordinates tree-shaped fan-out (direct for ≤50 partitions, two-level for ≤2500, three-level beyond).
 
 ## Query flow
 
@@ -271,6 +277,6 @@ Tests run in two runtimes:
 |---------|------|-------|
 | **workerd** (real CF Workers) | Operators, DOs, decode, format parsing | — |
 | **Node** | DuckDB conformance (1M-5M rows), fixture files, SQL, infra | — |
-| **Total** | All runtimes | **750+ tests** |
+| **Total** | All runtimes | **755+ tests** |
 
 Conformance tests validate every operator against DuckDB at scale. CI benchmarks compare QueryMode vs DuckDB on every push.

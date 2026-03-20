@@ -54,6 +54,8 @@ These are accepted and acknowledged for BI tool compatibility but have no effect
 - `RESET ALL`
 - `DISCARD ALL`
 - `SHOW <parameter>` (returns `"on"` for all parameters)
+- `BEGIN`, `START TRANSACTION`, `COMMIT`, `END`, `ROLLBACK`, `ABORT` (auto-commit mode)
+- `DEALLOCATE`, `CLOSE` (no-op since prepared statements are not stored)
 
 ## Programmatic use
 
@@ -106,18 +108,18 @@ QueryMode types map to PostgreSQL type OIDs:
 
 | QueryMode type | Postgres type | OID |
 |---------------|--------------|-----|
-| `int8`, `int16` | `INT2` | 21 |
-| `int32` | `INT4` | 23 |
-| `int64` | `INT8` | 20 |
-| `float32` | `FLOAT4` | 700 |
+| `int8`, `int16`, `uint8`, `uint16` | `INT2` | 21 |
+| `int32`, `uint32` | `INT4` | 23 |
+| `int64`, `uint64` | `INT8` | 20 |
+| `float16`, `float32` | `FLOAT4` | 700 |
 | `float64` | `FLOAT8` | 701 |
-| `utf8` | `TEXT` | 25 |
+| `utf8`, `string` | `TEXT` | 25 |
 | `bool` | `BOOL` | 16 |
 | `binary` | `BYTEA` | 17 |
 
 ## Limitations
 
-- **Simple Query protocol only** — extended query protocol (prepared statements, `DESCRIBE`, `BIND`) is not supported. Most BI tools fall back to Simple Query automatically.
+- **Simple Query protocol** — extended query protocol messages (`Parse`, `Bind`, `Describe`, `Execute`) are acknowledged but not executed. `Sync` is handled correctly. Most BI tools fall back to Simple Query automatically.
 - **No authentication** — all connections are accepted. Run behind a firewall or SSH tunnel for production use.
 - **No SSL/TLS** — SSL requests are rejected; clients retry in plaintext. Use an SSH tunnel or reverse proxy for encrypted connections.
 - **Local mode only** — the built-in server uses `LocalExecutor`. For edge mode, build a custom server that passes a `RemoteExecutor` to `PgConnectionHandler`.

@@ -9,12 +9,12 @@ QueryMode reads columnar and row-oriented formats with the same API. Format dete
 
 | Format | Type | Page skip | Compression | Status |
 |--------|------|-----------|-------------|--------|
-| **Parquet** | Columnar | Min/max stats | Snappy, ZSTD, GZIP, LZ4 | Full support |
+| **Parquet** | Columnar | Min/max stats | Snappy, ZSTD, GZIP, LZ4_RAW | Full support |
 | **Lance v1/v2** | Columnar | Min/max stats | None (raw pages) | Full support |
 | **Iceberg** | Table format | Via Parquet | Via Parquet | Metadata + Parquet data |
 | **CSV** | Row | No | No | Via `fromCSV()` |
 | **JSON / NDJSON** | Row | No | No | Via `fromJSON()` or file path |
-| **Arrow** | Columnar | No | No | In-memory only |
+| **Arrow IPC** | Columnar | No | No | File or in-memory |
 
 ## Parquet
 
@@ -34,8 +34,15 @@ const result = await qm
 |-------------|---------------|-------|
 | INT32 | `int32` | |
 | INT64 | `int64` | BigInt in JS |
+| INT32 (INT_8) | `int8` | Via logical type annotation |
+| INT32 (INT_16) | `int16` | Via logical type annotation |
+| INT32 (UINT_8) | `uint8` | Via logical type annotation |
+| INT32 (UINT_16) | `uint16` | Via logical type annotation |
+| INT32 (UINT_32) | `uint32` | Via logical type annotation |
+| INT64 (UINT_64) | `uint64` | BigInt in JS |
 | FLOAT | `float32` | |
 | DOUBLE | `float64` | |
+| FIXED_LEN_BYTE_ARRAY (FLOAT16) | `float16` | IEEE 754 half-precision |
 | BOOLEAN | `bool` | |
 | BYTE_ARRAY (UTF8) | `utf8` | |
 | BYTE_ARRAY | `binary` | |
@@ -43,7 +50,7 @@ const result = await qm
 
 ### Compression
 
-Snappy decompression is pure TypeScript. ZSTD, GZIP, and LZ4 use the WASM engine.
+Snappy decompression is pure TypeScript. ZSTD, GZIP, and LZ4_RAW use the WASM engine. Note: only LZ4 raw blocks are supported — Hadoop-framed LZ4 (`LZ4` codec) is not supported.
 
 ## Lance v1 / v2
 

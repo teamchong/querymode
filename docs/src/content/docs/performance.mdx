@@ -46,8 +46,8 @@ Operators that accumulate state accept a memory budget (bytes). When exceeded, t
 | `DistinctOperator` | unbounded | Seen-values hash set |
 
 **Sizing guidance:**
-- **256 MB** (default) works for most queries — covers ~20M rows of numeric data or ~5M string rows
-- Reduce to **64–128 MB** on Cloudflare DOs to leave headroom for page buffers and WASM memory (DO limit is 128 MB)
+- **256 MB** (default for local mode) works for most queries — covers ~20M rows of numeric data or ~5M string rows
+- **32 MB** (default for edge mode) — QueryDO and FragmentDO use `EDGE_MEMORY_BUDGET` to leave headroom for page buffers and WASM memory within DO's 256 MB limit
 - Local mode (Node/Bun) has no practical limit — set budget to available RAM
 
 ```typescript
