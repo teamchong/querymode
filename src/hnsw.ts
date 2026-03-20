@@ -25,7 +25,7 @@ export function cosineDistance(a: Float32Array, b: Float32Array): number {
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  const denom = Math.sqrt(normA * normB);
   if (denom === 0) return 1;
   return 1 - dot / denom;
 }

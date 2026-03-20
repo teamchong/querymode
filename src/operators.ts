@@ -376,10 +376,7 @@ export class ScanOperator implements Operator {
           for (const [k, v] of projDecoded) filterDecoded.set(k, v);
           this.scanMs += Date.now() - scanStart;
 
-          if (matchingIndices.length > 0) {
-            return { columns: filterDecoded, rowCount, selection: matchingIndices };
-          }
-          continue;
+          return { columns: filterDecoded, rowCount, selection: matchingIndices };
         }
 
         // No filters — fetch + decode all columns
@@ -804,14 +801,13 @@ function decodePageBatch(
     if (col.dtype === "fixed_size_list") {
       const dim = col.listDimension ?? 0;
       if (dim === 0) continue;
-      const vecs: Float32Array[] = [];
-      const view = new DataView(buf);
       const numRows = Math.floor((buf.byteLength >> 2) / dim);
-      for (let r = 0; r < numRows; r++) {
-        const vec = new Float32Array(dim);
-        for (let d = 0; d < dim; d++) vec[d] = view.getFloat32((r * dim + d) * 4, true);
-        vecs.push(vec);
-      }
+      // One flat allocation + subarray views — O(1) allocations instead of O(numRows).
+      const flat = new Float32Array(numRows * dim);
+      const view = new DataView(buf);
+      for (let i = 0; i < numRows * dim; i++) flat[i] = view.getFloat32(i * 4, true);
+      const vecs: Float32Array[] = new Array(numRows);
+      for (let r = 0; r < numRows; r++) vecs[r] = flat.subarray(r * dim, (r + 1) * dim);
       result.set(col.name, vecs);
     } else {
       const decoded = pi.encoding

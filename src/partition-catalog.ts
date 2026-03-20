@@ -39,6 +39,8 @@ export class PartitionCatalog {
   private allFragmentIds: number[] = [];
   /** O(1) dedup during construction/registration. */
   private allFragmentIdSet = new Set<number>();
+  /** O(1) per-key dedup for register() — avoids O(n) includes() scan on hot ingest path. */
+  private _indexSets = new Map<string, Set<number>>();
   /** True when every indexed page has min===max (Hive-style partitioning).
    *  Only exact-partition catalogs are safe for eq/in lookups. */
   private exactPartition = true;
@@ -91,9 +93,14 @@ export class PartitionCatalog {
     }
     for (const v of values) {
       const key = partKey(v);
-      let entry = this.index.get(key);
-      if (!entry) { entry = []; this.index.set(key, entry); }
-      if (!entry.includes(fragmentId)) entry.push(fragmentId);
+      let setEntry = this._indexSets.get(key);
+      if (!setEntry) { setEntry = new Set(); this._indexSets.set(key, setEntry); }
+      if (!setEntry.has(fragmentId)) {
+        setEntry.add(fragmentId);
+        let entry = this.index.get(key);
+        if (!entry) { entry = []; this.index.set(key, entry); }
+        entry.push(fragmentId);
+      }
     }
   }
 

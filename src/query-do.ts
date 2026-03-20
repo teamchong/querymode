@@ -266,8 +266,12 @@ class EdgeScanOperator implements Operator {
    * registered at once in WASM. NOT used for Parquet (which fetches per-page).
    */
   private async fetchAllPages(): Promise<void> {
-    for (let pi = 0; pi < this.pageCount; pi++) {
-      const pageData = await this.fetchPageData(pi);
+    // Fetch all pages in parallel — each page lands in columnData independently.
+    // Peak memory is identical to sequential (all pages accumulate either way).
+    const allPageData = await Promise.all(
+      Array.from({ length: this.pageCount }, (_, pi) => this.fetchPageData(pi)),
+    );
+    for (const pageData of allPageData) {
       for (const [colName, buf] of pageData) {
         const arr = this.columnData.get(colName) ?? [];
         arr.push(buf);
