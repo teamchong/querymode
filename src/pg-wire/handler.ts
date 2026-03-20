@@ -22,6 +22,7 @@ import {
   rowDescription,
   dataRow,
   commandComplete,
+  emptyQueryResponse,
   errorResponse,
   type FrontendMessage,
 } from "./protocol.js";
@@ -38,6 +39,8 @@ export class PgConnectionHandler {
   private send: (data: Uint8Array) => void;
   private startupDone = false;
   private buffer = new Uint8Array(0);
+  private processing = false;
+  private pending: Uint8Array[] = [];
 
   constructor(opts: PgConnectionOptions) {
     this.executor = opts.executor;
@@ -46,24 +49,42 @@ export class PgConnectionHandler {
 
   /** Feed incoming bytes from the client. May trigger responses via send(). */
   async onData(chunk: Uint8Array): Promise<void> {
-    // Append to buffer
-    const combined = new Uint8Array(this.buffer.length + chunk.length);
-    combined.set(this.buffer);
-    combined.set(chunk, this.buffer.length);
-    this.buffer = combined;
-
-    if (!this.startupDone) {
-      await this.handleStartup();
-      return;
+    // Queue chunks to prevent concurrent buffer mutation
+    this.pending.push(chunk);
+    if (this.processing) return;
+    this.processing = true;
+    try {
+      await this.processBuffer();
+    } finally {
+      this.processing = false;
     }
+  }
 
-    // Parse regular messages
-    while (this.buffer.length >= 5) {
-      const result = parseFrontendMessage(this.buffer);
-      if (!result) break;
-      const [msg, consumed] = result;
-      this.buffer = this.buffer.subarray(consumed);
-      await this.handleMessage(msg);
+  private async processBuffer(): Promise<void> {
+    while (this.pending.length > 0) {
+      // Drain all pending chunks into buffer
+      for (const chunk of this.pending) {
+        const combined = new Uint8Array(this.buffer.length + chunk.length);
+        combined.set(this.buffer);
+        combined.set(chunk, this.buffer.length);
+        this.buffer = combined;
+      }
+      this.pending.length = 0;
+
+      if (!this.startupDone) {
+        await this.handleStartup();
+        // After startup, continue processing any remaining buffered messages
+        if (!this.startupDone) return;
+      }
+
+      // Parse regular messages
+      while (this.buffer.length >= 5) {
+        const result = parseFrontendMessage(this.buffer);
+        if (!result) break;
+        const [msg, consumed] = result;
+        this.buffer = this.buffer.subarray(consumed);
+        await this.handleMessage(msg);
+      }
     }
   }
 
@@ -75,6 +96,13 @@ export class PgConnectionHandler {
       // Reject SSL, client will retry without
       this.send(sslRefused());
       this.buffer = this.buffer.subarray(8);
+      return;
+    }
+
+    if (msg.type === "terminate") {
+      // Malformed startup — clear buffer and stop processing
+      this.buffer = new Uint8Array(0);
+      this.startupDone = true;
       return;
     }
 
@@ -99,6 +127,12 @@ export class PgConnectionHandler {
   private async handleMessage(msg: FrontendMessage): Promise<void> {
     if (msg.type === "terminate" || msg.type === "skip") return;
 
+    if (msg.type === "sync") {
+      // Extended query protocol Sync — must respond with ReadyForQuery
+      this.send(readyForQuery());
+      return;
+    }
+
     if (msg.type === "query") {
       await this.handleQuery(msg.sql);
     }
@@ -109,7 +143,7 @@ export class PgConnectionHandler {
 
     // Handle empty query
     if (!trimmed) {
-      this.send(commandComplete("SELECT 0"));
+      this.send(emptyQueryResponse());
       this.send(readyForQuery());
       return;
     }
@@ -118,6 +152,17 @@ export class PgConnectionHandler {
     const upper = trimmed.toUpperCase();
     if (upper.startsWith("SET ") || upper.startsWith("RESET ") || upper.startsWith("DISCARD ")) {
       this.send(commandComplete("SET"));
+      this.send(readyForQuery());
+      return;
+    }
+
+    // Handle transaction commands as no-ops — QueryMode is auto-commit
+    const txnWord = upper.split(/\s|;/)[0];
+    if (txnWord === "BEGIN" || upper.startsWith("START TRANSACTION") ||
+        txnWord === "COMMIT" || txnWord === "END" ||
+        txnWord === "ROLLBACK" || txnWord === "ABORT" ||
+        upper.startsWith("DEALLOCATE ") || upper.startsWith("CLOSE ")) {
+      this.send(commandComplete(upper.split(/\s/)[0]));
       this.send(readyForQuery());
       return;
     }

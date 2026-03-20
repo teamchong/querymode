@@ -260,6 +260,7 @@ export class DataFrame<T extends Row = Row> {
           alias: to,
           fn: (row: Row) => row[from],
         })),
+        ...renames.map(([from]) => ({ alias: `__drop__${from}`, fn: () => undefined })),
       ],
     }) as DataFrame;
   }
@@ -549,18 +550,23 @@ export class DataFrame<T extends Row = Row> {
   /** Deferred page-at-a-time execution. Returns a LazyResult handle. */
   async lazy(): Promise<LazyResultHandle<T>> {
     const desc = await this.resolveDeferred();
-    return new LazyResultHandle<T>(desc, this._executor);
+    const dropCols = this._computedColumns
+      .filter(c => c.alias.startsWith("__drop__"))
+      .map(c => c.alias.slice(8));
+    return new LazyResultHandle<T>(desc, this._executor, dropCols);
   }
 
   /** Return the first matching row, or null. */
   async first(): Promise<T | null> {
     const desc = await this.resolveDeferred();
-    if (this._executor.first && this._deferredSubqueries.length === 0 && !this._vectorEncoder) {
+    const hasDrops = this._computedColumns.some(c => c.alias.startsWith("__drop__"));
+    if (this._executor.first && this._deferredSubqueries.length === 0 && !this._vectorEncoder && !hasDrops) {
       return this._executor.first(desc) as Promise<T | null>;
     }
     desc.limit = 1;
-    const result = await this._executor.execute(desc);
-    return (result.rows[0] as T) ?? null;
+    const result = await this._executor.execute(desc) as QueryResult<T>;
+    this.applyDrops(result);
+    return result.rows[0] ?? null;
   }
 
   /** Return the count of matching rows without full materialization. */
@@ -570,6 +576,9 @@ export class DataFrame<T extends Row = Row> {
       return this._executor.count(desc);
     }
     desc.aggregates = [{ fn: "count", column: "*" }];
+    desc.groupBy = undefined;
+    desc.limit = undefined;
+    desc.offset = undefined;
     const result = await this._executor.execute(desc);
     return (result.rows[0]?.["count_*"] as number) ?? 0;
   }
@@ -581,6 +590,7 @@ export class DataFrame<T extends Row = Row> {
       return this._executor.exists(desc);
     }
     desc.limit = 1;
+    desc.offset = undefined;
     const result = await this._executor.execute(desc);
     return result.rowCount > 0;
   }
@@ -607,8 +617,9 @@ export class DataFrame<T extends Row = Row> {
   async head(n = 5): Promise<T[]> {
     const desc = await this.resolveDeferred();
     desc.limit = n;
-    const result = await this._executor.execute(desc);
-    return result.rows as T[];
+    const result = await this._executor.execute(desc) as QueryResult<T>;
+    this.applyDrops(result);
+    return result.rows;
   }
 
   /** Return {rows, columns} — quick shape introspection without collecting all data. */
@@ -693,14 +704,15 @@ export class DataFrame<T extends Row = Row> {
     if (result.rows.length === 0) return "";
     const delim = opts?.delimiter ?? ",";
     const cols = result.columns.length > 0 ? result.columns : Object.keys(result.rows[0]);
-    const header = cols.join(delim);
+    const escapeField = (s: string) =>
+      s.includes(delim) || s.includes('"') || s.includes("\n") || s.includes("\r")
+        ? `"${s.replace(/"/g, '""')}"` : s;
+    const header = cols.map(escapeField).join(delim);
     const lines = result.rows.map(row =>
       cols.map(c => {
         const v = row[c];
         if (v === null || v === undefined) return "";
-        const s = String(v);
-        return s.includes(delim) || s.includes('"') || s.includes("\n")
-          ? `"${s.replace(/"/g, '""')}"` : s;
+        return escapeField(String(v));
       }).join(delim),
     );
     return [header, ...lines].join("\n");
@@ -713,13 +725,14 @@ export class DataFrame<T extends Row = Row> {
     if (typeof console.table === "function") {
       console.table(rows);
     } else {
-      console.log(JSON.stringify(rows, null, 2));
+      console.log(JSON.stringify(rows, bigIntReplacer, 2));
     }
   }
 
   /** Streaming iteration over results in batches. */
   async *stream(batchSize = 1000): AsyncGenerator<T[]> {
-    if (this._executor.cursor && this._deferredSubqueries.length === 0 && !this._vectorEncoder) {
+    const hasDrops = this._computedColumns.some(c => c.alias.startsWith("__drop__"));
+    if (this._executor.cursor && this._deferredSubqueries.length === 0 && !this._vectorEncoder && !hasDrops) {
       for await (const batch of this._executor.cursor(this.toDescriptor(), batchSize)) {
         yield batch as T[];
       }
@@ -918,16 +931,30 @@ export const TableQuery = DataFrame;
 export class LazyResultHandle<T extends Row = Row> {
   private desc: QueryDescriptor;
   private executor: QueryExecutor;
+  private dropCols: string[];
 
-  constructor(desc: QueryDescriptor, executor: QueryExecutor) {
+  constructor(desc: QueryDescriptor, executor: QueryExecutor, dropCols: string[] = []) {
     this.desc = desc;
     this.executor = executor;
+    this.dropCols = dropCols;
+  }
+
+  /** Strip columns marked for drop via __drop__ computed columns. */
+  private applyDrops(rows: T[]): void {
+    if (this.dropCols.length === 0) return;
+    const dropSet = new Set(this.dropCols);
+    const markerSet = new Set(this.dropCols.map(c => `__drop__${c}`));
+    for (const row of rows) {
+      for (const key of dropSet) delete (row as Record<string, unknown>)[key];
+      for (const key of markerSet) delete (row as Record<string, unknown>)[key];
+    }
   }
 
   /** Fetch a page of rows on demand. */
   async page(offset: number, limit: number): Promise<T[]> {
     const pageDesc = { ...this.desc, offset, limit };
     const result = await this.executor.execute(pageDesc);
+    this.applyDrops(result.rows as T[]);
     return result.rows as T[];
   }
 
@@ -939,7 +966,14 @@ export class LazyResultHandle<T extends Row = Row> {
 
   /** Full materialization. */
   async collect(): Promise<QueryResult<T>> {
-    return this.executor.execute(this.desc) as Promise<QueryResult<T>>;
+    const result = await this.executor.execute(this.desc) as QueryResult<T>;
+    if (this.dropCols.length > 0) {
+      this.applyDrops(result.rows);
+      const dropSet = new Set(this.dropCols);
+      const markerSet = new Set(this.dropCols.map(c => `__drop__${c}`));
+      result.columns = result.columns.filter(c => !dropSet.has(c) && !markerSet.has(c));
+    }
+    return result;
   }
 
   /** Streaming iteration. */
@@ -990,6 +1024,18 @@ export class MaterializedExecutor implements QueryExecutor {
       rows = rows.filter(row => rowPassesFilters(row, query.filters, query.filterGroups));
     }
 
+    // Apply subqueryIn filters
+    if (query.subqueryIn && query.subqueryIn.length > 0) {
+      for (const sq of query.subqueryIn) {
+        rows = rows.filter(row => {
+          const val = row[sq.column];
+          if (val === null || val === undefined) return false;
+          const key = typeof val === "bigint" ? val.toString() : String(val);
+          return sq.valueSet.has(key);
+        });
+      }
+    }
+
     // Apply distinct — empty array means "all columns" (same as DistinctOperator)
     if (query.distinct) {
       const seen = new Set<string>();
@@ -1008,6 +1054,11 @@ export class MaterializedExecutor implements QueryExecutor {
       rows = finalizePartialAgg(partial, query);
     }
 
+    // Apply sort (before projections so sort column is available)
+    if (query.sortColumn) {
+      rows.sort(rowComparator(query.sortColumn, query.sortDirection === "desc"));
+    }
+
     // Apply projections
     if (query.projections.length > 0) {
       const keep = new Set(query.projections);
@@ -1016,11 +1067,6 @@ export class MaterializedExecutor implements QueryExecutor {
         for (const k of keep) if (k in row) out[k] = row[k];
         return out;
       });
-    }
-
-    // Apply sort
-    if (query.sortColumn) {
-      rows.sort(rowComparator(query.sortColumn, query.sortDirection === "desc"));
     }
 
     // Apply offset + limit

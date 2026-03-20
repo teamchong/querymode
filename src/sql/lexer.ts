@@ -135,6 +135,7 @@ export function tokenize(sql: string): Token[] {
     if (ch === "/" && pos + 1 < len && sql[pos + 1] === "*") {
       pos += 2;
       while (pos + 1 < len && !(sql[pos] === "*" && sql[pos + 1] === "/")) pos++;
+      if (pos + 1 >= len) throw new SqlLexerError(`Unterminated block comment starting at position ${start}`, start);
       pos += 2;
       continue;
     }
@@ -184,10 +185,14 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
 
-    // Quoted identifiers (double-quoted)
+    // Quoted identifiers (double-quoted, supports "" escape)
     if (ch === '"') {
       pos++;
-      while (pos < len && sql[pos] !== '"') pos++;
+      while (pos < len) {
+        if (sql[pos] === '"' && pos + 1 < len && sql[pos + 1] === '"') { pos += 2; continue; }
+        if (sql[pos] === '"') break;
+        pos++;
+      }
       if (pos >= len) throw new SqlLexerError(`Unterminated quoted identifier starting at position ${start}`, start);
       pos++; // closing quote
       tokens.push({ type: TokenType.IDENTIFIER, lexeme: sql.slice(start, pos), position: start });

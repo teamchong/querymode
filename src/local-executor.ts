@@ -9,7 +9,7 @@ import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendResult, ColumnMeta, DataType, DiffResult, ExplainResult, PageInfo, QueryResult, Row, TableMeta, DatasetMeta, VersionInfo } from "./types.js";
 import { queryReferencedColumns, queryCacheKey, countColumnRows, NULL_SENTINEL } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
-import { parseManifest } from "./manifest.js";
+import { parseManifest, buildManifestBinary, schemaFromColumns } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import { assembleRows, canSkipFragment } from "./decode.js";
 import { coalesceRanges } from "./coalesce.js";
@@ -18,7 +18,7 @@ import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-eng
 import { VipCache } from "./vip-cache.js";
 import { QueryModeError } from "./errors.js";
 import { parseLanceV2Columns, lanceV2ToColumnMeta, computeLanceV2Stats } from "./lance-v2.js";
-import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, buildKeptPageIndices, type FragmentSource, type PipelineOptions } from "./operators.js";
+import { buildPipeline, drainPipeline, DEFAULT_MEMORY_BUDGET, buildKeptPageIndices, assemblePipeline, type FragmentSource, type PipelineOptions } from "./operators.js";
 
 /** Evict oldest entry from a Map when it exceeds maxSize. */
 function evictOldest<K, V>(cache: Map<K, V>, maxSize: number): void {
@@ -137,7 +137,33 @@ export class LocalExecutor implements QueryExecutor {
 
     const newVersion = currentVersion + 1;
 
-    // Write _latest
+    // Read existing fragments and schema from previous manifest (if any)
+    const existingFragments: { id: number; filePath: string; physicalRows: number }[] = [];
+    let existingSchema: import("./types.js").SchemaField[] | undefined;
+    if (currentVersion > 0) {
+      const prevManifestPath = pathMod.join(versionsDir, `${currentVersion}.manifest`);
+      try {
+        const prevBuf = await fs.readFile(prevManifestPath);
+        const ab = prevBuf.buffer.slice(prevBuf.byteOffset, prevBuf.byteOffset + prevBuf.byteLength);
+        const prev = parseManifest(ab);
+        if (prev) {
+          existingFragments.push(...prev.fragments);
+          if (prev.schema.length > 0) existingSchema = prev.schema;
+        }
+      } catch { /* no previous manifest */ }
+    }
+    const newFragments = [
+      ...existingFragments,
+      { id: existingFragments.length + 1, filePath: dataFilePath, physicalRows: rows.length },
+    ];
+    // Derive schema from columns (use existing if available, else infer from appended data)
+    const schema = existingSchema ?? schemaFromColumns(
+      columnArrays.map(c => ({ name: c.name, dtype: c.dtype as import("./types.js").DataType })),
+    );
+    const manifestBuf = buildManifestBinary(newVersion, newFragments, schema);
+    // Write manifest BEFORE _latest — if crash occurs between writes,
+    // _latest still points to previous valid version
+    await fs.writeFile(pathMod.join(versionsDir, `${newVersion}.manifest`), new Uint8Array(manifestBuf));
     await fs.writeFile(latestPath, String(newVersion));
 
     // Invalidate meta + result caches
@@ -156,11 +182,14 @@ export class LocalExecutor implements QueryExecutor {
   /** Count matching rows. No-filter case uses metadata only (zero I/O). */
   async count(query: QueryDescriptor): Promise<number> {
     const meta = await this.getOrLoadMeta(query.table);
-    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
+    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length && !query.pipeStages?.length) {
+      // For dataset directories, meta only has first fragment — use dataset totalRows
+      const dataset = this.datasetCache.get(query.table);
+      if (dataset) return dataset.totalRows;
       return countColumnRows(meta.columns);
     }
     // With filters: fall through to aggregate path
-    const desc = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
+    const desc = { ...query, aggregates: [{ fn: "count" as const, column: "*" }], groupBy: undefined, limit: undefined, offset: undefined };
     const result = await this.execute(desc);
     return (result.rows[0]?.["count_*"] as number) ?? 0;
   }
@@ -300,6 +329,7 @@ export class LocalExecutor implements QueryExecutor {
           const start = Number(page.byteOffset);
           const end = start + page.byteLength - 1;
           const resp = await fetch(table, { headers: { Range: `bytes=${start}-${end}` } });
+          if (!resp.ok && resp.status !== 206) throw new QueryModeError("QUERY_FAILED", `HTTP ${resp.status} reading page from ${table}`);
           return resp.arrayBuffer();
         },
       };
@@ -372,7 +402,9 @@ export class LocalExecutor implements QueryExecutor {
         throw err;
       });
       if (stat?.isDirectory()) {
-        return this.executeDatasetQuery(query, startTime);
+        const result = await this.executeDatasetQuery(query, startTime);
+        if (query.cacheTTL) this.resultCache.setWithTTL(queryCacheKey(query), result, query.cacheTTL);
+        return result;
       }
     }
 
@@ -430,12 +462,21 @@ export class LocalExecutor implements QueryExecutor {
       spill: new FsSpillBackend(),
     };
 
+    try {
     // If join is specified, build left + right pipelines and combine with HashJoinOperator
     if (query.join) {
-      return this.executeJoin(query, [fragment], wasm, pipeOpts, startTime);
+      const result = await this.executeJoin(query, [fragment], wasm, pipeOpts, startTime);
+      if (query.cacheTTL) this.resultCache.setWithTTL(queryCacheKey(query), result, query.cacheTTL);
+      return result;
     }
 
-    const outputColumns = query.projections.length > 0 ? query.projections : projectedColumns.map(c => c.name);
+    let outputColumns = query.projections.length > 0 ? query.projections : projectedColumns.map(c => c.name);
+    // Include window and computed column aliases so ProjectOperator doesn't strip them
+    const windowAliases = (query.windows ?? []).map(w => w.alias);
+    const computedAliases = (query.computedColumns ?? []).filter(c => !c.alias.startsWith("__drop__")).map(c => c.alias);
+    if (windowAliases.length > 0 || computedAliases.length > 0) {
+      outputColumns = [...new Set([...outputColumns, ...windowAliases, ...computedAliases])];
+    }
     const { pipeline, scan, wasmAgg } = buildPipeline([fragment], query, wasm, outputColumns, pipeOpts);
 
     // Step 4: Drain pipeline
@@ -461,6 +502,9 @@ export class LocalExecutor implements QueryExecutor {
     }
 
     return result;
+    } finally {
+      await pipeOpts.spill!.cleanup();
+    }
   }
 
   /** Legacy vector search path — needs all embeddings materialized for WASM SIMD. */
@@ -586,8 +630,8 @@ export class LocalExecutor implements QueryExecutor {
 
     const rightScan = new (await import("./operators.js")).ScanOperator([rightFragment], join.right, wasm);
     let rightPipeline: import("./operators.js").Operator = rightScan;
-    if (join.right.filters.length > 0) {
-      rightPipeline = new (await import("./operators.js")).FilterOperator(rightPipeline, join.right.filters);
+    if (join.right.filters.length > 0 || join.right.filterGroups?.length) {
+      rightPipeline = new (await import("./operators.js")).FilterOperator(rightPipeline, join.right.filters, join.right.filterGroups);
     }
 
     // Hash join: right is build side, left is probe side
@@ -600,33 +644,12 @@ export class LocalExecutor implements QueryExecutor {
       joinBudget, joinSpill,
     );
 
-    // Apply post-join sort/limit/aggregates
-    const { buildPipeline: _, TopKOperator, InMemorySortOperator, LimitOperator, ProjectOperator, AggregateOperator, ExternalSortOperator } = await import("./operators.js");
+    // Apply post-join operators via shared pipeline assembly.
+    // Filters are already applied on both sides pre-join, so pass filtersApplied=true.
+    // Skip projection when aggregation is active (aggregate output aliases don't match table columns).
     const hasAgg = query.aggregates && query.aggregates.length > 0;
-
-    if (hasAgg) {
-      pipeline = new AggregateOperator(pipeline, query);
-      if (query.sortColumn && query.limit !== undefined) {
-        pipeline = new TopKOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.limit, query.offset ?? 0);
-      } else if (query.sortColumn) {
-        pipeline = new InMemorySortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0);
-      } else if (query.offset !== undefined || query.limit !== undefined) {
-        pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
-      }
-    } else if (query.sortColumn) {
-      if (query.limit !== undefined) {
-        pipeline = new TopKOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.limit, query.offset ?? 0);
-      } else {
-        pipeline = new ExternalSortOperator(pipeline, query.sortColumn, query.sortDirection === "desc", query.offset ?? 0, pipeOpts?.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET);
-      }
-    } else if (query.offset !== undefined || query.limit !== undefined) {
-      pipeline = new LimitOperator(pipeline, query.limit ?? Infinity, query.offset ?? 0);
-    }
-
-    // Project
-    if (query.projections.length > 0) {
-      pipeline = new ProjectOperator(pipeline, query.projections);
-    }
+    const projectCols = hasAgg ? [] : query.projections;
+    pipeline = assemblePipeline(pipeline, query, projectCols, /* filtersApplied */ true, pipeOpts);
 
     const rows = await drainPipeline(pipeline);
 
@@ -880,21 +903,25 @@ export class LocalExecutor implements QueryExecutor {
       memoryBudgetBytes: this.memoryBudgetBytes ?? DEFAULT_MEMORY_BUDGET,
       spill: new FsSpill(),
     };
-    const { pipeline, scan, wasmAgg } = buildPipeline(fragments, query, wasm, outputColumns, pipeOpts);
-    const rows = await drainPipeline(pipeline);
+    try {
+      const { pipeline, scan, wasmAgg } = buildPipeline(fragments, query, wasm, outputColumns, pipeOpts);
+      const rows = await drainPipeline(pipeline);
 
-    const result: QueryResult & { scanMs?: number; pipelineMs?: number; metaMs?: number } = {
-      rows,
-      rowCount: rows.length,
-      columns: outputColumns,
-      bytesRead: wasmAgg?.bytesRead ?? scan?.bytesRead ?? 0,
-      pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
-      durationMs: Date.now() - startTime,
-      scanMs: wasmAgg?.scanMs ?? scan?.scanMs ?? 0,
-      pipelineMs: Date.now() - startTime - metaMs,
-      metaMs,
-    };
-    return result;
+      const result: QueryResult & { scanMs?: number; pipelineMs?: number; metaMs?: number } = {
+        rows,
+        rowCount: rows.length,
+        columns: outputColumns,
+        bytesRead: wasmAgg?.bytesRead ?? scan?.bytesRead ?? 0,
+        pagesSkipped: wasmAgg?.pagesSkipped ?? scan?.pagesSkipped ?? 0,
+        durationMs: Date.now() - startTime,
+        scanMs: wasmAgg?.scanMs ?? scan?.scanMs ?? 0,
+        pipelineMs: Date.now() - startTime - metaMs,
+        metaMs,
+      };
+      return result;
+    } finally {
+      await pipeOpts.spill!.cleanup();
+    }
   }
 
   /** Load footer + column metadata from a local file */
@@ -1000,6 +1027,7 @@ export class LocalExecutor implements QueryExecutor {
   private async loadMetaFromUrl(url: string): Promise<{ columns: ColumnMeta[]; fileSize: number }> {
     // Get file size
     const headResp = await fetch(url, { method: "HEAD" });
+    if (!headResp.ok) throw new QueryModeError("QUERY_FAILED", `HTTP ${headResp.status} on HEAD ${url}`);
     const fileSize = Number(headResp.headers.get("content-length") ?? 0);
     if (fileSize < 8) throw new QueryModeError("INVALID_FORMAT", `File too small: ${url}`);
 
@@ -1009,6 +1037,7 @@ export class LocalExecutor implements QueryExecutor {
     const tailResp = await fetch(url, {
       headers: { Range: `bytes=${tailStart}-${fileSize - 1}` },
     });
+    if (!tailResp.ok && tailResp.status !== 206) throw new QueryModeError("QUERY_FAILED", `HTTP ${tailResp.status} reading tail from ${url}`);
     const tailAb = await tailResp.arrayBuffer();
     const fmt = detectFormat(tailAb);
 
@@ -1020,6 +1049,7 @@ export class LocalExecutor implements QueryExecutor {
       const footerResp = await fetch(url, {
         headers: { Range: `bytes=${footerStart}-${footerStart + footerLen - 1}` },
       });
+      if (!footerResp.ok && footerResp.status !== 206) throw new QueryModeError("QUERY_FAILED", `HTTP ${footerResp.status} reading Parquet footer from ${url}`);
       const footerBuf = await footerResp.arrayBuffer();
       const parquetMeta = parseParquetFooter(footerBuf);
       if (!parquetMeta) throw new QueryModeError("INVALID_FORMAT", `Failed to parse Parquet footer in ${url}`);
@@ -1041,6 +1071,7 @@ export class LocalExecutor implements QueryExecutor {
     const metaResp = await fetch(url, {
       headers: { Range: `bytes=${metaStart}-${metaStart + metaLength - 1}` },
     });
+    if (!metaResp.ok && metaResp.status !== 206) throw new QueryModeError("QUERY_FAILED", `HTTP ${metaResp.status} reading Lance metadata from ${url}`);
     const metaAb = await metaResp.arrayBuffer();
     const columns = parseColumnMetaFromProtobuf(metaAb, footer.numColumns);
 

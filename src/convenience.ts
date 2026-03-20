@@ -35,7 +35,7 @@ export function createFromJSON<T extends Record<string, unknown>>(
       } else if (v instanceof Float32Array) {
         row[col] = v;
       } else {
-        row[col] = String(v);
+        row[col] = JSON.stringify(v);
       }
     }
     return row;

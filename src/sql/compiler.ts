@@ -79,9 +79,14 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     selectItemIndex++;
   }
 
-  // If there are aggregates, projections should only contain group-by columns
+  // If there are aggregates, projections = group-by columns + SELECT aggregate output names.
+  // The aggregate output names are needed by SqlWrappingExecutor's deferred projection step
+  // to distinguish SELECT aggregates from HAVING-only aggregates.
   if (hasAggregates && stmt.groupBy) {
-    projections = [...stmt.groupBy.columns];
+    projections = [
+      ...stmt.groupBy.columns,
+      ...aggregates.map(a => a.alias ?? `${a.fn}_${a.column}`),
+    ];
   }
 
   // Process WHERE clause — try to flatten to FilterOp[] (and filterGroups for OR)
@@ -156,7 +161,7 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
   let havingExpr: SqlExpr | undefined;
   if (stmt.groupBy?.having) {
     extractAggregatesFromExpr(stmt.groupBy.having, aggregates);
-    havingExpr = rewriteAggregatesAsColumns(stmt.groupBy.having);
+    havingExpr = rewriteAggregatesAsColumns(stmt.groupBy.having, aggregates);
   }
 
   const desc: QueryDescriptor = {
@@ -557,20 +562,45 @@ function extractVectorSearch(expr: SqlExpr): QueryDescriptor["vectorSearch"] {
 
 function compileJoin(ref: TableRef & { kind: "join" }): QueryDescriptor["join"] {
   const joinClause = ref.join;
-  const rightTable = joinClause.table.kind === "simple" ? joinClause.table.name : "unknown";
+  const rightTableName = joinClause.table.kind === "simple" ? joinClause.table.name : "unknown";
+  const rightAlias = joinClause.table.kind === "simple" ? joinClause.table.alias : undefined;
 
   let leftKey = "";
   let rightKey = "";
   if (joinClause.onCondition && joinClause.onCondition.kind === "binary" && joinClause.onCondition.op === "eq") {
     const lCol = joinClause.onCondition.left;
     const rCol = joinClause.onCondition.right;
-    if (lCol.kind === "column") leftKey = lCol.name;
-    if (rCol.kind === "column") rightKey = rCol.name;
+    if (lCol.kind === "column" && rCol.kind === "column") {
+      // Check table qualifiers to assign keys correctly regardless of operand order
+      const rightQualifiers = [rightTableName, rightAlias].filter(Boolean);
+      if (lCol.table && rightQualifiers.includes(lCol.table)) {
+        // Left operand references the right table — swap
+        rightKey = lCol.name;
+        leftKey = rCol.name;
+      } else if (rCol.table && rightQualifiers.includes(rCol.table)) {
+        // Right operand references the right table — normal order
+        leftKey = lCol.name;
+        rightKey = rCol.name;
+      } else {
+        // No qualifier match — fall back to positional
+        leftKey = lCol.name;
+        rightKey = rCol.name;
+      }
+    } else {
+      if (lCol.kind === "column") leftKey = lCol.name;
+      if (rCol.kind === "column") rightKey = rCol.name;
+    }
+  }
+
+  // USING (col) — both sides share the same column name
+  if (!leftKey && joinClause.using && joinClause.using.length > 0) {
+    leftKey = joinClause.using[0];
+    rightKey = joinClause.using[0];
   }
 
   return {
     right: {
-      table: rightTable,
+      table: rightTableName,
       filters: [],
       projections: [],
     },

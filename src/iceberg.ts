@@ -6,9 +6,10 @@ const icebergTypeMap: Record<string, DataType> = {
   time: "int64", timestamp: "int64", timestamptz: "int64", uuid: "utf8", fixed: "binary",
 };
 
-/** Map Iceberg type strings to QueryMode DataType. */
+/** Map Iceberg type strings to QueryMode DataType. Strips parameterized suffixes like decimal(10,2) or fixed[16]. */
 export function icebergTypeToDataType(iceType: string): DataType {
-  return icebergTypeMap[iceType] ?? "binary";
+  const baseType = iceType.replace(/[(\[].*$/, "");
+  return icebergTypeMap[baseType] ?? "binary";
 }
 
 /**
@@ -62,7 +63,7 @@ export function parseIcebergMetadata(json: string): {
 
   const schema: IcebergSchema = {
     fields: fields
-      .filter((f) => f.name && f.type)
+      .filter((f) => f.name && f.type && typeof f.type === "string")
       .map((f) => ({
         name: f.name,
         type: f.type,
@@ -118,7 +119,7 @@ export function extractParquetPathsFromManifest(
   const text = decoder.decode(manifestBytes);
 
   // Match paths ending in .parquet — captures S3/R2 URLs or relative paths
-  const parquetPattern = /[a-zA-Z0-9_\-/.:%]+\.parquet/g;
+  const parquetPattern = /[a-zA-Z0-9_\-/.:%=]+\.parquet/g;
   const matches = text.match(parquetPattern);
   if (!matches) return [];
 

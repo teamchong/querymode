@@ -1,5 +1,5 @@
 import type { Row, QueryResult } from "./types.js";
-import { rowComparator } from "./types.js";
+import { rowComparator, groupKey } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import {
   computePartialAgg,
@@ -163,8 +163,20 @@ export function mergeQueryResults(
       return computePartialAgg(p.rows, query);
     });
     const merged = mergePartialAggs(aggPartials);
-    const rows = finalizePartialAgg(merged, query);
-    return { rows, rowCount: rows.length, columns, ...baseResult };
+    let rows = finalizePartialAgg(merged, query);
+    if (query.sortColumn) {
+      rows.sort(rowComparator(query.sortColumn, query.sortDirection === "desc"));
+    }
+    const off = query.offset ?? 0;
+    if (off > 0 || query.limit !== undefined) {
+      rows = rows.slice(off, query.limit !== undefined ? off + query.limit : undefined);
+    }
+    // Recompute columns from actual aggregated output keys
+    const aggColumns = rows.length > 0 ? Object.keys(rows[0]) : [
+      ...(query.groupBy ?? []),
+      ...query.aggregates.map(a => a.alias ?? `${a.fn}_${a.column}`),
+    ];
+    return { rows, rowCount: rows.length, columns: aggColumns, ...baseResult };
   }
 
   // Check if all partials are columnar
@@ -175,7 +187,7 @@ export function mergeQueryResults(
     const off = query.offset ?? 0;
     const effectiveLimit = (query.limit ?? Infinity) + off;
 
-    if (allColumnar) {
+    if (allColumnar && !query.distinct) {
       const batches: ColumnarBatch[] = [];
       for (const p of partials) {
         const batch = partialToColumnarBatch(p);
@@ -196,14 +208,16 @@ export function mergeQueryResults(
       partials.map((p) => p.rows),
       query.sortColumn,
       query.sortDirection ?? "asc",
-      effectiveLimit,
+      query.distinct ? Infinity : effectiveLimit,
     );
+    if (query.distinct) rows = dedup(rows, query.distinct);
     if (off > 0) rows = rows.slice(off);
+    if (query.limit !== undefined) rows = rows.slice(0, query.limit);
     return { rows, rowCount: rows.length, columns, ...baseResult };
   }
 
   // Unsorted: columnar concat with offset + limit
-  if (allColumnar) {
+  if (allColumnar && !query.distinct) {
     const batches: ColumnarBatch[] = [];
     for (const p of partials) {
       const batch = partialToColumnarBatch(p);
@@ -225,11 +239,12 @@ export function mergeQueryResults(
   for (const p of partials) ensureRows(p);
   let rows: Row[];
   const off = query.offset ?? 0;
-  if (partials.length === 1 && off === 0 && query.limit === undefined) {
-    // Single shard, no slicing — avoid flatMap copy
+  if (partials.length === 1 && off === 0 && query.limit === undefined && !query.distinct) {
+    // Single shard, no slicing, no dedup — avoid flatMap copy
     rows = partials[0].rows;
   } else {
-    const allRows = partials.flatMap((p) => p.rows);
+    let allRows = partials.flatMap((p) => p.rows);
+    if (query.distinct) allRows = dedup(allRows, query.distinct);
     if (off > 0 || query.limit !== undefined) {
       rows = allRows.slice(off, query.limit !== undefined ? off + query.limit : undefined);
     } else {
@@ -238,4 +253,16 @@ export function mergeQueryResults(
   }
 
   return { rows, rowCount: rows.length, columns, ...baseResult };
+}
+
+/** Deduplicate rows by distinct columns (or all columns if empty). */
+function dedup(rows: Row[], distinctCols: string[]): Row[] {
+  const seen = new Set<string>();
+  return rows.filter(row => {
+    const cols = distinctCols.length > 0 ? distinctCols : Object.keys(row);
+    const key = groupKey(row, cols);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

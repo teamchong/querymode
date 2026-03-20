@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { ColumnMeta, Env, Footer, TableMeta, DatasetMeta, AppendResult, AppendOptions, DropResult } from "./types.js";
 import { NULL_SENTINEL, countColumnRows } from "./types.js";
 import { parseFooter, parseColumnMetaFromProtobuf, FOOTER_SIZE } from "./footer.js";
-import { parseManifest } from "./manifest.js";
+import { parseManifest, buildManifestBinary, schemaFromColumns } from "./manifest.js";
 import { detectFormat, getParquetFooterLength, parseParquetFooter, parquetMetaToTableMeta } from "./parquet.js";
 import type { QueryDORpc } from "./types.js";
 import { instantiateWasm, rowsToColumnArrays, type WasmEngine } from "./wasm-engine.js";
@@ -11,7 +11,7 @@ import { withTimeout } from "./coalesce.js";
 import { QueryModeError } from "./errors.js";
 import wasmModule from "./wasm-module.js";
 
-const textEncoder = new TextEncoder();
+
 
 /** Master DO — single writer, reads footers, broadcasts invalidations. */
 export class MasterDO extends DurableObject<Env> {
@@ -75,14 +75,14 @@ export class MasterDO extends DurableObject<Env> {
     const tableName = r2Prefix.replace(/\/$/, "").replace(/\.lance$/, "").split("/").pop() ?? r2Prefix;
 
     // Find latest manifest
-    const listed = await resolveBucket(this.env, r2Prefix).list({ prefix: `${r2Prefix}_versions/`, limit: 100 });
+    const listed = await withTimeout(resolveBucket(this.env, r2Prefix).list({ prefix: `${r2Prefix}_versions/`, limit: 100 }), 10_000);
     const manifestKeys = listed.objects
       .filter(o => o.key.endsWith(".manifest"))
-      .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
+      .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10) || 0; const nb = parseInt(b.key.split("/").pop()!, 10) || 0; return na - nb; });
     if (manifestKeys.length === 0) throw new QueryModeError("TABLE_NOT_FOUND", `No manifests found in "${r2Prefix}"`);
 
     const latestKey = manifestKeys[manifestKeys.length - 1].key;
-    const manifestObj = await resolveBucket(this.env, latestKey).get(latestKey);
+    const manifestObj = await withTimeout(resolveBucket(this.env, latestKey).get(latestKey), 10_000);
     if (!manifestObj) throw new QueryModeError("TABLE_NOT_FOUND", `Failed to read manifest "${latestKey}"`);
 
     const manifest = parseManifest(await manifestObj.arrayBuffer());
@@ -170,7 +170,7 @@ export class MasterDO extends DurableObject<Env> {
     const dataR2Key = `${r2Prefix}${dataFilePath}`;
 
     // PUT data file to R2 (unique name = no conflict)
-    await resolveBucket(this.env, dataR2Key).put(dataR2Key, fragmentBytes);
+    await withTimeout(resolveBucket(this.env, dataR2Key).put(dataR2Key, fragmentBytes), 30_000);
 
     // CAS loop for manifest update
     const MAX_RETRIES = 10;
@@ -178,7 +178,7 @@ export class MasterDO extends DurableObject<Env> {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       // Read current _latest with ETag
-      const latestObj = await resolveBucket(this.env, latestKey).get(latestKey);
+      const latestObj = await withTimeout(resolveBucket(this.env, latestKey).get(latestKey), 10_000);
       let currentVersion = 0;
       let etag: string | undefined;
 
@@ -191,15 +191,18 @@ export class MasterDO extends DurableObject<Env> {
       const newVersion = currentVersion + 1;
       const newVersionStr = String(newVersion);
 
-      // Build manifest: simple text format with fragment list
       // Read existing manifest if available
       let existingFragments: { id: number; filePath: string; physicalRows: number }[] = [];
+      let existingSchema: import("./types.js").SchemaField[] | undefined;
       if (currentVersion > 0) {
         const manifestKey = `${r2Prefix}_versions/${currentVersion}.manifest`;
-        const manifestObj = await resolveBucket(this.env, manifestKey).get(manifestKey);
+        const manifestObj = await withTimeout(resolveBucket(this.env, manifestKey).get(manifestKey), 10_000);
         if (manifestObj) {
           const manifest = parseManifest(await manifestObj.arrayBuffer());
-          if (manifest) existingFragments = manifest.fragments;
+          if (manifest) {
+            existingFragments = manifest.fragments;
+            if (manifest.schema.length > 0) existingSchema = manifest.schema;
+          }
         }
       }
 
@@ -209,116 +212,60 @@ export class MasterDO extends DurableObject<Env> {
         { id: existingFragments.length + 1, filePath: dataFilePath, physicalRows: rows.length },
       ];
 
+      // Derive schema from columns (use existing if available, else infer from appended data)
+      const schema = existingSchema ?? schemaFromColumns(
+        columnArrays.map(c => ({ name: c.name, dtype: c.dtype as import("./types.js").DataType })),
+      );
+
       // Write new manifest (protobuf-compatible binary)
-      const manifestPayload = this.buildManifestBinary(newVersion, newFragments);
+      const manifestPayload = buildManifestBinary(newVersion, newFragments, schema);
       const newManifestKey = `${r2Prefix}_versions/${newVersion}.manifest`;
-      await resolveBucket(this.env, newManifestKey).put(newManifestKey, manifestPayload);
+      await withTimeout(resolveBucket(this.env, newManifestKey).put(newManifestKey, manifestPayload), 10_000);
 
       // CAS: write _latest with ETag condition
       try {
         const putOptions: R2PutOptions = etag ? { onlyIf: { etagMatches: etag } } : {};
-        const result = await resolveBucket(this.env, latestKey).put(latestKey, newVersionStr, putOptions);
+        const result = await withTimeout(resolveBucket(this.env, latestKey).put(latestKey, newVersionStr, putOptions), 10_000);
 
         if (result === null && etag) {
           // 412 Precondition Failed — retry
           continue;
         }
-
-        // Success — broadcast invalidation
-        const tableName = table.replace(/\.lance\/?$/, "").split("/").pop() ?? table;
-        const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
-        const footerResult = await this.readFooterAndColumns(dataR2Key);
-        if (footerResult) {
-          await this.broadcast(tableName, dataR2Key, footerResult, { totalRows });
-        }
-
-        // Update stored table meta (include metadata if provided)
-        const tableMeta: Record<string, unknown> = {
-          name: tableName, r2Prefix, totalRows, updatedAt: Date.now(),
-        };
-        if (options?.metadata) tableMeta.writeMetadata = options.metadata;
-        await this.ctx.storage.put(`table:${tableName}`, tableMeta);
-
-        return {
-          version: newVersion,
-          dataFilePath,
-          retries: attempt,
-          rowsWritten: rows.length,
-          ...(options?.metadata ? { metadata: options.metadata } : {}),
-        } satisfies AppendResult;
       } catch {
         // R2 conditional put failure — retry
         continue;
       }
+
+      // Post-CAS: data is committed — broadcast and update storage.
+      // Errors here must NOT trigger retry (would duplicate data).
+      const tableName = table.replace(/\.lance\/?$/, "").split("/").pop() ?? table;
+      const totalRows = newFragments.reduce((s, f) => s + f.physicalRows, 0);
+      try {
+        const footerResult = await this.readFooterAndColumns(dataR2Key);
+        if (footerResult) {
+          await this.broadcast(tableName, dataR2Key, footerResult, { totalRows });
+        }
+      } catch { /* broadcast failure is non-fatal — QueryDOs will refresh on next query */ }
+
+      // Update stored table meta (include metadata if provided)
+      const tableMeta: Record<string, unknown> = {
+        name: tableName, r2Prefix, totalRows, updatedAt: Date.now(),
+      };
+      if (options?.metadata) tableMeta.writeMetadata = options.metadata;
+      try {
+        await this.ctx.storage.put(`table:${tableName}`, tableMeta);
+      } catch { /* storage failure is non-fatal — will be rebuilt on next access */ }
+
+      return {
+        version: newVersion,
+        dataFilePath,
+        retries: attempt,
+        rowsWritten: rows.length,
+        ...(options?.metadata ? { metadata: options.metadata } : {}),
+      } satisfies AppendResult;
     }
 
     throw new QueryModeError("QUERY_FAILED", `CAS failed after ${MAX_RETRIES} retries for table "${table}"`);
-  }
-
-  /** Build a simple binary manifest for the _versions/ directory. */
-  private buildManifestBinary(
-    version: number,
-    fragments: { id: number; filePath: string; physicalRows: number }[],
-  ): ArrayBuffer {
-    // Simple protobuf-like format matching parseManifest expectations
-    // Version field (tag 1, varint): version number
-    // Fragment fields (tag 2, length-delimited): each fragment
-    const enc = textEncoder;
-    const parts: Uint8Array[] = [];
-
-    // Write version varint (field 1)
-    parts.push(new Uint8Array([0x08])); // tag 1, wire type 0
-    parts.push(this.encodeVarint(version));
-
-    // Write each fragment
-    for (const frag of fragments) {
-      const pathBytes = enc.encode(frag.filePath);
-      const fragParts: Uint8Array[] = [];
-
-      // Fragment ID (field 1, varint)
-      fragParts.push(new Uint8Array([0x08]));
-      fragParts.push(this.encodeVarint(frag.id));
-
-      // File path (field 2, length-delimited)
-      fragParts.push(new Uint8Array([0x12]));
-      fragParts.push(this.encodeVarint(pathBytes.length));
-      fragParts.push(pathBytes);
-
-      // Physical rows (field 3, varint)
-      fragParts.push(new Uint8Array([0x18]));
-      fragParts.push(this.encodeVarint(frag.physicalRows));
-
-      // Combine fragment
-      let fragLen = 0;
-      for (const p of fragParts) fragLen += p.length;
-      const fragBuf = new Uint8Array(fragLen);
-      let off = 0;
-      for (const p of fragParts) { fragBuf.set(p, off); off += p.length; }
-
-      // Fragment as field 2, length-delimited
-      parts.push(new Uint8Array([0x12]));
-      parts.push(this.encodeVarint(fragLen));
-      parts.push(fragBuf);
-    }
-
-    let totalLen = 0;
-    for (const p of parts) totalLen += p.length;
-    const result = new Uint8Array(totalLen);
-    let off = 0;
-    for (const p of parts) { result.set(p, off); off += p.length; }
-
-    return result.buffer;
-  }
-
-  private encodeVarint(value: number): Uint8Array {
-    const bytes: number[] = [];
-    let v = value >>> 0; // ensure unsigned
-    while (v > 0x7f) {
-      bytes.push((v & 0x7f) | 0x80);
-      v >>>= 7;
-    }
-    bytes.push(v & 0x7f);
-    return new Uint8Array(bytes);
   }
 
   async refreshRpc(body: unknown): Promise<unknown> {
@@ -454,18 +401,18 @@ export class MasterDO extends DurableObject<Env> {
       // List and delete all R2 objects under this prefix
       let cursor: string | undefined;
       do {
-        const listed = await resolveBucket(this.env, r2Prefix).list({
+        const listed = await withTimeout(resolveBucket(this.env, r2Prefix).list({
           prefix: r2Prefix,
           cursor,
           limit: 1000,
-        });
+        }), 10_000);
 
         if (listed.objects.length > 0) {
           const keys = listed.objects.map(o => o.key);
           bytesFreed += listed.objects.reduce((s, o) => s + o.size, 0);
           fragmentsDeleted += keys.length;
           // R2 delete supports up to 1000 keys per call
-          await resolveBucket(this.env, r2Prefix).delete(keys);
+          await withTimeout(resolveBucket(this.env, r2Prefix).delete(keys), 10_000);
         }
 
         cursor = listed.truncated ? listed.cursor : undefined;
@@ -479,7 +426,7 @@ export class MasterDO extends DurableObject<Env> {
       await Promise.allSettled(Object.entries(regions).map(async ([, doId]) => {
         try {
           const queryDo = this.env.QUERY_DO.get(this.env.QUERY_DO.idFromString(doId)) as unknown as QueryDORpc;
-          await queryDo.invalidateRpc({ table: tableName, deleted: true, timestamp: Date.now() });
+          await withTimeout(queryDo.invalidateRpc({ table: tableName, deleted: true, timestamp: Date.now() }), 5_000);
         } catch { /* best-effort broadcast */ }
       }));
     }

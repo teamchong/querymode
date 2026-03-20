@@ -22,7 +22,7 @@ import {
 } from "./operators.js";
 import { computePartialAgg, finalizePartialAgg } from "./partial-agg.js";
 import { VipCache } from "./vip-cache.js";
-import { parseLanceV2Columns } from "./lance-v2.js";
+
 import { parseAndValidateQuery } from "./query-schema.js";
 import { resolveBucket } from "./bucket.js";
 import { PartitionCatalog } from "./partition-catalog.js";
@@ -295,7 +295,7 @@ class EdgeScanOperator implements Operator {
 
     const wasmStart = Date.now();
     this.wasmEngine.resetHeap();
-    const fragTable = `__edge_${this.meta.r2Key}`;
+    const fragTable = `__edge_${this.meta.r2Key.replace(/[^a-zA-Z0-9_]/g, "_")}`;
     const colEntries = this.cols
       .filter(col => this.columnData.get(col.name)?.length)
       .map(col => ({
@@ -317,7 +317,10 @@ class EdgeScanOperator implements Operator {
       join: undefined,
     };
     const rows = this.wasmEngine.executeQuery(decodeQuery);
-    if (!rows) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed`);
+    if (!rows) {
+      const wasmErr = this.wasmEngine.getLastError();
+      throw new QueryModeError("QUERY_FAILED", `WASM query execution failed${wasmErr ? `: ${wasmErr}` : ""}`);
+    }
     this.wasmEngine.clearTable(fragTable);
     this.columnData.clear(); // Release page buffers immediately
     this.wasmExecMs += Date.now() - wasmStart;
@@ -327,74 +330,77 @@ class EdgeScanOperator implements Operator {
 
   /** Yield one Parquet page at a time — fetches and decodes one page per call. */
   private async nextParquetPage(): Promise<RowBatch | null> {
-    if (this.currentPage >= this.pageCount) return null;
-    const pi = this.currentPage++;
+    // Loop instead of recursion to avoid stack overflow on many consecutive empty pages
+    while (this.currentPage < this.pageCount) {
+      const pi = this.currentPage++;
 
-    const cols = this.cols;
-    const meta = this.meta;
+      const cols = this.cols;
+      const meta = this.meta;
 
-    // Fetch page data for this single page (bounded: one page across all columns)
-    const pageBuffers = await this.fetchPageData(pi);
+      // Fetch page data for this single page (bounded: one page across all columns)
+      const pageBuffers = await this.fetchPageData(pi);
 
-    const wasmStart = Date.now();
-    const colNames = cols.map(c => c.name);
-    const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
+      const wasmStart = Date.now();
+      const colNames = cols.map(c => c.name);
+      const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
 
-    for (const col of cols) {
-      let chunkBuf = pageBuffers.get(col.name);
-      if (!chunkBuf) { decodedColumns.set(col.name, []); continue; }
-      const keptPageInfos = this.columnPageInfos.get(col.name) ?? col.pages;
-      const pageInfo = keptPageInfos[pi];
-      const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" as const };
+      for (const col of cols) {
+        let chunkBuf = pageBuffers.get(col.name);
+        if (!chunkBuf) { decodedColumns.set(col.name, []); continue; }
+        const keptPageInfos = this.columnPageInfos.get(col.name) ?? col.pages;
+        const pageInfo = keptPageInfos[pi];
+        const encoding = pageInfo?.encoding ?? { compression: "UNCOMPRESSED" as const };
 
-      const dict = await prependDictPage(chunkBuf, encoding, pageInfo.byteOffset, meta.r2Key, this.bucket, this.wasmEngine);
-      chunkBuf = dict.buf;
-      this.bytesRead += dict.extraBytes;
+        const dict = await prependDictPage(chunkBuf, encoding, pageInfo.byteOffset, meta.r2Key, this.bucket, this.wasmEngine);
+        chunkBuf = dict.buf;
+        this.bytesRead += dict.extraBytes;
 
-      const decoded = decodeParquetColumnChunk(
-        chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
-      );
-      decodedColumns.set(col.name, decoded);
-    }
-
-    // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort)
-    let numRows = 0;
-    for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
-    if (numRows === 0) return this.next(); // skip empty pages
-
-    this.wasmEngine.resetHeap();
-    const fragTable = `__edge_pq_${pi}`;
-    const decodedEntries = cols
-      .filter(col => decodedColumns.get(col.name)?.length)
-      .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
-    const wasmRegistered = this.wasmEngine.registerDecodedColumns(fragTable, decodedEntries);
-
-    let rows: Row[];
-    if (wasmRegistered) {
-      const pqQuery: QueryDescriptor = {
-        ...this.query,
-        table: fragTable,
-        sortColumn: undefined, limit: undefined, offset: undefined,
-        aggregates: undefined, join: undefined,
-      };
-      const wasmRows = this.wasmEngine.executeQuery(pqQuery);
-      this.wasmEngine.clearTable(fragTable);
-      rows = wasmRows ?? [];
-    } else {
-      // Fallback: assemble rows in JS
-      rows = [];
-      for (let i = 0; i < numRows; i++) {
-        const row: Row = {};
-        for (const name of colNames) {
-          const vals = decodedColumns.get(name);
-          row[name] = vals && i < vals.length ? vals[i] : null;
-        }
-        rows.push(row);
+        const decoded = decodeParquetColumnChunk(
+          chunkBuf, encoding, col.dtype, pageInfo?.rowCount ?? 0, this.wasmEngine,
+        );
+        decodedColumns.set(col.name, decoded);
       }
-    }
 
-    this.wasmExecMs += Date.now() - wasmStart;
-    return rows.length > 0 ? rows : this.next();
+      // Try WASM SQL path: register decoded columns → executeQuery (SIMD filter/sort)
+      let numRows = 0;
+      for (const v of decodedColumns.values()) if (v.length > numRows) numRows = v.length;
+      if (numRows === 0) continue; // skip empty pages
+
+      this.wasmEngine.resetHeap();
+      const fragTable = `__edge_pq_${pi}`;
+      const decodedEntries = cols
+        .filter(col => decodedColumns.get(col.name)?.length)
+        .map(col => ({ name: col.name, dtype: col.dtype, values: decodedColumns.get(col.name)! }));
+      const wasmRegistered = this.wasmEngine.registerDecodedColumns(fragTable, decodedEntries);
+
+      let rows: Row[];
+      if (wasmRegistered) {
+        const pqQuery: QueryDescriptor = {
+          ...this.query,
+          table: fragTable,
+          sortColumn: undefined, limit: undefined, offset: undefined,
+          aggregates: undefined, join: undefined,
+        };
+        const wasmRows = this.wasmEngine.executeQuery(pqQuery);
+        this.wasmEngine.clearTable(fragTable);
+        rows = wasmRows ?? [];
+      } else {
+        // Fallback: assemble rows in JS
+        rows = [];
+        for (let i = 0; i < numRows; i++) {
+          const row: Row = {};
+          for (const name of colNames) {
+            const vals = decodedColumns.get(name);
+            row[name] = vals && i < vals.length ? vals[i] : null;
+          }
+          rows.push(row);
+        }
+      }
+
+      this.wasmExecMs += Date.now() - wasmStart;
+      if (rows.length > 0) return rows;
+    }
+    return null;
   }
 
   async close(): Promise<void> {
@@ -530,7 +536,10 @@ export class QueryDO extends DurableObject<Env> {
 
   private ensureInitialized(): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit();
+      this.initPromise = this.doInit().catch(err => {
+        this.initPromise = null; // Allow retry on transient failures
+        throw err;
+      });
     }
     return this.initPromise;
   }
@@ -638,7 +647,20 @@ export class QueryDO extends DurableObject<Env> {
     columns?: ColumnMeta[]; fileSize: bigint; timestamp: number;
     format?: "lance" | "parquet" | "iceberg";
     totalRows?: number; r2Prefix?: string;
+    deleted?: boolean;
   }): Promise<void> {
+    // Handle table deletion broadcast — purge all caches for this table
+    if (body.deleted) {
+      this.footerCache.delete(body.table);
+      this.datasetCache.delete(body.table);
+      this.resultCache.invalidateByPrefix(`qr:${body.table}:`);
+      this.wasmEngine.clearTable(body.table);
+      this.wasmEngine.cacheClear();
+      this.partitionCatalogs.delete(body.table);
+      await this.ctx.storage.delete(`table:${body.table}`);
+      return;
+    }
+
     // If broadcast includes r2Prefix, this is a dataset — lazy-load full dataset from R2
     if (body.r2Prefix) {
       this.datasetCache.delete(body.table);
@@ -690,10 +712,18 @@ export class QueryDO extends DurableObject<Env> {
 
   /** Core count logic shared by HTTP handler and RPC. */
   private async executeCount(query: QueryDescriptor): Promise<number> {
-    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length) {
+    if (query.filters.length === 0 && !query.filterGroups?.length && !query.aggregates?.length && !query.groupBy?.length && !query.distinct && !query.join && !query.vectorSearch && !query.setOperation && !query.subqueryIn && !query.computedColumns?.length && !query.pipeStages?.length) {
+      // For multi-fragment datasets, use cached totalRows
+      const dataset = this.datasetCache.get(query.table);
+      if (dataset) return dataset.totalRows;
       const meta = this.footerCache.get(query.table)
         ?? (await this.loadTableFromR2(query.table)) ?? undefined;
-      if (meta) return countColumnRows(meta.columns) || meta.totalRows;
+      if (meta) {
+        // loadTableFromR2 may have discovered a dataset — re-check
+        const ds = this.datasetCache.get(query.table);
+        if (ds) return ds.totalRows;
+        return countColumnRows(meta.columns) || meta.totalRows;
+      }
     }
     const countQuery = { ...query, aggregates: [{ fn: "count" as const, column: "*" }] };
     const result = await this.executeQuery(countQuery);
@@ -831,6 +861,13 @@ export class QueryDO extends DurableObject<Env> {
       if (!meta) {
         meta = (await this.loadTableFromR2(query.table)) ?? undefined;
         if (!meta) throw new QueryModeError("TABLE_NOT_FOUND", `Table "${query.table}" not found`);
+        // loadTableFromR2 may have discovered a multi-fragment dataset — re-check
+        const discoveredDataset = this.datasetCache.get(query.table);
+        if (discoveredDataset) {
+          result = await this.executeMultiFragment(query, discoveredDataset, t0);
+          if (cacheable) this.resultCache.setWithTTL(queryCacheKey(query), result, query.cacheTTL!);
+          return result;
+        }
       }
 
       // Use operator pipeline for any query that could produce unbounded results:
@@ -891,66 +928,29 @@ export class QueryDO extends DurableObject<Env> {
     const wasmStart = Date.now();
     this.wasmEngine.resetHeap();
 
-    // Load fragment and extract columns via fragment reader
-    const dataPtr = this.wasmEngine.exports.alloc(fileData.byteLength);
-    if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM allocating Lance file buffer");
-    new Uint8Array(this.wasmEngine.exports.memory.buffer, dataPtr, fileData.byteLength)
-      .set(new Uint8Array(fileData));
-
-    const loadResult = this.wasmEngine.exports.fragmentLoad(dataPtr, fileData.byteLength);
-    if (loadResult !== 0) throw new QueryModeError("INVALID_FORMAT", `Failed to load Lance fragment (invalid file?)`);
-
-    // Parse Lance v2 column metadata using shared parser
-    const dataset = this.datasetCache.get(query.table);
-    const schema = dataset?.manifest.schema;
-    const colInfos = parseLanceV2Columns(fileData, schema, meta.totalRows);
-    if (!colInfos || colInfos.length === 0) {
-      throw new QueryModeError("INVALID_FORMAT", "Failed to parse Lance v2 column metadata");
+    // Load entire fragment into WASM engine — handles ALL types (numeric, utf8, bool, etc.)
+    const fragTable = `__whole_${meta.r2Key.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+    if (!this.wasmEngine.loadTable(fragTable, fileData)) {
+      throw new QueryModeError("INVALID_FORMAT", `Failed to load Lance fragment into WASM`);
     }
 
-    this.log("info", "lance_fragment_parsed", {
-      numCols: colInfos.length,
-      colInfos: colInfos.map(c => ({ name: c.name, dtype: c.dtype, rows: c.rowCount })),
-    });
+    // Execute query via WASM — all type decoding handled by Zig engine
+    const wasmQuery: QueryDescriptor = {
+      ...query,
+      table: fragTable,
+      // Sort/limit/agg applied in JS post-processing
+      sortColumn: undefined, limit: undefined, offset: undefined,
+      aggregates: undefined, join: undefined,
+    };
+    const rows = this.wasmEngine.executeQuery(wasmQuery);
+    this.wasmEngine.clearTable(fragTable);
+    if (!rows) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed on ${meta.r2Key}`);
 
-    // Read raw column data from the Lance file and assemble rows
-    // For simple Lance files, data is at the beginning of the file in column-major order
-    let dataPos = 0;
-    const decodedColumns = new Map<string, (number | bigint | string | boolean | null)[]>();
-    for (const col of colInfos) {
-      if (query.projections.length > 0 && !query.projections.includes(col.name)) {
-        // Skip this column's data
-        if (col.dtype === "int64" || col.dtype === "float64") dataPos += col.rowCount * 8;
-        else if (col.dtype === "int32" || col.dtype === "float32") dataPos += col.rowCount * 4;
-        continue;
-      }
-
-      const values: (number | bigint | string | boolean | null)[] = [];
-      const dv = new DataView(fileData, dataPos);
-      if (col.dtype === "int64") {
-        for (let i = 0; i < col.rowCount; i++) values.push(dv.getBigInt64(i * 8, true));
-        dataPos += col.rowCount * 8;
-      } else if (col.dtype === "float64") {
-        for (let i = 0; i < col.rowCount; i++) values.push(dv.getFloat64(i * 8, true));
-        dataPos += col.rowCount * 8;
-      } else if (col.dtype === "int32") {
-        for (let i = 0; i < col.rowCount; i++) values.push(dv.getInt32(i * 4, true));
-        dataPos += col.rowCount * 4;
-      } else if (col.dtype === "float32") {
-        for (let i = 0; i < col.rowCount; i++) values.push(dv.getFloat32(i * 4, true));
-        dataPos += col.rowCount * 4;
-      }
-      decodedColumns.set(col.name, values);
-    }
-
-    const colNames = [...decodedColumns.keys()];
-    let rows = this.applyJsPostProcessing(
-      this.assembleRowsFromColumns(decodedColumns, colNames), query,
-    );
+    const postRows = this.applyJsPostProcessing(rows, query);
     const wasmExecMs = Date.now() - wasmStart;
 
     return {
-      rows, rowCount: rows.length, columns: meta.columns.map(c => c.name),
+      rows: postRows, rowCount: postRows.length, columns: meta.columns.map(c => c.name),
       bytesRead, pagesSkipped: 0, durationMs: Date.now() - t0,
       r2ReadMs, wasmExecMs, cacheHits: cacheHit ? 1 : 0, cacheMisses: cacheHit ? 0 : 1,
     };
@@ -986,25 +986,27 @@ export class QueryDO extends DurableObject<Env> {
     //   L1: WASM buffer pool (per-DO, in-memory, fastest, lost on hibernation)
     //   L2: caches.default (per-datacenter, shared across DOs, survives hibernation)
     //   L3: R2 (global, slowest)
-    const columnData = new Map<string, ArrayBuffer[]>();
+    //
+    // Use indexed slots to preserve page ordering — cache hits and R2 fetches
+    // must fill their original positions, not append in arrival order.
+    const rangeResults: (ArrayBuffer | null)[] = new Array(ranges.length).fill(null);
     let cacheHits = 0;   // L1 hits
     let cacheMisses = 0; // L1 misses
     let edgeCacheHits = 0;   // L2 hits
     let edgeCacheMisses = 0; // L2 misses
-    const l1Misses: typeof ranges = [];
+    const l1MissIndices: number[] = [];
 
     // L1: Check WASM buffer pool
-    for (const r of ranges) {
+    for (let i = 0; i < ranges.length; i++) {
+      const r = ranges[i];
       const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
       const cached = this.wasmEngine.cacheGet(cacheKey);
       if (cached) {
         cacheHits++;
-        const arr = columnData.get(r.column) ?? [];
-        arr.push(cached);
-        columnData.set(r.column, arr);
+        rangeResults[i] = cached;
       } else {
         cacheMisses++;
-        l1Misses.push(r);
+        l1MissIndices.push(i);
       }
     }
 
@@ -1012,39 +1014,47 @@ export class QueryDO extends DurableObject<Env> {
     // One-off queries against random tables would just pollute the shared cache.
     // VIP tables show repeat access patterns where page caching actually pays off.
     const tableIsVip = this.footerCache.accessCount(query.table) >= VIP_THRESHOLD;
-    const uncachedRanges: typeof ranges = [];
+    const uncachedIndices: number[] = [];
 
-    if (tableIsVip && l1Misses.length > 0) {
+    if (tableIsVip && l1MissIndices.length > 0) {
       const edgeChecks = await Promise.all(
-        l1Misses.map(async (r) => {
+        l1MissIndices.map(async (idx) => {
+          const r = ranges[idx];
           const data = await this.edgeCacheGet(meta.r2Key, r.offset, r.length);
-          return { range: r, data };
+          return { idx, data };
         }),
       );
-      for (const { range: r, data } of edgeChecks) {
+      for (const { idx, data } of edgeChecks) {
         if (data) {
           edgeCacheHits++;
-          const arr = columnData.get(r.column) ?? [];
-          arr.push(data);
-          columnData.set(r.column, arr);
+          rangeResults[idx] = data;
           // Promote to L1 for subsequent queries on this DO
+          const r = ranges[idx];
           const cacheKey = `${meta.r2Key}:${r.offset}:${r.length}`;
           this.wasmEngine.cacheSet(cacheKey, data);
         } else {
           edgeCacheMisses++;
-          uncachedRanges.push(r);
+          uncachedIndices.push(idx);
         }
       }
     } else {
       // Not VIP or no L1 misses — go straight to R2 (no L2 lookups, so no L2 misses)
-      for (const r of l1Misses) uncachedRanges.push(r);
+      for (const idx of l1MissIndices) uncachedIndices.push(idx);
     }
 
     // L3: Fetch remaining ranges from R2
     const r2Start = Date.now();
     let bytesRead = 0;
 
-    if (uncachedRanges.length > 0) {
+    if (uncachedIndices.length > 0) {
+      // Build a map from (column:offset:length) → original range index for slot filling
+      const uncachedRanges = uncachedIndices.map(idx => ranges[idx]);
+      const rangeIndexMap = new Map<string, number>();
+      for (const idx of uncachedIndices) {
+        const r = ranges[idx];
+        rangeIndexMap.set(`${r.column}:${r.offset}:${r.length}`, idx);
+      }
+
       const coalesced = coalesceRanges(uncachedRanges);
 
       const fetched = await fetchBounded(
@@ -1067,9 +1077,8 @@ export class QueryDO extends DurableObject<Env> {
         bytesRead += f.data.byteLength;
         for (const sub of f.ranges) {
           const slice = f.data.slice(sub.offset - f.offset, sub.offset - f.offset + sub.length);
-          const arr = columnData.get(sub.column) ?? [];
-          arr.push(slice);
-          columnData.set(sub.column, arr);
+          const idx = rangeIndexMap.get(`${sub.column}:${sub.offset}:${sub.length}`);
+          if (idx !== undefined) rangeResults[idx] = slice;
 
           // Populate L1 cache
           const cacheKey = `${meta.r2Key}:${sub.offset}:${sub.length}`;
@@ -1084,6 +1093,16 @@ export class QueryDO extends DurableObject<Env> {
       }
     }
     const r2ReadMs = Date.now() - r2Start;
+
+    // Assemble columnData in original page order from indexed slots
+    const columnData = new Map<string, ArrayBuffer[]>();
+    for (let i = 0; i < ranges.length; i++) {
+      const buf = rangeResults[i];
+      if (!buf) continue;
+      const arr = columnData.get(ranges[i].column) ?? [];
+      arr.push(buf);
+      columnData.set(ranges[i].column, arr);
+    }
 
     // IVF-PQ index-aware path: if a vector search is requested, check for an index
     if (query.vectorSearch) {
@@ -1483,7 +1502,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}_versions/`, limit: 100 });
       const manifestKeys = listed.objects
         .filter(o => o.key.endsWith(".manifest"))
-        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10) || 0; const nb = parseInt(b.key.split("/").pop()!, 10) || 0; return na - nb; });
       if (manifestKeys.length === 0) continue;
 
       // Read latest manifest
@@ -1647,7 +1666,7 @@ export class QueryDO extends DurableObject<Env> {
       const listed = await this.r2(prefix).list({ prefix: `${prefix}metadata/`, limit: 100 });
       const metadataKeys = listed.objects
         .filter(o => o.key.endsWith(".metadata.json"))
-        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10); const nb = parseInt(b.key.split("/").pop()!, 10); return na - nb; });
+        .sort((a, b) => { const na = parseInt(a.key.split("/").pop()!, 10) || 0; const nb = parseInt(b.key.split("/").pop()!, 10) || 0; return na - nb; });
       if (metadataKeys.length === 0) continue;
 
       const latestKey = metadataKeys[metadataKeys.length - 1].key;
@@ -1734,21 +1753,31 @@ export class QueryDO extends DurableObject<Env> {
     const hasLimit = query.limit !== undefined;
     const hasAgg = query.aggregates && query.aggregates.length > 0;
     if ((!hasLimit || hasAgg) && !query.vectorSearch) {
-      // Build a pipeline per fragment in parallel, then merge
+      // Build a pipeline per fragment in parallel, then merge.
+      // Strip aggregation/distinct/limit/offset — mergeQueryResults handles these globally.
+      const fragQuery = hasAgg
+        ? { ...query, aggregates: undefined, groupBy: undefined, distinct: undefined, windows: undefined, limit: undefined, offset: undefined }
+        : { ...query, distinct: undefined, windows: undefined, limit: undefined, offset: undefined };
       const partials = await Promise.all(
-        fragments.map(meta => this.executeWithPipeline(query, meta, t0)),
+        fragments.map(meta => this.executeWithPipeline(fragQuery, meta, t0)),
       );
       return mergeQueryResults(partials, query);
     }
 
-    // Bounded queries: safe to materialize per-fragment in parallel
+    // Bounded queries: safe to materialize per-fragment in parallel.
+    // Strip offset/distinct — mergeQueryResults applies these globally.
+    // Each fragment must return limit+offset rows so merge has enough after global offset.
+    const effLimit = query.limit !== undefined && query.offset
+      ? query.limit + query.offset
+      : query.limit;
+    const boundedFragQuery = { ...query, limit: effLimit, offset: undefined, distinct: undefined, windows: undefined };
     const partials = await Promise.all(
       fragments.map(meta => {
         const hasPages = meta.columns.some(c => c.pages.length > 0);
         if (!hasPages && meta.format === "lance" && meta.r2Key) {
-          return this.executeLanceWholeFile(query, meta, t0);
+          return this.executeLanceWholeFile(boundedFragQuery, meta, t0);
         }
-        return this.scanPages(query, meta, t0);
+        return this.scanPages(boundedFragQuery, meta, t0);
       }),
     );
     return mergeQueryResults(partials, query);
@@ -1784,9 +1813,8 @@ export class QueryDO extends DurableObject<Env> {
     const scanSlotCount = allFragItems.length;
     const slots = this.claimSlots(scanSlotCount);
 
-    const region = (await this.ctx.storage.get<string>("region")) ?? "default";
-
     try {
+      const region = (await this.ctx.storage.get<string>("region")) ?? "default";
       if (slots.length === 0) {
         // All slots busy — scan locally in parallel batches
         this.log("info", "fragment_fan_out_local", { fragments: allFragItems.length, reason: "no_slots" });

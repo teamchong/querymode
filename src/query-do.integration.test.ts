@@ -5,21 +5,19 @@
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import type { TableMeta, ColumnMeta, QueryResult, Row } from "./types.js";
+import { existsSync } from "node:fs";
+import * as path from "node:path";
 
-let hasWasm = false;
+const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
+const hasWasm = existsSync(wasmPath);
+
 let wasmModule: WebAssembly.Module;
 
 beforeAll(async () => {
-  try {
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    const wasmBytes = await fs.readFile(wasmPath);
-    wasmModule = await WebAssembly.compile(wasmBytes);
-    hasWasm = true;
-  } catch {
-    hasWasm = false;
-  }
+  if (!hasWasm) return;
+  const fs = await import("node:fs/promises");
+  const wasmBytes = await fs.readFile(wasmPath);
+  wasmModule = await WebAssembly.compile(wasmBytes);
 });
 
 // Mock WASM module import — return the real compiled module loaded from disk
@@ -92,7 +90,7 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
       },
       {
         name: "value", dtype: "float64",
-        pages: [{ byteOffset: 100n, byteLength: 24, rowCount: 3, nullCount: 0 }],
+        pages: [{ byteOffset: 24n, byteLength: 24, rowCount: 3, nullCount: 0 }],
         nullCount: 0,
       },
     ];
@@ -100,14 +98,18 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
     const tableName = "test_table";
     const r2Key = "test_table.lance";
 
+    // Build contiguous file buffer (id at offset 0, value at offset 24)
+    const fileBuf = new ArrayBuffer(48);
+    new Uint8Array(fileBuf, 0, 24).set(new Uint8Array(idData.buffer));
+    new Uint8Array(fileBuf, 24, 24).set(new Uint8Array(valueData.buffer));
+
     // Mock R2 with page data
     const pageData = new Map<string, { offset: number; data: ArrayBuffer }[]>();
     pageData.set(r2Key, [
-      { offset: 0, data: idData.buffer.slice(0) },
-      { offset: 100, data: valueData.buffer.slice(0) },
+      { offset: 0, data: fileBuf },
     ]);
     const heads = new Map<string, { size: number }>();
-    heads.set(r2Key, { size: 200 });
+    heads.set(r2Key, { size: 48 });
 
     const mockR2 = buildMockR2(pageData, heads);
 
@@ -135,9 +137,11 @@ describe.skipIf(!hasWasm)("Query DO integration (real WASM, mocked R2)", () => {
           return null;
         },
         put: async () => {},
-        list: async () => {
+        list: async (opts?: { prefix?: string }) => {
           const map = new Map();
-          map.set(`table:${tableName}`, meta);
+          if (!opts?.prefix || opts.prefix === "table:") {
+            map.set(`table:${tableName}`, meta);
+          }
           return map;
         },
       },

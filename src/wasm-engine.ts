@@ -8,6 +8,7 @@ import { safeBigInt } from "./types.js";
 import type { QueryDescriptor } from "./client.js";
 import { wasmResultToQMCB } from "./columnar.js";
 import { QueryModeError } from "./errors.js";
+import { LANCE_MAGIC, FOOTER_SIZE } from "./footer.js";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -368,8 +369,10 @@ export class WasmEngine {
       totalRows += rowCount;
       let raw = new Uint8Array(pages[i]);
       if ((pi?.nullCount ?? 0) > 0 && rowCount > 0) {
-        const bitmapBytes = Math.ceil(rowCount / 8);
-        raw = raw.subarray(bitmapBytes);
+        // dataOffsetInPage gives exact data start (bitmap + alignment padding for Lance v2);
+        // otherwise strip only bitmap bytes (Lance v1)
+        const stripBytes = pi?.dataOffsetInPage ?? Math.ceil(rowCount / 8);
+        raw = raw.subarray(stripBytes);
       }
       cleaned.push(raw);
       totalBytes += raw.byteLength;
@@ -408,6 +411,25 @@ export class WasmEngine {
         if (!dataPtr) return false;
         const dst = new Float64Array(this.exports.memory.buffer, dataPtr, count);
         for (let i = 0; i < count; i++) dst[i] = src[i];
+        this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, count);
+        return true;
+      }
+
+      case "float16": {
+        // Decode IEEE 754 half-precision → float64
+        const view16 = new DataView(flat.buffer, flat.byteOffset, flat.byteLength);
+        const count = Math.min(totalRows, flat.byteLength >> 1);
+        const f64Bytes = count * 8;
+        const dataPtr = this.safeAlloc(f64Bytes);
+        if (!dataPtr) return false;
+        const dst = new Float64Array(this.exports.memory.buffer, dataPtr, count);
+        for (let i = 0; i < count; i++) {
+          const h = view16.getUint16(i * 2, true);
+          const s = (h >> 15) & 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+          if (e === 0) dst[i] = (s ? -1 : 1) * 2 ** -14 * (m / 1024);
+          else if (e === 31) dst[i] = m ? NaN : s ? -Infinity : Infinity;
+          else dst[i] = (s ? -1 : 1) * 2 ** (e - 15) * (1 + m / 1024);
+        }
         this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, count);
         return true;
       }
@@ -515,7 +537,7 @@ export class WasmEngine {
         const dataPtr = this.safeAlloc(dataLen || 1);
         if (!dataPtr) return false;
         if (dataLen > 0) {
-          new Uint8Array(this.exports.memory.buffer, dataPtr, dataLen).set(strData);
+          new Uint8Array(this.exports.memory.buffer, dataPtr, dataLen).set(strData.subarray(0, dataLen));
         }
 
         this.exports.registerTableString(tPtr, tLen, cPtr, cLen, offsetsPtr, lengthsPtr, dataPtr, dataLen, ri);
@@ -560,7 +582,7 @@ export class WasmEngine {
         this.exports.registerTableFloat64(tPtr, tLen, cPtr, cLen, dataPtr, rowCount);
         return true;
       }
-      case "int64": {
+      case "int64": case "uint64": {
         const dataPtr = this.safeAlloc(rowCount * 8);
         if (!dataPtr) return false;
         const dst = new BigInt64Array(this.exports.memory.buffer, dataPtr, rowCount);
@@ -729,7 +751,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return 0;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.sumFloat64Buffer(ptr >> 3, numElements);
+    return this.exports.sumFloat64Buffer(ptr, numElements);
   }
 
   /** SIMD min of Float64 buffer. Returns Infinity for empty input. */
@@ -739,7 +761,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return Infinity;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.minFloat64Buffer(ptr >> 3, numElements);
+    return this.exports.minFloat64Buffer(ptr, numElements);
   }
 
   /** SIMD max of Float64 buffer. Returns -Infinity for empty input. */
@@ -749,7 +771,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return -Infinity;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.maxFloat64Buffer(ptr >> 3, numElements);
+    return this.exports.maxFloat64Buffer(ptr, numElements);
   }
 
   /** SIMD avg of Float64 buffer. Returns 0 for empty input. */
@@ -759,7 +781,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return 0;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.avgFloat64Buffer(ptr >> 3, numElements);
+    return this.exports.avgFloat64Buffer(ptr, numElements);
   }
 
   /** SIMD sum of Int64 buffer. Returns 0n for empty input. */
@@ -769,7 +791,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return 0n;
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.sumInt64Buffer(ptr >> 3, numElements);
+    return this.exports.sumInt64Buffer(ptr, numElements);
   }
 
   /** SIMD min of Int64 buffer. Returns MAX_SAFE_INTEGER for empty input. */
@@ -779,7 +801,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return BigInt(Number.MAX_SAFE_INTEGER);
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.minInt64Buffer(ptr >> 3, numElements);
+    return this.exports.minInt64Buffer(ptr, numElements);
   }
 
   /** SIMD max of Int64 buffer. Returns MIN_SAFE_INTEGER for empty input. */
@@ -789,7 +811,7 @@ export class WasmEngine {
     const ptr = this.safeAlloc(buf.byteLength);
     if (!ptr) return BigInt(Number.MIN_SAFE_INTEGER);
     new Uint8Array(this.exports.memory.buffer, ptr, buf.byteLength).set(new Uint8Array(buf));
-    return this.exports.maxInt64Buffer(ptr >> 3, numElements);
+    return this.exports.maxInt64Buffer(ptr, numElements);
   }
 
   /** Load a fragment file into the WASM fragment reader. */
@@ -926,16 +948,16 @@ export class WasmEngine {
           }
           offsets[count] = strOff;
           // Copy raw string data to WASM
-          const dataPtr = this.safeAlloc(totalStrBytes);
+          const dataPtr = this.safeAlloc(totalStrBytes || 1);
           if (!dataPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
-          new Uint8Array(this.exports.memory.buffer, dataPtr, totalStrBytes).set(rawStrData);
+          if (totalStrBytes > 0) new Uint8Array(this.exports.memory.buffer, dataPtr, totalStrBytes).set(rawStrData);
           // Copy offsets to WASM
           const offsetsPtr = this.safeAlloc(offsets.byteLength);
           if (!offsetsPtr) throw new QueryModeError("MEMORY_EXCEEDED", "WASM OOM");
           new Uint8Array(this.exports.memory.buffer, offsetsPtr, offsets.byteLength)
             .set(new Uint8Array(offsets.buffer));
           result = this.exports.fragmentAddStringColumn(
-            namePtr, nameLen, dataPtr, totalStrBytes, offsetsPtr / 4, count, nullablePtr,
+            namePtr, nameLen, dataPtr, totalStrBytes, offsetsPtr, count, nullablePtr,
           );
           break;
         }
@@ -995,7 +1017,7 @@ export class WasmEngine {
     const sPtr = iPtr + topK * 4;
 
     const count = this.exports.ivfPqSearch(
-      handle, qPtr / 4, dim, topK, nprobe, iPtr / 4, sPtr / 4,
+      handle, qPtr, dim, topK, nprobe, iPtr, sPtr,
     );
 
     return {
@@ -1029,8 +1051,8 @@ export class WasmEngine {
     const sPtr = iPtr + topK * 4;
 
     const resultK = this.exports.vectorSearchBuffer(
-      vPtr / 4, numVectors, dim, qPtr / 4, topK,
-      iPtr / 4, sPtr / 4, normalized ? 1 : 0, 0,
+      vPtr, numVectors, dim, qPtr, topK,
+      iPtr, sPtr, normalized ? 1 : 0, 0,
     );
 
     return {
@@ -1052,9 +1074,11 @@ function filterToSql(f: FilterOp): string {
     return `${quote(f.column)} ${f.op === "neq" ? "IS NOT NULL" : "IS NULL"}`;
   }
   if (f.op === "in" && Array.isArray(f.value)) {
+    if (f.value.length === 0) return "1 = 0"; // empty IN matches nothing
     return `${quote(f.column)} IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
   }
   if (f.op === "not_in" && Array.isArray(f.value)) {
+    if (f.value.length === 0) return "1 = 1"; // empty NOT IN matches everything
     return `${quote(f.column)} NOT IN (${f.value.map(v => typeof v === "string" ? `'${escapeSql(v)}'` : String(v)).join(", ")})`;
   }
   if ((f.op === "between" || f.op === "not_between") && Array.isArray(f.value) && f.value.length === 2) {
@@ -1152,7 +1176,7 @@ export function rowsToColumnArrays(rows: Record<string, unknown>[]): FragmentCol
 export function queryToSql(query: QueryDescriptor): string {
   const parts: string[] = [];
 
-  const distinctKw = query.distinct?.length ? "DISTINCT " : "";
+  const distinctKw = query.distinct ? "DISTINCT " : "";
   if (query.aggregates?.length) {
     const exprs: string[] = [];
     if (query.groupBy) exprs.push(...query.groupBy.map(quote));
@@ -1216,6 +1240,150 @@ function parseWasmResult(memoryBuffer: ArrayBuffer, ptr: number, size: number): 
   const view = new DataView(memoryBuffer, ptr, size);
   if (size < 28) return [];
 
+  // Detect Lance v2 format by checking for "LANC" magic at end of buffer
+  const maybeMagic = size >= FOOTER_SIZE ? view.getUint32(size - 4, true) : 0;
+  if (maybeMagic === LANCE_MAGIC) {
+    return parseLanceResult(buf, view, size);
+  }
+
+  return parseCustomResult(buf, view, size);
+}
+
+/**
+ * Parse WASM result in Lance v2 fragment format (non-aggregate SELECT queries).
+ *
+ * WASM protobuf schema per column:
+ *   field 1 (LEN): column name string
+ *   field 2 (LEN): type string ("int64", "float64", "utf8", etc.)
+ *   field 3 (VARINT): nullable (0/1)
+ *   field 4 (FIXED64): data_offset (byte position within buffer)
+ *   field 5 (VARINT): row_count
+ *   field 6 (VARINT): data_size
+ */
+function parseLanceResult(buf: Uint8Array, view: DataView, size: number): Row[] {
+  // Parse Lance footer (last 40 bytes)
+  const footerOffset = size - FOOTER_SIZE;
+  const magic = view.getUint32(footerOffset + 36, true);
+  if (magic !== LANCE_MAGIC) return [];
+
+  const columnMetaStart = Number(view.getBigUint64(footerOffset, true));
+  const columnMetaOffsetsStart = Number(view.getBigUint64(footerOffset + 8, true));
+  const numColumns = view.getUint32(footerOffset + 28, true);
+  if (!numColumns) return [];
+
+  // Read metadata offset table — absolute byte positions for each column's protobuf
+  const colMetaOffsets: number[] = [];
+  for (let i = 0; i < numColumns; i++) {
+    colMetaOffsets.push(Number(view.getBigUint64(columnMetaOffsetsStart + i * 8, true)));
+  }
+
+  // Parse each column's protobuf metadata
+  interface WasmColMeta { name: string; dtype: string; dataOffset: number; rowCount: number; dataSize: number }
+  const columns: WasmColMeta[] = [];
+
+  for (let c = 0; c < numColumns; c++) {
+    let pos = colMetaOffsets[c];
+    const end = c + 1 < numColumns ? colMetaOffsets[c + 1] : columnMetaOffsetsStart;
+    let name = `col_${c}`;
+    let dtype = "int64";
+    let dataOffset = 0;
+    let rowCount = 0;
+    let dataSize = 0;
+
+    while (pos < end) {
+      const tag = buf[pos++];
+      const fieldNum = tag >> 3;
+      const wireType = tag & 7;
+
+      if (wireType === 2) { // LEN
+        let len = 0, shift = 0;
+        while (pos < end) { const b = buf[pos++]; len |= (b & 0x7f) << shift; if (!(b & 0x80)) break; shift += 7; }
+        len = len >>> 0;
+        if (fieldNum === 1) name = textDecoder.decode(buf.subarray(pos, pos + len));
+        else if (fieldNum === 2) dtype = textDecoder.decode(buf.subarray(pos, pos + len));
+        pos += len;
+      } else if (wireType === 0) { // VARINT
+        let val = 0, shift = 0;
+        while (pos < end) { const b = buf[pos++]; val |= (b & 0x7f) << shift; if (!(b & 0x80)) break; shift += 7; }
+        val = val >>> 0; // unsigned conversion (matches readLEB128 in lance-v2.ts)
+        if (fieldNum === 5) rowCount = val;
+        else if (fieldNum === 6) dataSize = val;
+      } else if (wireType === 1) { // 64-bit fixed
+        if (fieldNum === 4) dataOffset = Number(view.getBigUint64(pos, true));
+        pos += 8;
+      } else if (wireType === 5) { // 32-bit fixed
+        pos += 4;
+      } else {
+        break;
+      }
+    }
+    columns.push({ name, dtype, dataOffset, rowCount, dataSize });
+  }
+
+  if (columns.length === 0) return [];
+  const numRows = columns[0].rowCount;
+  if (!numRows) return [];
+
+  const rows: Row[] = new Array(numRows);
+  for (let i = 0; i < numRows; i++) rows[i] = {};
+
+  for (const col of columns) {
+    let dp = col.dataOffset;
+    const dpEnd = dp + col.dataSize;
+
+    rowLoop: for (let r = 0; r < col.rowCount && r < numRows; r++) {
+      switch (col.dtype) {
+        case "int64":
+          if (dp + 8 > dpEnd) break rowLoop; rows[r][col.name] = view.getBigInt64(dp, true); dp += 8; break;
+        case "uint64":
+          if (dp + 8 > dpEnd) break rowLoop; rows[r][col.name] = view.getBigUint64(dp, true); dp += 8; break;
+        case "float64":
+          if (dp + 8 > dpEnd) break rowLoop; rows[r][col.name] = view.getFloat64(dp, true); dp += 8; break;
+        case "int32":
+          if (dp + 4 > dpEnd) break rowLoop; rows[r][col.name] = view.getInt32(dp, true); dp += 4; break;
+        case "uint32":
+          if (dp + 4 > dpEnd) break rowLoop; rows[r][col.name] = view.getUint32(dp, true); dp += 4; break;
+        case "float32":
+          if (dp + 4 > dpEnd) break rowLoop; rows[r][col.name] = view.getFloat32(dp, true); dp += 4; break;
+        case "int16":
+          if (dp + 2 > dpEnd) break rowLoop; rows[r][col.name] = view.getInt16(dp, true); dp += 2; break;
+        case "uint16":
+          if (dp + 2 > dpEnd) break rowLoop; rows[r][col.name] = view.getUint16(dp, true); dp += 2; break;
+        case "int8":
+          if (dp + 1 > dpEnd) break rowLoop; rows[r][col.name] = view.getInt8(dp); dp += 1; break;
+        case "uint8":
+          if (dp + 1 > dpEnd) break rowLoop; rows[r][col.name] = buf[dp]; dp += 1; break;
+        case "bool":
+          if (dp + 1 > dpEnd) break rowLoop; rows[r][col.name] = buf[dp] !== 0; dp += 1; break;
+        case "utf8": {
+          if (dp + 4 > dpEnd) break rowLoop;
+          const len = view.getUint32(dp, true); dp += 4;
+          if (dp + len > dpEnd) break rowLoop;
+          rows[r][col.name] = textDecoder.decode(buf.subarray(dp, dp + len)); dp += len;
+          break;
+        }
+        case "string": {
+          // WASM string format: [concatenated bytes][padding][u32 end_offsets × rowCount]
+          // end_offsets[i] = cumulative byte position after string i
+          if (col.dataSize < col.rowCount * 4) break rowLoop;
+          const offsetsStart = col.dataOffset + col.dataSize - col.rowCount * 4;
+          const prevEnd = r === 0 ? 0 : view.getUint32(offsetsStart + (r - 1) * 4, true);
+          const curEnd = view.getUint32(offsetsStart + r * 4, true);
+          const strStart = col.dataOffset + prevEnd;
+          const strLen = curEnd - prevEnd;
+          rows[r][col.name] = textDecoder.decode(buf.subarray(strStart, strStart + strLen));
+          break;
+        }
+        default: rows[r][col.name] = null; dp += 8; break;
+      }
+    }
+  }
+
+  return rows;
+}
+
+/** Parse WASM result in custom header format (aggregate/GROUP BY queries). */
+function parseCustomResult(buf: Uint8Array, view: DataView, size: number): Row[] {
   const numColumns = view.getUint32(4, true);
   const numRows = view.getUint32(8, true);
   const dataStart = view.getUint32(16, true);

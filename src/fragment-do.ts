@@ -48,7 +48,10 @@ export class FragmentDO extends DurableObject<Env> {
 
   private ensureInitialized(): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit();
+      this.initPromise = this.doInit().catch(err => {
+        this.initPromise = null;
+        throw err;
+      });
     }
     return this.initPromise;
   }
@@ -182,7 +185,7 @@ export class FragmentDO extends DurableObject<Env> {
 
       // Zero-copy WASM path: register raw page data per-column, execute SQL in WASM
       const wasmStart = Date.now();
-      const fragTable = `__frag_${r2Key}`;
+      const fragTable = `__frag_${r2Key.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       this.wasmEngine.resetHeap();
       const fragColEntries = cols
         .filter(col => columnData.get(col.name)?.length)
@@ -195,7 +198,22 @@ export class FragmentDO extends DurableObject<Env> {
         throw new QueryModeError("MEMORY_EXCEEDED", `WASM OOM: failed to register columns for fragment "${r2Key}"`);
       }
 
-      const fragQuery = { ...query, table: fragTable };
+      // Strip aggregates/groupBy/limit/offset from fragment query — aggregation is
+      // performed by QueryDO's mergeQueryResults on the combined raw data.
+      // If we applied aggregates here, each fragment would return pre-aggregated rows
+      // which mergeQueryResults would incorrectly re-aggregate (e.g., COUNT becomes
+      // N_fragments instead of the actual sum).
+      const fragQuery = {
+        ...query,
+        table: fragTable,
+        aggregates: undefined,
+        groupBy: undefined,
+        distinct: undefined,
+        windows: undefined,
+        limit: undefined,
+        offset: undefined,
+        ...((query.sortColumn && query.limit === undefined) ? { sortColumn: undefined, sortDirection: undefined } : {}),
+      };
       const qmcb = this.wasmEngine.executeQueryColumnar(fragQuery);
       if (!qmcb) throw new QueryModeError("QUERY_FAILED", `WASM query execution failed for fragment "${r2Key}"`);
       this.wasmEngine.clearTable(fragTable);
@@ -238,7 +256,18 @@ export class FragmentDO extends DurableObject<Env> {
           : (fragments.length > 0 ? fragments[0].meta.columns.map(c => c.name) : []);
 
         const FRAG_MEMORY_BUDGET = 32 * 1024 * 1024;
-        const pipeline = buildEdgePipeline(batchSource, query, outputColumns, {
+        // Strip aggregates/groupBy/distinct — mergeQueryResults handles these.
+        // Pipeline only needs sort (ExternalSort for unbounded ORDER BY).
+        const pipelineQuery = {
+          ...query,
+          aggregates: undefined,
+          groupBy: undefined,
+          distinct: undefined,
+          windows: undefined,
+          limit: undefined,
+          offset: undefined,
+        };
+        const pipeline = buildEdgePipeline(batchSource, pipelineQuery, outputColumns, {
           memoryBudgetBytes: FRAG_MEMORY_BUDGET,
           spill,
         });
@@ -251,9 +280,9 @@ export class FragmentDO extends DurableObject<Env> {
     }
 
     // Non-pipeline path: return columnar data directly (zero-copy transfer over RPC)
-    const rowCount = columnarData
-      ? new DataView(columnarData).getUint32(4, true) // read rowCount from QMCB header
-      : finalRows.length;
+    const rowCount = needsPipeline
+      ? finalRows.length
+      : (columnarData ? new DataView(columnarData).getUint32(4, true) : 0);
 
     return {
       rows: needsPipeline ? finalRows : [],

@@ -14,6 +14,7 @@
  */
 
 import type { Row } from "./types.js";
+import { LANCE_MAGIC, FOOTER_SIZE } from "./footer.js";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -106,6 +107,12 @@ export function wasmResultToQMCB(
 
   const view = new DataView(memoryBuffer, ptr, size);
   const buf = new Uint8Array(memoryBuffer, ptr, size);
+
+  // Detect Lance v2 format by checking for "LANC" magic at end of buffer
+  const maybeMagic = size >= FOOTER_SIZE ? view.getUint32(size - 4, true) : 0;
+  if (maybeMagic === LANCE_MAGIC) {
+    return lanceResultToQMCB(buf, view, size);
+  }
 
   const numColumns = view.getUint32(4, true);
   const numRows = view.getUint32(8, true);
@@ -217,15 +224,206 @@ export function wasmResultToQMCB(
         break;
       }
 
-      default: {
-        // Unknown column type — skip 8 bytes per row in WASM result
+      case WASM_VECTOR: {
+        // Vector in custom (aggregate) format — no dimension in header, write empty vector column
+        outView.setUint32(wp, 0, true); wp += 4;
         dp += numRows * 8;
+        break;
+      }
+
+      default: {
+        // Unknown column type — copy raw 8 bytes per row to maintain QMCB alignment
+        const sz = numRows * 8;
+        if (dp + sz <= size) {
+          outBuf.set(buf.subarray(dp, dp + sz), wp);
+          wp += sz;
+        }
+        dp += sz;
         break;
       }
     }
   }
 
   // Return trimmed buffer
+  return out.slice(0, wp);
+}
+
+/** Map Lance dtype string to QMCB dtype tag. */
+function lanceDtypeToQmcb(dtype: string): number {
+  switch (dtype) {
+    case "float64": return DTYPE_F64;
+    case "int64": case "uint64": return DTYPE_I64;
+    case "utf8": case "string": return DTYPE_UTF8;
+    case "bool": return DTYPE_BOOL;
+    case "float32": return DTYPE_F32;
+    case "int32": case "uint32": return DTYPE_I32;
+    case "fixed_size_list": return DTYPE_F32VEC;
+    default: return DTYPE_F64; // fallback
+  }
+}
+
+/** Bytes per element for a Lance dtype (0 = variable-length). */
+function lanceDtypeBytesPerValue(dtype: string): number {
+  switch (dtype) {
+    case "int64": case "uint64": case "float64": return 8;
+    case "int32": case "uint32": case "float32": return 4;
+    case "int16": case "uint16": case "float16": return 2;
+    case "int8": case "uint8": case "bool": return 1;
+    default: return 0; // variable (utf8, binary)
+  }
+}
+
+/**
+ * Convert Lance v2 fragment result directly to QMCB columnar binary.
+ *
+ * WASM protobuf schema per column:
+ *   field 1 (LEN): name, field 2 (LEN): type string,
+ *   field 3 (VARINT): nullable, field 4 (FIXED64): data_offset,
+ *   field 5 (VARINT): row_count, field 6 (VARINT): data_size
+ */
+function lanceResultToQMCB(buf: Uint8Array, view: DataView, size: number): ArrayBuffer | null {
+  const footerOffset = size - FOOTER_SIZE;
+  const columnMetaOffsetsStart = Number(view.getBigUint64(footerOffset + 8, true));
+  const numColumns = view.getUint32(footerOffset + 28, true);
+  if (!numColumns) return null;
+
+  // Read metadata offset table
+  const colMetaOffsets: number[] = [];
+  for (let i = 0; i < numColumns; i++) {
+    colMetaOffsets.push(Number(view.getBigUint64(columnMetaOffsetsStart + i * 8, true)));
+  }
+
+  // Parse each column's protobuf
+  interface WasmColMeta { name: string; nameBytes: Uint8Array; dtype: string; dataOffset: number; rowCount: number; dataSize: number }
+  const columns: WasmColMeta[] = [];
+
+  for (let c = 0; c < numColumns; c++) {
+    let pos = colMetaOffsets[c];
+    const end = c + 1 < numColumns ? colMetaOffsets[c + 1] : columnMetaOffsetsStart;
+    let name = `col_${c}`;
+    let dtype = "int64";
+    let dataOffset = 0, rowCount = 0, dataSize = 0;
+
+    while (pos < end) {
+      const tag = buf[pos++];
+      const fieldNum = tag >> 3;
+      const wireType = tag & 7;
+      if (wireType === 2) {
+        let len = 0, shift = 0;
+        while (pos < end) { const b = buf[pos++]; len |= (b & 0x7f) << shift; if (!(b & 0x80)) break; shift += 7; }
+        len = len >>> 0;
+        if (fieldNum === 1) name = textDecoder.decode(buf.subarray(pos, pos + len));
+        else if (fieldNum === 2) dtype = textDecoder.decode(buf.subarray(pos, pos + len));
+        pos += len;
+      } else if (wireType === 0) {
+        let val = 0, shift = 0;
+        while (pos < end) { const b = buf[pos++]; val |= (b & 0x7f) << shift; if (!(b & 0x80)) break; shift += 7; }
+        val = val >>> 0;
+        if (fieldNum === 5) rowCount = val;
+        else if (fieldNum === 6) dataSize = val;
+      } else if (wireType === 1) {
+        if (fieldNum === 4) dataOffset = Number(view.getBigUint64(pos, true));
+        pos += 8;
+      } else if (wireType === 5) {
+        pos += 4;
+      } else { break; }
+    }
+    columns.push({ name, nameBytes: textEncoder.encode(name), dtype, dataOffset, rowCount, dataSize });
+  }
+
+  if (columns.length === 0) return null;
+  const numRows = columns[0].rowCount;
+  if (!numRows) return null;
+
+  const out = new ArrayBuffer(size + 4096);
+  const outView = new DataView(out);
+  const outBuf = new Uint8Array(out);
+  let wp = 0;
+
+  // QMCB header
+  outView.setUint32(wp, QMCB_MAGIC, true); wp += 4;
+  outView.setUint32(wp, numRows, true); wp += 4;
+  outView.setUint16(wp, numColumns, true); wp += 2;
+
+  for (const col of columns) {
+    outView.setUint16(wp, col.nameBytes.length, true); wp += 2;
+    outBuf.set(col.nameBytes, wp); wp += col.nameBytes.length;
+    outBuf[wp++] = lanceDtypeToQmcb(col.dtype);
+    outBuf[wp++] = 0;
+  }
+
+  for (const col of columns) {
+    const bpv = lanceDtypeBytesPerValue(col.dtype);
+    const srcStart = col.dataOffset;
+    const srcEnd = srcStart + col.dataSize;
+
+    if (bpv > 0 && col.dtype !== "bool") {
+      const sz = col.rowCount * bpv;
+      if (srcStart + sz <= size) {
+        outBuf.set(buf.subarray(srcStart, srcStart + sz), wp);
+        wp += sz;
+      }
+    } else if (col.dtype === "bool") {
+      const packedLen = Math.ceil(numRows / 8);
+      for (let r = 0; r < col.rowCount; r++) {
+        if (buf[srcStart + r]) outBuf[wp + (r >> 3)] |= 1 << (r & 7);
+      }
+      wp += packedLen;
+    } else if (col.dtype === "utf8") {
+      // Lance utf8: [u32 len][bytes] per value
+      const totalLenPos = wp; wp += 4;
+      const offsetsPos = wp; wp += (numRows + 1) * 4;
+      const dataPos = wp;
+      let strOffset = 0;
+      let dp = srcStart;
+
+      for (let r = 0; r < col.rowCount; r++) {
+        if (dp + 4 > srcEnd) break;
+        outView.setUint32(offsetsPos + r * 4, strOffset, true);
+        const len = view.getUint32(dp, true); dp += 4;
+        if (len > 0 && dp + len <= srcEnd) {
+          outBuf.set(buf.subarray(dp, dp + len), dataPos + strOffset);
+        }
+        strOffset += len;
+        dp += len;
+      }
+      outView.setUint32(offsetsPos + numRows * 4, strOffset, true);
+      outView.setUint32(totalLenPos, strOffset, true);
+      wp = dataPos + strOffset;
+    } else if (col.dtype === "string") {
+      // WASM string: [concatenated bytes][padding][u32 end_offsets × rowCount]
+      const wasmOffsetsStart = srcStart + col.dataSize - col.rowCount * 4;
+      const totalLenPos = wp; wp += 4;
+      const offsetsPos = wp; wp += (numRows + 1) * 4;
+      const dataPos = wp;
+
+      let prevEnd = 0;
+      for (let r = 0; r < col.rowCount; r++) {
+        outView.setUint32(offsetsPos + r * 4, prevEnd, true);
+        const curEnd = view.getUint32(wasmOffsetsStart + r * 4, true);
+        const strLen = curEnd - prevEnd;
+        if (strLen > 0) {
+          outBuf.set(buf.subarray(srcStart + prevEnd, srcStart + curEnd), dataPos + prevEnd);
+        }
+        prevEnd = curEnd;
+      }
+      outView.setUint32(offsetsPos + numRows * 4, prevEnd, true);
+      outView.setUint32(totalLenPos, prevEnd, true);
+      wp = dataPos + prevEnd;
+    } else if (col.dtype === "fixed_size_list") {
+      // Vector column: [u32 dim][float32 data × rowCount × dim]
+      const dim = col.rowCount > 0 ? Math.floor(col.dataSize / (col.rowCount * 4)) : 0;
+      outView.setUint32(wp, dim, true); wp += 4;
+      if (dim > 0) {
+        const sz = col.rowCount * dim * 4;
+        if (srcStart + sz <= size) {
+          outBuf.set(buf.subarray(srcStart, srcStart + sz), wp);
+          wp += sz;
+        }
+      }
+    }
+  }
+
   return out.slice(0, wp);
 }
 
@@ -637,6 +835,12 @@ function mergeCompare(a: MergeHeapEntry, b: MergeHeapEntry, asc: boolean): numbe
   if (va === vb) return 0;
   if (va === null || va === undefined) return 1;
   if (vb === null || vb === undefined) return -1;
+  // NaN sorts last (like null) — check both before returning to preserve antisymmetry
+  const aNaN = typeof va === "number" && isNaN(va);
+  const bNaN = typeof vb === "number" && isNaN(vb);
+  if (aNaN && bNaN) return 0;
+  if (aNaN) return 1;
+  if (bNaN) return -1;
   const cmp = va < vb ? -1 : 1;
   return asc ? cmp : -cmp;
 }
@@ -652,7 +856,8 @@ export function columnarKWayMerge(
   limit: number,
 ): ColumnarBatch {
   const asc = dir === "asc";
-  const numCols = batches[0]?.columns.length ?? 0;
+  if (batches.length === 0) return { columns: [], rowCount: 0 };
+  const numCols = batches[0].columns.length;
 
   // Find sort column index in each batch
   const sortColIndices = batches.map(b => b.columns.findIndex(c => c.name === sortColumn));
@@ -896,7 +1101,7 @@ export function columnarBatchToRows(batch: ColumnarBatch): Row[] {
         const dim = col.vectorDim!;
         const arr = new Float32Array(col.data);
         for (let r = 0; r < rowCount; r++) {
-          rows[r][col.name] = new Float32Array(arr.buffer, (r * dim) * 4, dim);
+          rows[r][col.name] = arr.slice(r * dim, (r + 1) * dim);
         }
         break;
       }

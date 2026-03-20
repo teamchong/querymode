@@ -63,6 +63,7 @@ export class VipCache<K, V> {
       existing.accessCount++;
       existing.lastAccess = Date.now();
       existing.expiresAt = undefined; // clear TTL — set() implies no expiry
+      existing.pendingEviction = false; // revive: set() overrides pending deletion
       return;
     }
 
@@ -80,6 +81,7 @@ export class VipCache<K, V> {
       existing.accessCount++;
       existing.lastAccess = Date.now();
       existing.expiresAt = Date.now() + ttlMs;
+      existing.pendingEviction = false; // revive: setWithTTL() overrides pending deletion
       return;
     }
 

@@ -138,6 +138,12 @@ export function aggArgKey(expr: SqlExpr): string {
     case "unary": return `${expr.op}(${aggArgKey(expr.operand)})`;
     case "call": return `${expr.name}(${expr.args.map(aggArgKey).join(",")})`;
     case "cast": return `cast(${aggArgKey(expr.expr)},${expr.targetType})`;
+    case "case_expr": {
+      const whens = expr.whenClauses.map((w: { condition: SqlExpr; result: SqlExpr }) => `${aggArgKey(w.condition)}=>${aggArgKey(w.result)}`);
+      return `case(${expr.operand ? aggArgKey(expr.operand) : ""},${whens.join(",")},${expr.elseResult ? aggArgKey(expr.elseResult) : ""})`;
+    }
+    case "in_list": return `in(${aggArgKey(expr.expr)},${expr.values.map(aggArgKey).join(",")})`;
+    case "between": return `between(${aggArgKey(expr.expr)},${aggArgKey(expr.low)},${aggArgKey(expr.high)})`;
     default: return "_expr";
   }
 }

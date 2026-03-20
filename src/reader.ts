@@ -9,6 +9,7 @@
 import type { ColumnMeta, DataType } from "./types.js";
 import { safeBigInt } from "./types.js";
 import type { FragmentSource } from "./operators.js";
+import { QueryModeError } from "./errors.js";
 
 const textEncoder = new TextEncoder();
 
@@ -144,18 +145,21 @@ export class UrlDataSource implements DataSource {
     const resp = await fetch(this.url, {
       headers: { Range: `bytes=${offset}-${end}` },
     });
+    if (!resp.ok) throw new QueryModeError("QUERY_FAILED", `HTTP ${resp.status} reading ${this.url}`);
     return resp.arrayBuffer();
   }
 
   async getSize(): Promise<number> {
     if (this._size !== null) return this._size;
     const resp = await fetch(this.url, { method: "HEAD" });
+    if (!resp.ok) throw new QueryModeError("QUERY_FAILED", `HTTP ${resp.status} reading ${this.url}`);
     this._size = Number(resp.headers.get("content-length") ?? 0);
     return this._size;
   }
 
   async readAll(): Promise<ArrayBuffer> {
     const resp = await fetch(this.url);
+    if (!resp.ok) throw new QueryModeError("QUERY_FAILED", `HTTP ${resp.status} reading ${this.url}`);
     return resp.arrayBuffer();
   }
 }
@@ -226,6 +230,33 @@ export function encodeColumnBuffer(
       for (let i = 0; i < values.length; i++) {
         const v = values[i];
         arr[i] = typeof v === "bigint" ? BigInt.asUintN(64, v) : safeBigInt(Number(v ?? 0));
+      }
+      return arr.buffer;
+    }
+    case "float16": {
+      // Encode as IEEE 754 half-precision (2 bytes per value)
+      const arr = new Uint16Array(values.length);
+      for (let i = 0; i < values.length; i++) {
+        const v = Number(values[i] ?? 0);
+        // Convert float64 → float16
+        if (!Number.isFinite(v)) {
+          arr[i] = v !== v ? 0x7e00 : (v > 0 ? 0x7c00 : 0xfc00); // NaN / +Inf / -Inf
+        } else if (v === 0) {
+          arr[i] = Object.is(v, -0) ? 0x8000 : 0;
+        } else {
+          const abs = Math.abs(v);
+          const sign = v < 0 ? 0x8000 : 0;
+          if (abs > 65504) { arr[i] = sign | 0x7c00; } // overflow → Inf
+          else if (abs < 5.96046447753906e-8) { arr[i] = sign; } // underflow → 0
+          else if (abs < 6.103515625e-5) {
+            // subnormal
+            arr[i] = sign | Math.round(abs / (2 ** -24));
+          } else {
+            const e = Math.floor(Math.log2(abs));
+            const m = Math.round((abs / (2 ** e) - 1) * 1024);
+            arr[i] = sign | ((e + 15) << 10) | (m & 0x3ff);
+          }
+        }
       }
       return arr.buffer;
     }

@@ -170,9 +170,16 @@ function coerceValue(raw: string, dtype: DataType): number | bigint | string | b
     case "bool":
       return lower === "true" || lower === "1";
     case "int64": {
-      const n = Number(trimmed);
-      if (!Number.isFinite(n)) return null;
-      return BigInt(Math.trunc(n));
+      // Use BigInt() directly to preserve precision for large integers (>15 digits).
+      // Number() would lose precision for values beyond 2^53.
+      try {
+        return BigInt(trimmed);
+      } catch {
+        // Fallback for values like "1e5" that BigInt() can't parse
+        const n = Number(trimmed);
+        if (!Number.isFinite(n)) return null;
+        return BigInt(Math.trunc(n));
+      }
     }
     case "float64":
       return Number(trimmed);
@@ -250,12 +257,14 @@ function buildColumnMeta(parsed: ParsedCsv): ColumnMeta[] {
       if (maxVal === undefined || comparable > maxVal) maxVal = comparable;
     }
 
-    // Single synthetic page that covers the whole column
+    // Single synthetic page that covers the whole column.
+    // nullCount must be 0 because encodeColumnBuffer encodes nulls as 0/"" (no bitmap).
+    // decodePage would corrupt data if it tried to strip a nonexistent bitmap.
     const page: PageInfo = {
       byteOffset: 0n,
       byteLength: 0, // not meaningful for in-memory CSV
       rowCount: parsed.rowCount,
-      nullCount,
+      nullCount: 0,
       minValue: minVal,
       maxValue: maxVal,
     };

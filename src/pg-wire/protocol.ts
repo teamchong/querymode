@@ -36,7 +36,11 @@ export interface SkipMessage {
   type: "skip";
 }
 
-export type FrontendMessage = StartupMessage | QueryMessage | TerminateMessage | SSLRequest | SkipMessage;
+export interface SyncMessage {
+  type: "sync";
+}
+
+export type FrontendMessage = StartupMessage | QueryMessage | TerminateMessage | SSLRequest | SkipMessage | SyncMessage;
 
 // ── Parsing ─────────────────────────────────────────────────────────────
 
@@ -51,6 +55,7 @@ export function parseStartupMessage(buf: Uint8Array): FrontendMessage | null {
   if (buf.length < 8) return null;
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const len = dv.getInt32(0);
+  if (len < 8) return { type: "terminate" }; // Malformed startup — treat as disconnect
   if (buf.length < len) return null;
 
   const code = dv.getInt32(4);
@@ -89,6 +94,7 @@ export function parseFrontendMessage(buf: Uint8Array): [FrontendMessage, number]
   const type = buf[0];
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const len = dv.getInt32(1); // length includes self but not type byte
+  if (len < 4) return [{ type: "terminate" }, 5]; // Malformed message — treat as disconnect
   const totalLen = 1 + len;
   if (buf.length < totalLen) return null;
 
@@ -100,6 +106,8 @@ export function parseFrontendMessage(buf: Uint8Array): [FrontendMessage, number]
     }
     case 0x58: // 'X' — Terminate
       return [{ type: "terminate" }, totalLen];
+    case 0x53: // 'S' — Sync (extended query protocol)
+      return [{ type: "sync" }, totalLen];
     default:
       // Skip unknown/unsupported messages (extended query protocol, etc.)
       return [{ type: "skip" }, totalLen];
@@ -235,6 +243,15 @@ export function commandComplete(tag: string): Uint8Array {
   dv.setInt32(1, len);
   buf.set(tagBytes, 5);
   buf[5 + tagBytes.length] = 0;
+  return buf;
+}
+
+/** 'I' — EmptyQueryResponse */
+export function emptyQueryResponse(): Uint8Array {
+  const buf = new Uint8Array(5);
+  const dv = new DataView(buf.buffer);
+  buf[0] = 0x49; // 'I'
+  dv.setInt32(1, 4);
   return buf;
 }
 

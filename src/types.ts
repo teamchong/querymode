@@ -30,6 +30,9 @@ export function rowComparator(col: string, desc: boolean): (a: Row, b: Row) => n
     if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
     if (av === null || av === undefined) return 1;
     if (bv === null || bv === undefined) return -1;
+    // NaN sorts last (like null)
+    if (typeof av === "number" && isNaN(av)) return typeof bv === "number" && isNaN(bv) ? 0 : 1;
+    if (typeof bv === "number" && isNaN(bv)) return -1;
     return av < bv ? -dir : av > bv ? dir : 0;
   };
 }
@@ -471,6 +474,7 @@ export function queryCacheKey(query: {
   setOperation?: { mode: string; right: unknown };
   subqueryIn?: { column: string; valueSet: Set<string> | string[] }[];
   join?: { type?: string; leftKey: string; rightKey: string; right: unknown };
+  vectorSearch?: { column: string; topK: number; metric?: string; queryVector?: Float32Array };
 }): string {
   let h = 0x811c9dc5;
   const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
@@ -491,7 +495,7 @@ export function queryCacheKey(query: {
   if (query.sortColumn) { feed(query.sortColumn); feed("\0"); feed(query.sortDirection ?? "asc"); feed("\0"); }
   if (query.limit !== undefined) { feed(String(query.limit)); feed("\0"); }
   if (query.offset !== undefined) { feed(String(query.offset)); feed("\0"); }
-  if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed("\0"); feed(a.column); feed("\0"); if (a.alias) feed(a.alias); feed("\0"); }
+  if (query.aggregates) for (const a of query.aggregates) { feed(a.fn); feed("\0"); feed(a.column); feed("\0"); if (a.alias) feed(a.alias); feed("\0"); if (a.percentileTarget !== undefined) { feed(String(a.percentileTarget)); feed("\0"); } }
   if (query.groupBy) for (const g of query.groupBy) { feed(g); feed("\0"); }
   if (query.distinct) for (const d of query.distinct) { feed(d); feed("\0"); }
   if (query.windows) for (const w of query.windows) {
@@ -506,6 +510,7 @@ export function queryCacheKey(query: {
   if (query.setOperation) { feed(query.setOperation.mode); feed("\0"); feed(queryCacheKey(query.setOperation.right as Parameters<typeof queryCacheKey>[0])); feed("\0"); }
   if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
   if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(queryCacheKey(query.join.right as Parameters<typeof queryCacheKey>[0])); feed("\0"); }
+  if (query.vectorSearch) { feed("vs"); feed("\0"); feed(query.vectorSearch.column); feed("\0"); feed(String(query.vectorSearch.topK)); feed("\0"); feed(query.vectorSearch.metric ?? "cosine"); feed("\0"); if (query.vectorSearch.queryVector) { for (let i = 0; i < query.vectorSearch.queryVector.length; i++) feed(String(query.vectorSearch.queryVector[i])); feed("\0"); } }
   return `qr:${query.table}:${(h >>> 0).toString(36)}`;
 }
 

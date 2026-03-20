@@ -183,13 +183,15 @@ export class PartitionCatalog {
   }
 
   /** Restore from serialized form. */
-  static deserialize(data: { column: string; index: Record<string, number[]>; allFragmentIds: number[]; exactPartition?: boolean }): PartitionCatalog {
+  static deserialize(data: { column: string; index?: Record<string, number[]>; allFragmentIds?: number[]; exactPartition?: boolean }): PartitionCatalog {
     const catalog = new PartitionCatalog(data.column);
-    for (const [key, ids] of Object.entries(data.index)) {
-      catalog.index.set(key, ids);
+    if (data.index) {
+      for (const [key, ids] of Object.entries(data.index)) {
+        catalog.index.set(key, ids);
+      }
     }
-    catalog.allFragmentIds = data.allFragmentIds;
-    catalog.allFragmentIdSet = new Set(data.allFragmentIds);
+    catalog.allFragmentIds = data.allFragmentIds ?? [];
+    catalog.allFragmentIdSet = new Set(catalog.allFragmentIds);
     catalog.exactPartition = data.exactPartition ?? true; // backwards-compat: old catalogs assumed exact
     return catalog;
   }

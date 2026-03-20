@@ -52,6 +52,10 @@ function coerceValue(raw: unknown, dtype: DataType): number | bigint | string | 
       return Boolean(raw);
     case "int64": {
       if (typeof raw === "bigint") return raw;
+      // For string values, try BigInt() directly to preserve precision for large integers
+      if (typeof raw === "string") {
+        try { return BigInt(raw); } catch { /* fall through */ }
+      }
       const n = Number(raw);
       if (!Number.isFinite(n)) return null;
       return BigInt(Math.trunc(n));
@@ -60,7 +64,7 @@ function coerceValue(raw: unknown, dtype: DataType): number | bigint | string | 
       return Number(raw);
     case "utf8":
     case "binary":
-      return String(raw);
+      return typeof raw === "object" ? JSON.stringify(raw) : String(raw);
     case "int32":
     case "int16":
     case "int8":
@@ -71,6 +75,9 @@ function coerceValue(raw: unknown, dtype: DataType): number | bigint | string | 
       return Number(raw);
     case "uint64": {
       if (typeof raw === "bigint") return raw;
+      if (typeof raw === "string") {
+        try { return BigInt(raw); } catch { /* fall through */ }
+      }
       const n = Number(raw);
       if (!Number.isFinite(n)) return null;
       return BigInt(Math.trunc(n));
@@ -204,11 +211,13 @@ function buildColumnMeta(parsed: ParsedJson): ColumnMeta[] {
       if (maxVal === undefined || comparable > maxVal) maxVal = comparable;
     }
 
+    // nullCount must be 0 because encodeColumnBuffer encodes nulls as 0/"" (no bitmap).
+    // decodePage would corrupt data if it tried to strip a nonexistent bitmap.
     const page: PageInfo = {
       byteOffset: 0n,
       byteLength: 0,
       rowCount: parsed.rowCount,
-      nullCount,
+      nullCount: 0,
       minValue: minVal,
       maxValue: maxVal,
     };

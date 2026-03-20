@@ -12,7 +12,8 @@ function decompressPage(data: Uint8Array, compression: string | undefined, uncom
     case "SNAPPY": return decompressSnappy(data);
     case "ZSTD": return wasm.decompressZstd(data);
     case "GZIP": return wasm.decompressGzip(data);
-    case "LZ4": case "LZ4_RAW": return wasm.decompressLz4(data, uncompressedSize || data.length * 4);
+    case "LZ4_RAW": return wasm.decompressLz4(data, uncompressedSize || data.length * 4);
+    case "LZ4": throw new QueryModeError("INVALID_FORMAT", "Parquet LZ4 (Hadoop frame) codec not supported; use LZ4_RAW");
     default: throw new QueryModeError("INVALID_FORMAT", `Unknown Parquet compression codec: ${compression}`);
   }
 }
@@ -51,6 +52,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       outPos += length;
     } else if (tagType === 1) {
       // Copy with 1-byte offset
+      if (pos >= input.length) break;
       const length = ((tag >> 2) & 0x07) + 4;
       const offset = ((tag & 0xe0) << 3) | input[pos++];
       if (offset === 0 || offset > outPos) break; // invalid offset
@@ -60,6 +62,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       }
     } else if (tagType === 2) {
       // Copy with 2-byte offset
+      if (pos + 2 > input.length) break;
       const length = ((tag >> 2) & 0x3f) + 1;
       const offset = input[pos] | (input[pos + 1] << 8);
       pos += 2;
@@ -70,6 +73,7 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
       }
     } else {
       // Copy with 4-byte offset
+      if (pos + 4 > input.length) break;
       const length = ((tag >> 2) & 0x3f) + 1;
       const offset = (input[pos] | (input[pos + 1] << 8) | (input[pos + 2] << 16) | (input[pos + 3] << 24)) >>> 0;
       pos += 4;
@@ -91,7 +95,8 @@ export function decompressSnappy(input: Uint8Array): Uint8Array {
 /** Bytes per value for fixed-width types (0 for variable-length). */
 function bytesPerValue(dtype: DataType): number {
   switch (dtype) {
-    case "int8": case "uint8": case "bool": return 1;
+    case "int8": case "uint8": return 1;
+    case "bool": return 0; // bit-packed (1/8 byte per value), treat as variable-length for heuristic
     case "int16": case "uint16": case "float16": return 2;
     case "int32": case "uint32": case "float32": return 4;
     case "int64": case "uint64": case "float64": return 8;
@@ -99,19 +104,14 @@ function bytesPerValue(dtype: DataType): number {
   }
 }
 
-/**
- * Skip a DATA_PAGE v1 level section (repetition or definition levels).
- * Format: <4-byte LE length><RLE-encoded data>.
- * Some writers include these even for flat schemas (max_level=0).
- * Returns new offset after the section, or same offset if no section present.
- */
-function skipV1LevelSection(data: Uint8Array, offset: number): number {
-  if (offset + 4 > data.length) return offset;
+/** Read V1 definition levels (4-byte length prefix + RLE-encoded levels). Returns null if no levels present. */
+function readV1DefLevels(data: Uint8Array, offset: number, numValues: number): { defLevels: number[] | null; newOffset: number } {
+  if (offset + 4 > data.length) return { defLevels: null, newOffset: offset };
   const len = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
-  if (len >= 0 && len < data.length - offset - 4) {
-    return offset + 4 + len;
-  }
-  return offset;
+  if (len <= 0 || len >= data.length - offset - 4) return { defLevels: null, newOffset: offset };
+  const levelData = data.subarray(offset + 4, offset + 4 + len);
+  const { values: defs } = decodeRleBitPacked(levelData, 0, 1, numValues);
+  return { defLevels: defs, newOffset: offset + 4 + len };
 }
 
 // --- RLE/Bit-Packed Hybrid Decoding ---
@@ -148,31 +148,35 @@ function decodeRleBitPacked(
       const numGroups = header >> 1;
       const totalValues = numGroups * 8;
       const n = Math.min(totalValues, maxValues - values.length);
-      let bitPos = 0;
-      let byteIdx = pos;
-      let currentByte = byteIdx < bytes.length ? bytes[byteIdx] : 0;
-      let bitsLeft = 8;
 
-      for (let i = 0; i < n; i++) {
-        let val = 0;
-        let bitsNeeded = bitWidth;
-        let valShift = 0;
+      if (bitWidth === 0) {
+        // bitWidth 0: all values are 0, no data bytes to consume
+        for (let i = 0; i < n; i++) values.push(0);
+      } else {
+        let byteIdx = pos;
+        let currentByte = byteIdx < bytes.length ? bytes[byteIdx] : 0;
+        let bitsLeft = 8;
 
-        while (bitsNeeded > 0) {
-          if (bitsLeft === 0) {
-            byteIdx++;
-            currentByte = byteIdx < bytes.length ? bytes[byteIdx] : 0;
-            bitsLeft = 8;
+        for (let i = 0; i < n; i++) {
+          let val = 0;
+          let bitsNeeded = bitWidth;
+          let valShift = 0;
+
+          while (bitsNeeded > 0) {
+            if (bitsLeft === 0) {
+              byteIdx++;
+              currentByte = byteIdx < bytes.length ? bytes[byteIdx] : 0;
+              bitsLeft = 8;
+            }
+            const take = Math.min(bitsNeeded, bitsLeft);
+            val |= (currentByte & ((1 << take) - 1)) << valShift;
+            currentByte >>= take;
+            bitsLeft -= take;
+            bitsNeeded -= take;
+            valShift += take;
           }
-          const take = Math.min(bitsNeeded, bitsLeft);
-          val |= (currentByte & ((1 << take) - 1)) << valShift;
-          currentByte >>= take;
-          bitsLeft -= take;
-          bitsNeeded -= take;
-          valShift += take;
+          values.push(val & mask);
         }
-        values.push(val & mask);
-        bitPos += bitWidth;
       }
 
       // Advance past all bit-packed bytes (numGroups * 8 values * bitWidth bits)
@@ -218,11 +222,13 @@ function parseDataPageHeaderV2(r: ThriftReader) {
     let f: { fieldId: number; typeId: number } | null;
     while ((f = r.nextField()) !== null) {
       switch (f.fieldId) {
-        case 1: numValues = r.readI32(); break;
-        case 3: encoding = r.readI32(); break;
-        case 4: defLevelsByteLength = r.readI32(); break;
-        case 5: repLevelsByteLength = r.readI32(); break;
-        case 6: isCompressed = r.bytes[r.ofs++] !== 0; break;
+        case 1: numValues = r.readI32(); break;           // num_values
+        case 2: r.readI32(); break;                       // num_nulls (skip)
+        case 3: r.readI32(); break;                       // num_rows (skip)
+        case 4: encoding = r.readI32(); break;             // encoding
+        case 5: defLevelsByteLength = r.readI32(); break;  // definition_levels_byte_length
+        case 6: repLevelsByteLength = r.readI32(); break;  // repetition_levels_byte_length
+        case 7: isCompressed = f.typeId === 1; break;      // is_compressed (bool in type nibble)
         default: r.skip(f.typeId); break;
       }
     }
@@ -414,45 +420,101 @@ export function decodeParquetColumnChunk(
       pageData = decompressPage(pageData, pageEncoding.compression, header.uncompressedSize, wasm);
 
       let dataOffset = 0;
-
-      // Check if dictionary encoding
       const enc = header.encoding;
+
+      // V1 DATA_PAGE: detect and decode definition levels for nullable columns.
+      // V1 def levels are prefixed with a 4-byte LE length. The length should be
+      // small relative to page size (RLE of N boolean values ≈ N/8 bytes).
+      let v1DefLevels: number[] | null = null;
+      {
+        const isDictEnc = enc === 8 || enc === 3;
+        let hasLevelSection = false;
+        if (dataOffset + 8 <= pageData.length) {
+          const prefixLen = pageData[dataOffset] | (pageData[dataOffset + 1] << 8)
+            | (pageData[dataOffset + 2] << 16) | (pageData[dataOffset + 3] << 24);
+          // Def levels RLE for N values at bitWidth=1 is at most ~N/4 bytes.
+          // Reject if prefix looks like data (too large or negative).
+          const maxDefBytes = Math.max(64, Math.ceil(header.numValues / 4) + 8);
+          if (prefixLen > 0 && prefixLen <= maxDefBytes && prefixLen < pageData.length - dataOffset - 4) {
+            if (isDictEnc && dictionary) {
+              // For dictionary: also check that first byte after def levels is a valid bitWidth
+              const afterDef = dataOffset + 4 + prefixLen;
+              if (afterDef < pageData.length) {
+                const candidateBW = pageData[afterDef];
+                const expectedBW = dictionary.length <= 1 ? 0 : Math.ceil(Math.log2(dictionary.length));
+                hasLevelSection = candidateBW === expectedBW;
+              }
+            } else {
+              // For PLAIN: only detect def levels for fixed-width types where we can
+              // cross-check remaining data size. Variable-length types (utf8/binary)
+              // have no reliable way to distinguish def level prefix from data.
+              const bpv = bytesPerValue(dtype);
+              if (bpv > 0) {
+                const remainingAfterDef = (pageData.length - dataOffset) - 4 - prefixLen;
+                hasLevelSection = remainingAfterDef >= 0 && remainingAfterDef <= header.numValues * bpv;
+              }
+            }
+          }
+        }
+        if (hasLevelSection) {
+          const result = readV1DefLevels(pageData, dataOffset, header.numValues);
+          v1DefLevels = result.defLevels;
+          dataOffset = result.newOffset;
+        }
+      }
       if (enc === 8 || enc === 3) {
         // RLE_DICTIONARY or PLAIN_DICTIONARY
         if (dictionary) {
-          // DATA_PAGE v1 may include definition level sections before values.
-          // Detect by checking if the first byte matches the expected bitWidth.
-          const expectedBitWidth = dictionary.length <= 1 ? 0 : Math.ceil(Math.log2(dictionary.length));
-          if (pageData[dataOffset] !== expectedBitWidth && dataOffset + 4 < pageData.length) {
-            // First byte doesn't match expected bitWidth — skip level section
-            dataOffset = skipV1LevelSection(pageData, dataOffset); // definition levels
-          }
           const bitWidth = pageData[dataOffset];
           dataOffset++;
           if (bitWidth === 0) {
-            // All values are index 0
             for (let i = 0; i < header.numValues && values.length < numValues; i++) {
-              values.push(dictionary[0] ?? null);
+              if (v1DefLevels && v1DefLevels[i] === 0) {
+                values.push(null);
+              } else {
+                values.push(dictionary[0] ?? null);
+              }
             }
           } else {
-            const { values: indices } = decodeRleBitPacked(pageData, dataOffset, bitWidth, header.numValues);
-            for (let i = 0; i < indices.length && values.length < numValues; i++) {
-              const idx = indices[i];
-              values.push(idx < dictionary.length ? dictionary[idx] : null);
+            let nonNullCount = header.numValues;
+            if (v1DefLevels) {
+              nonNullCount = 0;
+              for (let di = 0; di < v1DefLevels.length; di++) if (v1DefLevels[di] > 0) nonNullCount++;
+            }
+            const { values: indices } = decodeRleBitPacked(pageData, dataOffset, bitWidth, nonNullCount);
+            let idxPtr = 0;
+            for (let i = 0; i < header.numValues && values.length < numValues; i++) {
+              if (v1DefLevels && v1DefLevels[i] === 0) {
+                values.push(null);
+              } else {
+                const idx = idxPtr < indices.length ? indices[idxPtr++] : 0;
+                values.push(idx < dictionary.length ? dictionary[idx] : null);
+              }
             }
           }
         }
       } else {
-        // PLAIN encoding — skip definition level section if present
-        const expectedPlainBytes = header.numValues * bytesPerValue(dtype);
-        const remaining = pageData.length - dataOffset;
-        if (expectedPlainBytes > 0 && remaining > expectedPlainBytes + 4) {
-          dataOffset = skipV1LevelSection(pageData, dataOffset); // definition levels
-        }
+        // PLAIN encoding
         const plainData = pageData.subarray(dataOffset);
-        const decoded = decodePlainValues(plainData, dtype, header.numValues);
-        for (let i = 0; i < decoded.length && values.length < numValues; i++) {
-          values.push(decoded[i]);
+        let nonNullCount = header.numValues;
+        if (v1DefLevels) {
+          nonNullCount = 0;
+          for (let di = 0; di < v1DefLevels.length; di++) if (v1DefLevels[di] > 0) nonNullCount++;
+        }
+        const decoded = decodePlainValues(plainData, dtype, nonNullCount);
+        if (v1DefLevels) {
+          let dPtr = 0;
+          for (let i = 0; i < header.numValues && values.length < numValues; i++) {
+            if (v1DefLevels[i] === 0) {
+              values.push(null);
+            } else {
+              values.push(dPtr < decoded.length ? decoded[dPtr++] : null);
+            }
+          }
+        } else {
+          for (let i = 0; i < decoded.length && values.length < numValues; i++) {
+            values.push(decoded[i]);
+          }
         }
       }
 
@@ -522,7 +584,12 @@ export function decodeParquetColumnChunk(
         }
       } else {
         // PLAIN encoding
-        const decoded = decodePlainValues(dataPayload, dtype, header.numValues);
+        let plainCount = header.numValues;
+        if (defLevels) {
+          plainCount = 0;
+          for (let di = 0; di < defLevels.length; di++) if (defLevels[di] > 0) plainCount++;
+        }
+        const decoded = decodePlainValues(dataPayload, dtype, plainCount);
         if (defLevels) {
           let dPtr = 0;
           for (let i = 0; i < header.numValues && values.length < numValues; i++) {

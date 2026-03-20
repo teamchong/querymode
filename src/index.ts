@@ -1,7 +1,6 @@
 import { DataFrame, TableQuery } from "./client.js";
 import type { QueryDescriptor, QueryExecutor } from "./client.js";
 import type { AppendOptions, AppendResult, DropResult, ExplainResult, QueryResult, Row, QueryDORpc, MasterDORpc } from "./types.js";
-import { NULL_SENTINEL, countColumnRows } from "./types.js";
 import { LocalExecutor } from "./local-executor.js";
 import { createFromJSON, createFromCSV, createDemo } from "./convenience.js";
 import { sqlToDescriptor, buildSqlDataFrame } from "./sql/index.js";
@@ -223,34 +222,10 @@ class RemoteExecutor implements QueryExecutor {
       throw new QueryModeError("QUERY_FAILED", "append() requires masterDoNamespace — pass it via QueryMode.remote(queryDO, { masterDO })");
     }
 
-    // Partitioned writes: split by partition key, route each group to a different MasterDO
-    if (options?.partitionBy) {
-      const partCol = options.partitionBy;
-      const groups = new Map<string, Record<string, unknown>[]>();
-      for (const row of rows) {
-        const key = row[partCol] === null || row[partCol] === undefined ? NULL_SENTINEL : String(row[partCol]);
-        let group = groups.get(key);
-        if (!group) { group = []; groups.set(key, group); }
-        group.push(row);
-      }
-
-      // Fan out: each partition group goes to a MasterDO named by table+partition
-      const results = await Promise.all(
-        [...groups.entries()].map(([partValue, groupRows]) => {
-          const doName = `master-${table}-${partValue}`;
-          const id = this.masterNamespace!.idFromName(doName);
-          const rpc = this.masterNamespace!.get(id) as unknown as MasterDORpc;
-          return rpc.appendRpc(table, groupRows, options);
-        }),
-      );
-
-      const totalWritten = results.reduce((s, r) => s + r.rowsWritten, 0);
-      return {
-        ...results[results.length - 1],
-        rowsWritten: totalWritten,
-        metadata: { ...options.metadata, partitionBy: partCol, partitions: String(groups.size) },
-      };
-    }
+    // Partitioned writes: send all rows to a single MasterDO per table.
+    // MasterDO handles partition splitting internally (executeAppend).
+    // Using separate MasterDOs per partition value would cause CAS races
+    // on the shared manifest file.
 
     const id = this.masterNamespace.idFromName("master");
     const masterRpc = this.masterNamespace.get(id) as unknown as MasterDORpc;

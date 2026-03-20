@@ -20,6 +20,7 @@ export class R2Partitioner {
   private partitionKeys: string[];
   private partitionRowCounts: number[];
   private partitionBytesWritten: number[];
+  private chunkKeys: string[][];
 
   constructor(bucket: R2Bucket, prefix: string, partitionCount: number) {
     if (partitionCount < 1) throw new QueryModeError("QUERY_FAILED", "R2Partitioner: partitionCount must be >= 1");
@@ -32,6 +33,7 @@ export class R2Partitioner {
     this.partitionKeys = Array.from({ length: partitionCount }, (_, i) => `${prefix}/part-${String(i).padStart(4, '0')}.bin`);
     this.partitionRowCounts = new Array(partitionCount).fill(0);
     this.partitionBytesWritten = new Array(partitionCount).fill(0);
+    this.chunkKeys = Array.from({ length: partitionCount }, () => []);
   }
 
   private hashKey(key: string): number {
@@ -67,8 +69,9 @@ export class R2Partitioner {
   private async flushBucket(pi: number): Promise<void> {
     if (this.buckets[pi].length === 0) return;
     const buf = encodeColumnarRun(this.buckets[pi]);
-    const chunkKey = `${this.prefix}/part-${String(pi).padStart(4, '0')}-${this.partitionRowCounts[pi]}.bin`;
+    const chunkKey = `${this.prefix}/part-${String(pi).padStart(4, '0')}-${this.chunkKeys[pi].length}.bin`;
     await this.bucket.put(chunkKey, buf);
+    this.chunkKeys[pi].push(chunkKey);
     this.partitionRowCounts[pi] += this.buckets[pi].length;
     this.partitionBytesWritten[pi] += buf.byteLength;
     this.buckets[pi] = [];
@@ -83,11 +86,36 @@ export class R2Partitioner {
 
     const partitions: R2Partition[] = [];
     for (let pi = 0; pi < this.partitionCount; pi++) {
-      if (this.partitionRowCounts[pi] > 0) {
+      const chunks = this.chunkKeys[pi];
+      if (chunks.length === 0) continue;
+
+      if (chunks.length === 1) {
+        // Single chunk — return its actual key
         partitions.push({
-          key: this.partitionKeys[pi],
+          key: chunks[0],
           rowCount: this.partitionRowCounts[pi],
           bytesWritten: this.partitionBytesWritten[pi],
+        });
+      } else {
+        // Multiple chunks — consolidate into single R2 object
+        const allRows: Row[] = [];
+        for (const chunkKey of chunks) {
+          const obj = await this.bucket.get(chunkKey);
+          if (obj) {
+            for (const row of decodeColumnarRun(await obj.arrayBuffer())) {
+              allRows.push(row);
+            }
+          }
+        }
+        const consolidated = encodeColumnarRun(allRows);
+        const canonicalKey = this.partitionKeys[pi];
+        await this.bucket.put(canonicalKey, consolidated);
+        // Delete old chunks
+        await Promise.all(chunks.map(k => this.bucket.delete(k).catch(() => {})));
+        partitions.push({
+          key: canonicalKey,
+          rowCount: allRows.length,
+          bytesWritten: consolidated.byteLength,
         });
       }
     }
@@ -96,11 +124,15 @@ export class R2Partitioner {
 
   /** Clean up all partition data */
   async cleanup(): Promise<void> {
-    // List and delete all objects under prefix
-    const listed = await this.bucket.list({ prefix: this.prefix + "/" });
-    await Promise.all(
-      listed.objects.map(obj => this.bucket.delete(obj.key).catch(() => {})),
-    );
+    // List and delete all objects under prefix (paginate if >1000)
+    let cursor: string | undefined;
+    do {
+      const listed = await this.bucket.list({ prefix: this.prefix + "/", cursor });
+      await Promise.all(
+        listed.objects.map(obj => this.bucket.delete(obj.key).catch(() => {})),
+      );
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
   }
 }
 

@@ -329,9 +329,9 @@ export function finalizePartialAgg(
       if (part === NULL_SENTINEL) {
         row[groupCols[i]] = null;
       } else {
-        // Attempt to restore numeric types
+        // Attempt to restore numeric types (including non-finite values)
         const num = Number(part);
-        if (part !== "" && !isNaN(num) && isFinite(num) && String(num) === part) {
+        if (part !== "" && String(num) === part) {
           row[groupCols[i]] = num;
         } else if (part !== "" && /^-?\d+$/.test(part)) {
           // Number round-trip lost precision — restore as bigint

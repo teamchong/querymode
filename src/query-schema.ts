@@ -14,7 +14,8 @@ const filterOpSchema = z.object({
   value: z.union([
     z.number(),
     z.string(),
-    z.array(z.union([z.number(), z.string()])),
+    z.boolean(),
+    z.array(z.union([z.number(), z.string(), z.boolean()])),
   ]).optional(), // optional for unary ops (is_null, is_not_null)
 });
 
@@ -59,7 +60,7 @@ export const queryDescriptorSchema = z.object({
  */
 export function parseAndValidateQuery(body: unknown): {
   table: string;
-  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "between" | "not_between" | "like" | "not_like" | "is_null" | "is_not_null"; value?: number | string | (number | string)[] }[];
+  filters: { column: string; op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "not_in" | "between" | "not_between" | "like" | "not_like" | "is_null" | "is_not_null"; value?: number | string | boolean | (number | string | boolean)[] }[];
   projections: string[];
   sortColumn?: string;
   sortDirection?: "asc" | "desc";
@@ -67,7 +68,7 @@ export function parseAndValidateQuery(body: unknown): {
   offset?: number;
   vectorSearch?: { column: string; queryVector: number[] | Float32Array; topK: number };
   aggregates?: { fn: "sum" | "avg" | "min" | "max" | "count" | "count_distinct" | "stddev" | "variance" | "median" | "percentile"; column: string; alias?: string; percentileTarget?: number }[];
-  filterGroups?: { column: string; op: string; value?: number | string | (number | string)[] }[][];
+  filterGroups?: { column: string; op: string; value?: number | string | boolean | (number | string | boolean)[] }[][];
   distinct?: string[];
   groupBy?: string[];
   cacheTTL?: number;

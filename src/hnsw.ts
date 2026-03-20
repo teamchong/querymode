@@ -27,7 +27,7 @@ export function cosineDistance(a: Float32Array, b: Float32Array): number {
   }
   const denom = Math.sqrt(normA * normB);
   if (denom === 0) return 1;
-  return 1 - dot / denom;
+  return Math.max(0, 1 - dot / denom);
 }
 
 /** Squared L2 (Euclidean) distance. */
@@ -273,7 +273,8 @@ export class HnswIndex {
 
   private randomLevel(): number {
     // Geometric distribution: floor(-ln(uniform) * mL)
-    return Math.floor(-Math.log(Math.random()) * this.mL);
+    // Clamp to max 32 to prevent Infinity when Math.random() returns 0
+    return Math.min(Math.floor(-Math.log(Math.random() || Number.MIN_VALUE) * this.mL), 32);
   }
 
   // -----------------------------------------------------------------------

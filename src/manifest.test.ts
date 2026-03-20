@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import { parseManifest } from "./manifest.js";
+import { parseManifest, buildManifestBinary, schemaFromColumns } from "./manifest.js";
 import { LANCE_MAGIC } from "./footer.js";
 
 /** Encode a number as a protobuf varint */
@@ -107,6 +107,71 @@ describe("parseManifest", () => {
     const buf = buildManifestBuf([], 3);
     const manifest = parseManifest(buf);
     expect(manifest!.schema).toEqual([]);
+  });
+});
+
+describe("buildManifestBinary round-trip", () => {
+  it("buildManifestBinary output is parseable by parseManifest", () => {
+    const fragments = [
+      { id: 1, filePath: "data/abc.lance", physicalRows: 1000 },
+      { id: 2, filePath: "data/def.lance", physicalRows: 500 },
+    ];
+    const buf = buildManifestBinary(5, fragments);
+    const manifest = parseManifest(buf);
+    expect(manifest).not.toBeNull();
+    expect(manifest!.version).toBe(5);
+    expect(manifest!.fragments).toHaveLength(2);
+    expect(manifest!.fragments[0].id).toBe(1);
+    expect(manifest!.fragments[0].filePath).toBe("data/abc.lance");
+    expect(manifest!.fragments[0].physicalRows).toBe(1000);
+    expect(manifest!.fragments[1].id).toBe(2);
+    expect(manifest!.fragments[1].filePath).toBe("data/def.lance");
+    expect(manifest!.fragments[1].physicalRows).toBe(500);
+    expect(manifest!.totalRows).toBe(1500);
+  });
+
+  it("round-trips empty manifest", () => {
+    const buf = buildManifestBinary(1, []);
+    const manifest = parseManifest(buf);
+    expect(manifest).not.toBeNull();
+    expect(manifest!.version).toBe(1);
+    expect(manifest!.fragments).toHaveLength(0);
+  });
+
+  it("round-trips schema fields", () => {
+    const schema = schemaFromColumns([
+      { name: "id", dtype: "int64" },
+      { name: "value", dtype: "float64" },
+      { name: "name", dtype: "utf8" },
+      { name: "active", dtype: "bool" },
+    ]);
+    const fragments = [
+      { id: 1, filePath: "data/test.lance", physicalRows: 100 },
+    ];
+    const buf = buildManifestBinary(2, fragments, schema);
+    const manifest = parseManifest(buf);
+    expect(manifest).not.toBeNull();
+    expect(manifest!.version).toBe(2);
+    expect(manifest!.schema).toHaveLength(4);
+    expect(manifest!.schema[0].name).toBe("id");
+    expect(manifest!.schema[0].logicalType).toBe("int64");
+    expect(manifest!.schema[0].id).toBe(1);
+    expect(manifest!.schema[1].name).toBe("value");
+    expect(manifest!.schema[1].logicalType).toBe("double");
+    expect(manifest!.schema[2].name).toBe("name");
+    expect(manifest!.schema[2].logicalType).toBe("utf8");
+    expect(manifest!.schema[3].name).toBe("active");
+    expect(manifest!.schema[3].logicalType).toBe("boolean");
+  });
+
+  it("round-trips nullable schema fields", () => {
+    const schema = [
+      { name: "col", logicalType: "int64", id: 1, parentId: 0, nullable: true },
+    ];
+    const buf = buildManifestBinary(1, [], schema);
+    const manifest = parseManifest(buf);
+    expect(manifest!.schema).toHaveLength(1);
+    expect(manifest!.schema[0].nullable).toBe(true);
   });
 });
 

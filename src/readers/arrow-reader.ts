@@ -100,11 +100,11 @@ interface ArrowField {
 
 /** Map Arrow type union to our DataType. */
 function parseArrowType(buf: DataView, fieldTable: number): DataType {
-  // Field: type_type (field 5, idx=5) and type (field 6, idx=6)
-  const typeTypeOff = fbOffset(buf, fieldTable, 5);
+  // Field: type_type (field idx=2) and type (field idx=3)
+  const typeTypeOff = fbOffset(buf, fieldTable, 2);
   const typeType = typeTypeOff ? buf.getUint8(typeTypeOff) : 0;
 
-  const typeOff = fbOffset(buf, fieldTable, 6);
+  const typeOff = fbOffset(buf, fieldTable, 3);
   const typeTable = typeOff ? typeOff + readI32(buf, typeOff) : 0;
 
   switch (typeType) {
@@ -150,7 +150,7 @@ function parseArrowType(buf: DataView, fieldTable: number): DataType {
 }
 
 function parseField(buf: DataView, fieldTable: number): ArrowField {
-  // Field flatbuffer: name (field 0), nullable (field 1), type_type (5), type (6)
+  // Field flatbuffer: name (field 0), nullable (field 1), type_type (field 2), type (field 3)
   const nameOff = fbOffset(buf, fieldTable, 0);
   const name = nameOff ? fbString(buf, nameOff + readI32(buf, nameOff)) : "";
   const nullableOff = fbOffset(buf, fieldTable, 1);
@@ -337,6 +337,9 @@ class ArrowFragmentSource implements FragmentSource {
 /**
  * Re-encode a variable-length column from Arrow (offsets + data) into the
  * length-prefixed format used by decodePage(): [u32 len][bytes]...
+ *
+ * Supports both regular (32-bit) and Large (64-bit) offset types by detecting
+ * the offset size from the buffer length relative to rowCount.
  */
 function reencodeVarLen(
   offsetsBuf: ArrayBuffer,
@@ -345,15 +348,23 @@ function reencodeVarLen(
 ): ArrayBuffer {
   const offsetsView = new DataView(offsetsBuf);
   const dataBytes = new Uint8Array(dataBuf);
-  const numOffsets = Math.min(rowCount + 1, Math.floor(offsetsBuf.byteLength / 4));
+
+  // Detect 64-bit (Large) offsets: LargeUtf8/LargeBinary use i64 offsets
+  const isLargeOffsets = offsetsBuf.byteLength >= (rowCount + 1) * 8;
+  const offsetSize = isLargeOffsets ? 8 : 4;
+  const numOffsets = Math.min(rowCount + 1, Math.floor(offsetsBuf.byteLength / offsetSize));
   if (numOffsets < 2) return new ArrayBuffer(0);
+
+  const readOffset = isLargeOffsets
+    ? (i: number) => readI64AsNumber(offsetsView, i * 8)
+    : (i: number) => offsetsView.getInt32(i * 4, true);
 
   // First pass: compute total output size
   let totalSize = 0;
   const count = numOffsets - 1;
   for (let i = 0; i < count; i++) {
-    const start = offsetsView.getInt32(i * 4, true);
-    const end = offsetsView.getInt32((i + 1) * 4, true);
+    const start = readOffset(i);
+    const end = readOffset(i + 1);
     totalSize += 4 + (end - start);
   }
 
@@ -362,8 +373,8 @@ function reencodeVarLen(
   const outView = new DataView(out.buffer);
   let pos = 0;
   for (let i = 0; i < count; i++) {
-    const start = offsetsView.getInt32(i * 4, true);
-    const end = offsetsView.getInt32((i + 1) * 4, true);
+    const start = readOffset(i);
+    const end = readOffset(i + 1);
     const len = end - start;
     outView.setUint32(pos, len, true);
     pos += 4;
@@ -478,11 +489,13 @@ export class ArrowReader implements FormatReader {
           // Data buffer
           const dataBuf = meta.buffers[bufIdx++];
           if (dataBuf && offsetsBuf) {
+            // nullCount must be 0: readPage re-encodes via reencodeVarLen without bitmap.
+            // decodePage would corrupt data if it tried to strip a nonexistent bitmap.
             const page: PageInfo = {
               byteOffset: BigInt(bodyOffset + dataBuf.offset),
               byteLength: dataBuf.length,
               rowCount: node.length,
-              nullCount: node.nullCount,
+              nullCount: 0,
               // Store offsets buffer location in encoding so ArrowFragmentSource can retrieve it
               encoding: {
                 dictionaryPageOffset: BigInt(bodyOffset + offsetsBuf.offset),
@@ -496,11 +509,13 @@ export class ArrowReader implements FormatReader {
           // Fixed-width: just data buffer
           const dataBuf = meta.buffers[bufIdx++];
           if (dataBuf) {
+            // nullCount must be 0: readPage returns raw data buffer without bitmap.
+            // decodePage would corrupt data if it tried to strip a nonexistent bitmap.
             const page: PageInfo = {
               byteOffset: BigInt(bodyOffset + dataBuf.offset),
               byteLength: dataBuf.length,
               rowCount: node.length,
-              nullCount: node.nullCount,
+              nullCount: 0,
             };
             col.pages.push(page);
             col.nullCount += node.nullCount;

@@ -147,4 +147,33 @@ describe("partial-agg", () => {
     expect(result[0]["max_v"]).toBe(30);
     expect(result[0]["count_v"]).toBe(3);
   });
+
+  it("finalizePartialAgg restores NaN/Infinity group keys as numbers", () => {
+    const rows = [
+      { g: NaN, v: 1 },
+      { g: NaN, v: 2 },
+      { g: Infinity, v: 3 },
+      { g: -Infinity, v: 4 },
+    ];
+    const query: QueryDescriptor = {
+      table: "t",
+      projections: [],
+      groupBy: ["g"],
+      aggregates: [{ fn: "sum", column: "v" }],
+    };
+
+    const partial = computePartialAgg(rows, query);
+    const result = finalizePartialAgg(partial, query);
+
+    expect(result).toHaveLength(3);
+    const nanRow = result.find((r) => typeof r.g === "number" && isNaN(r.g as number));
+    const infRow = result.find((r) => r.g === Infinity);
+    const negInfRow = result.find((r) => r.g === -Infinity);
+    expect(nanRow).toBeDefined();
+    expect(nanRow!["sum_v"]).toBe(3);
+    expect(infRow).toBeDefined();
+    expect(infRow!["sum_v"]).toBe(3);
+    expect(negInfRow).toBeDefined();
+    expect(negInfRow!["sum_v"]).toBe(4);
+  });
 });

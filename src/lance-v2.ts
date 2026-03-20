@@ -452,8 +452,10 @@ function computePageStats(
   }
 
   const view = new DataView(dataBuf);
-  const numValues = dataOffsetInPage !== undefined ? rowCount : rowCount - nullCount;
-  if (numValues <= 0) return null;
+  // Lance stores values for ALL rows (including nulls which have dummy values).
+  // We always iterate rowCount positions and skip nulls via the bitmap.
+  const numValues = rowCount;
+  if (numValues <= 0 || numValues === nullCount) return null;
 
   // Read null bitmap to skip null positions (bitwise O(1) lookup)
   let nullBitmap: Uint8Array | null = null;
@@ -581,11 +583,10 @@ export function decodeLanceV2Utf8(buf: ArrayBuffer, rowCount: number): string[] 
   const offsetsBytes = rowCount * 8; // rowCount i64 offsets (not rowCount+1)
   if (buf.byteLength < offsetsBytes) return [];
 
-  // Read cumulative end offsets into typed array (avoid per-row BigInt overhead)
-  const endOffsets = new Int32Array(rowCount);
+  // Read cumulative end offsets (i64 in file, safe to narrow to Number for <2^53 bytes)
+  const endOffsets = new Float64Array(rowCount);
   for (let i = 0; i < rowCount; i++) {
-    // Read low 32 bits directly — string offsets fit in i32 for practical datasets
-    endOffsets[i] = view.getInt32(i * 8, true);
+    endOffsets[i] = Number(view.getBigInt64(i * 8, true));
   }
 
   // Total string data length is the last offset

@@ -1,6 +1,8 @@
 import { readVarint, LANCE_MAGIC } from "./footer.js";
 import type { DataType, FragmentInfo, ManifestInfo, SchemaField } from "./types.js";
 
+const encoder = new TextEncoder();
+
 export type { FragmentInfo, ManifestInfo };
 
 /** Map Lance manifest logicalType string to DataType */
@@ -216,4 +218,157 @@ function parseDataFilePath(bytes: Uint8Array): string {
   }
 
   return "";
+}
+
+// ---------------------------------------------------------------------------
+// Manifest builder — shared by MasterDO and LocalExecutor
+// ---------------------------------------------------------------------------
+
+/** Convert DataType to logicalType string for manifest schema */
+function dataTypeToLogicalType(dtype: DataType): string {
+  switch (dtype) {
+    case "float16": return "halffloat";
+    case "float32": return "float";
+    case "float64": return "double";
+    case "bool": return "boolean";
+    default: return dtype;
+  }
+}
+
+/** Derive SchemaField[] from column names+dtypes (used during append) */
+export function schemaFromColumns(
+  columns: { name: string; dtype: DataType; hasNull?: boolean }[],
+): SchemaField[] {
+  return columns.map((col, i) => ({
+    name: col.name,
+    logicalType: dataTypeToLogicalType(col.dtype),
+    id: i + 1,
+    parentId: 0,
+    nullable: col.hasNull ?? false,
+  }));
+}
+
+function encodeVarint(value: number): Uint8Array {
+  const bytes: number[] = [];
+  let v = value >>> 0;
+  while (v > 0x7f) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v & 0x7f);
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Build a Lance manifest binary (protobuf + envelope).
+ * Output format: [4-byte protoLen LE] [proto] [12 bytes padding] [LANC magic].
+ */
+export function buildManifestBinary(
+  version: number,
+  fragments: { id: number; filePath: string; physicalRows: number }[],
+  schema?: SchemaField[],
+): ArrayBuffer {
+  const parts: Uint8Array[] = [];
+
+  // Write schema fields (field 1, length-delimited) — must come before fragments
+  if (schema) {
+    for (const field of schema) {
+      const fieldParts: Uint8Array[] = [];
+
+      // field 2 (string): name
+      const nameBytes = encoder.encode(field.name);
+      fieldParts.push(new Uint8Array([0x12])); // tag 2, wire type 2
+      fieldParts.push(encodeVarint(nameBytes.length));
+      fieldParts.push(nameBytes);
+
+      // field 3 (varint): id
+      fieldParts.push(new Uint8Array([0x18])); // tag 3, wire type 0
+      fieldParts.push(encodeVarint(field.id));
+
+      // field 4 (varint): parentId
+      if (field.parentId !== 0) {
+        fieldParts.push(new Uint8Array([0x20])); // tag 4, wire type 0
+        fieldParts.push(encodeVarint(field.parentId));
+      }
+
+      // field 5 (string): logicalType
+      const typeBytes = encoder.encode(field.logicalType);
+      fieldParts.push(new Uint8Array([0x2a])); // tag 5, wire type 2
+      fieldParts.push(encodeVarint(typeBytes.length));
+      fieldParts.push(typeBytes);
+
+      // field 6 (varint): nullable
+      if (field.nullable) {
+        fieldParts.push(new Uint8Array([0x30, 0x01])); // tag 6, value 1
+      }
+
+      let fieldLen = 0;
+      for (const p of fieldParts) fieldLen += p.length;
+      const fieldBuf = new Uint8Array(fieldLen);
+      let fOff = 0;
+      for (const p of fieldParts) { fieldBuf.set(p, fOff); fOff += p.length; }
+
+      parts.push(new Uint8Array([0x0a])); // manifest field 1, wire type 2
+      parts.push(encodeVarint(fieldLen));
+      parts.push(fieldBuf);
+    }
+  }
+
+  // Write each fragment (field 2, length-delimited)
+  for (const frag of fragments) {
+    const pathBytes = encoder.encode(frag.filePath);
+    const fragParts: Uint8Array[] = [];
+
+    // DataFile sub-message: field 1 (path) length-delimited
+    const dataFileParts: Uint8Array[] = [
+      new Uint8Array([0x0a]), // tag 1, wire type 2
+      encodeVarint(pathBytes.length),
+      pathBytes,
+    ];
+    let dataFileLen = 0;
+    for (const p of dataFileParts) dataFileLen += p.length;
+    const dataFileBuf = new Uint8Array(dataFileLen);
+    let dOff = 0;
+    for (const p of dataFileParts) { dataFileBuf.set(p, dOff); dOff += p.length; }
+
+    // Fragment sub-fields
+    fragParts.push(new Uint8Array([0x08])); // field 1 varint (id)
+    fragParts.push(encodeVarint(frag.id));
+    fragParts.push(new Uint8Array([0x12])); // field 2 length-delimited (DataFile)
+    fragParts.push(encodeVarint(dataFileLen));
+    fragParts.push(dataFileBuf);
+    fragParts.push(new Uint8Array([0x20])); // field 4 varint (physicalRows)
+    fragParts.push(encodeVarint(frag.physicalRows));
+
+    let fragLen = 0;
+    for (const p of fragParts) fragLen += p.length;
+    const fragBuf = new Uint8Array(fragLen);
+    let fOff = 0;
+    for (const p of fragParts) { fragBuf.set(p, fOff); fOff += p.length; }
+
+    parts.push(new Uint8Array([0x12])); // manifest field 2 (DataFragment)
+    parts.push(encodeVarint(fragLen));
+    parts.push(fragBuf);
+  }
+
+  // Version (field 3, varint)
+  parts.push(new Uint8Array([0x18]));
+  parts.push(encodeVarint(version));
+
+  let protoLen = 0;
+  for (const p of parts) protoLen += p.length;
+
+  // Envelope: [4-byte len LE] [proto] [12 zero padding] [LANC magic]
+  const totalSize = 4 + protoLen + 12 + 4;
+  const buf = new ArrayBuffer(totalSize);
+  const view = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+
+  view.setUint32(0, protoLen, true);
+  let off = 4;
+  for (const p of parts) { bytes.set(p, off); off += p.length; }
+  // 12 bytes padding already zero
+  view.setUint32(4 + protoLen + 12, LANCE_MAGIC, true);
+
+  return buf;
 }

@@ -78,6 +78,8 @@ export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
       // Aggregate/window calls can't be evaluated row-by-row.
       // In HAVING context, aggregate calls are rewritten to column refs before evaluation.
       return null;
+    default:
+      return null;
   }
 }
 
@@ -165,12 +167,33 @@ function looseEqual(a: unknown, b: unknown): boolean {
 }
 
 function compare(a: unknown, b: unknown): number {
-  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "number" && typeof b === "number") {
+    if (isNaN(a) && isNaN(b)) return 0;
+    if (isNaN(a)) return 1;  // NaN sorts last
+    if (isNaN(b)) return -1;
+    return a - b;
+  }
   if (typeof a === "bigint" && typeof b === "bigint") return a < b ? -1 : a > b ? 1 : 0;
   if (typeof a === "string" && typeof b === "string") return a.localeCompare(b);
-  // Cross-type bigint/number: convert number to bigint (safe for all finite integers)
-  if (typeof a === "bigint" && typeof b === "number") { if (!Number.isFinite(b)) return b === Infinity ? -1 : 1; const bb = BigInt(Math.trunc(b)); return a < bb ? -1 : a > bb ? 1 : 0; }
-  if (typeof a === "number" && typeof b === "bigint") { if (!Number.isFinite(a)) return a === Infinity ? 1 : -1; const ab = BigInt(Math.trunc(a)); return ab < b ? -1 : ab > b ? 1 : 0; }
+  // Cross-type bigint/number: truncate to bigint, then check fractional remainder
+  if (typeof a === "bigint" && typeof b === "number") {
+    if (isNaN(b)) return -1; // NaN sorts last, bigint comes first
+    if (!Number.isFinite(b)) return b === Infinity ? -1 : 1;
+    const bb = BigInt(Math.trunc(b));
+    if (a < bb) return -1;
+    if (a > bb) return 1;
+    const frac = b - Math.trunc(b);
+    return frac > 0 ? -1 : frac < 0 ? 1 : 0;
+  }
+  if (typeof a === "number" && typeof b === "bigint") {
+    if (isNaN(a)) return 1; // NaN sorts last
+    if (!Number.isFinite(a)) return a === Infinity ? 1 : -1;
+    const ab = BigInt(Math.trunc(a));
+    if (ab < b) return -1;
+    if (ab > b) return 1;
+    const frac = a - Math.trunc(a);
+    return frac > 0 ? 1 : frac < 0 ? -1 : 0;
+  }
   return toNumber(a) - toNumber(b);
 }
 
@@ -191,8 +214,8 @@ function numericOp(
   const lb = typeof left === "bigint";
   const rb = typeof right === "bigint";
   if (lb && rb) return bigFn(left as bigint, right as bigint);
-  if (lb && typeof right === "number" && Number.isInteger(right)) return bigFn(left as bigint, BigInt(right));
-  if (rb && typeof left === "number" && Number.isInteger(left)) return bigFn(BigInt(left), right as bigint);
+  if (lb && typeof right === "number" && Number.isSafeInteger(right)) return bigFn(left as bigint, BigInt(right));
+  if (rb && typeof left === "number" && Number.isSafeInteger(left)) return bigFn(BigInt(left), right as bigint);
   return numFn(toNumber(left), toNumber(right));
 }
 
@@ -201,9 +224,9 @@ function numericDiv(left: unknown, right: unknown): number | bigint | null {
   const lb = typeof left === "bigint";
   const rb = typeof right === "bigint";
   if (lb && rb) return right === 0n ? null : (left as bigint) / (right as bigint);
-  if (lb && typeof right === "number" && Number.isInteger(right))
+  if (lb && typeof right === "number" && Number.isSafeInteger(right))
     return right === 0 ? null : (left as bigint) / BigInt(right);
-  if (rb && typeof left === "number" && Number.isInteger(left))
+  if (rb && typeof left === "number" && Number.isSafeInteger(left))
     return right === 0n ? null : BigInt(left) / (right as bigint);
   const d = toNumber(right);
   return d === 0 ? null : toNumber(left) / d;
@@ -222,7 +245,10 @@ function castValue(val: unknown, targetType: string): unknown {
     const n = toNumber(val);
     return Number.isFinite(n) ? BigInt(Math.trunc(n)) : 0n;
   }
-  if (t === "int" || t === "integer") return Math.trunc(toNumber(val));
+  if (t === "int" || t === "integer") {
+    if (typeof val === "bigint") return (val >= -9007199254740991n && val <= 9007199254740991n) ? Number(val) : val;
+    return Math.trunc(toNumber(val));
+  }
   if (t === "float" || t === "double" || t === "real" || t === "decimal" || t === "numeric") return toNumber(val);
   if (t === "text" || t === "varchar" || t === "string" || t === "char") return String(val);
   if (t === "bool" || t === "boolean") return isTruthy(val);
@@ -234,50 +260,53 @@ function castValue(val: unknown, targetType: string): unknown {
  * e.g. COUNT(*) > 5 → column("count_*") > 5
  * This lets the evaluator look up aggregate results by their output column name.
  */
-export function rewriteAggregatesAsColumns(expr: SqlExpr): SqlExpr {
+export function rewriteAggregatesAsColumns(expr: SqlExpr, aggregates?: { fn: string; column: string; alias?: string }[]): SqlExpr {
   switch (expr.kind) {
     case "call": {
       const fnUpper = expr.name.toUpperCase();
       if (isAggregate(fnUpper)) {
         const col = expr.args[0] ? aggArgKey(expr.args[0]) : "*";
         const fn = (expr.distinct && fnUpper === "COUNT") ? "count_distinct" : fnUpper.toLowerCase();
-        return { kind: "column", name: `${fn}_${col}` };
+        // Check if a matching aggregate has an alias — use alias if present
+        const match = aggregates?.find(a => a.fn === fn && a.column === col);
+        const name = match?.alias ?? `${fn}_${col}`;
+        return { kind: "column", name };
       }
-      return expr;
+      return { ...expr, args: expr.args.map(a => rewriteAggregatesAsColumns(a, aggregates)) };
     }
     case "binary":
       return {
         kind: "binary", op: expr.op,
-        left: rewriteAggregatesAsColumns(expr.left),
-        right: rewriteAggregatesAsColumns(expr.right),
+        left: rewriteAggregatesAsColumns(expr.left, aggregates),
+        right: rewriteAggregatesAsColumns(expr.right, aggregates),
       };
     case "unary":
-      return { kind: "unary", op: expr.op, operand: rewriteAggregatesAsColumns(expr.operand) };
+      return { kind: "unary", op: expr.op, operand: rewriteAggregatesAsColumns(expr.operand, aggregates) };
     case "between":
       return {
         kind: "between",
-        expr: rewriteAggregatesAsColumns(expr.expr),
-        low: rewriteAggregatesAsColumns(expr.low),
-        high: rewriteAggregatesAsColumns(expr.high),
+        expr: rewriteAggregatesAsColumns(expr.expr, aggregates),
+        low: rewriteAggregatesAsColumns(expr.low, aggregates),
+        high: rewriteAggregatesAsColumns(expr.high, aggregates),
       };
     case "in_list":
       return {
         kind: "in_list", negated: expr.negated,
-        expr: rewriteAggregatesAsColumns(expr.expr),
-        values: expr.values.map(rewriteAggregatesAsColumns),
+        expr: rewriteAggregatesAsColumns(expr.expr, aggregates),
+        values: expr.values.map(v => rewriteAggregatesAsColumns(v, aggregates)),
       };
     case "case_expr":
       return {
         kind: "case_expr",
-        operand: expr.operand ? rewriteAggregatesAsColumns(expr.operand) : undefined,
+        operand: expr.operand ? rewriteAggregatesAsColumns(expr.operand, aggregates) : undefined,
         whenClauses: expr.whenClauses.map(w => ({
-          condition: rewriteAggregatesAsColumns(w.condition),
-          result: rewriteAggregatesAsColumns(w.result),
+          condition: rewriteAggregatesAsColumns(w.condition, aggregates),
+          result: rewriteAggregatesAsColumns(w.result, aggregates),
         })),
-        elseResult: expr.elseResult ? rewriteAggregatesAsColumns(expr.elseResult) : undefined,
+        elseResult: expr.elseResult ? rewriteAggregatesAsColumns(expr.elseResult, aggregates) : undefined,
       };
     case "cast":
-      return { kind: "cast", expr: rewriteAggregatesAsColumns(expr.expr), targetType: expr.targetType };
+      return { kind: "cast", expr: rewriteAggregatesAsColumns(expr.expr, aggregates), targetType: expr.targetType };
     default:
       return expr;
   }

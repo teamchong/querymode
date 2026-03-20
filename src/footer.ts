@@ -140,11 +140,17 @@ function parsePageInfo(bytes: Uint8Array): PageInfo | null {
     const wireType = tag & 0x7;
 
     if (wireType === 0) {
+      if (fieldNumber === 1) {
+        // byteOffset needs full 64-bit precision for files >4GB
+        const { value: val64, bytesRead: valBytes } = readVarint64(bytes, pos);
+        pos += valBytes;
+        byteOffset = val64;
+        continue;
+      }
       const { value, bytesRead: valBytes } = readVarint(bytes, pos);
       pos += valBytes;
 
-      if (fieldNumber === 1) byteOffset = BigInt(value);
-      else if (fieldNumber === 2) byteLength = value;
+      if (fieldNumber === 2) byteLength = value;
       else if (fieldNumber === 3) rowCount = value;
       else if (fieldNumber === 4) minValue = value;
       else if (fieldNumber === 5) maxValue = value;
@@ -173,7 +179,7 @@ function parsePageInfo(bytes: Uint8Array): PageInfo | null {
   return { byteOffset, byteLength, rowCount, nullCount, minValue, maxValue };
 }
 
-/** Read a varint from a byte array. Consumes all bytes including 64-bit encodings. */
+/** Read a varint from a byte array. Returns a 32-bit unsigned number (upper bits discarded). */
 export function readVarint(bytes: Uint8Array, offset: number): { value: number; bytesRead: number } {
   let result = 0;
   let shift = 0;
@@ -191,6 +197,24 @@ export function readVarint(bytes: Uint8Array, offset: number): { value: number; 
   }
 
   return { value: result >>> 0, bytesRead: pos - offset };
+}
+
+/** Read a varint as BigInt (supports full 64-bit range). Used for byte offsets in large files. */
+function readVarint64(bytes: Uint8Array, offset: number): { value: bigint; bytesRead: number } {
+  let result = 0n;
+  let shift = 0n;
+  let pos = offset;
+
+  while (pos < bytes.length) {
+    const byte = bytes[pos++];
+    result |= BigInt(byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: result, bytesRead: pos - offset };
+    }
+    shift += 7n;
+  }
+
+  return { value: result, bytesRead: pos - offset };
 }
 
 /** Map Lance data type enum to string */

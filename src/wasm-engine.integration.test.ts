@@ -9,20 +9,18 @@ import type { QueryDescriptor } from "./client.js";
 import type { PageInfo } from "./types.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { existsSync } from "node:fs";
+
+const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
+const hasWasm = existsSync(wasmPath);
 
 let wasm: WasmEngine;
-let hasWasm = false;
 
 beforeAll(async () => {
-  try {
-    const wasmPath = path.join(import.meta.dirname ?? ".", "wasm", "querymode.wasm");
-    const wasmBytes = await fs.readFile(wasmPath);
-    const mod = await WebAssembly.compile(wasmBytes);
-    wasm = await instantiateWasm(mod);
-    hasWasm = true;
-  } catch {
-    hasWasm = false;
-  }
+  if (!hasWasm) return;
+  const wasmBytes = await fs.readFile(wasmPath);
+  const mod = await WebAssembly.compile(wasmBytes);
+  wasm = await instantiateWasm(mod);
 });
 
 describe.skipIf(!hasWasm)("WASM integration", () => {

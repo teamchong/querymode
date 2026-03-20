@@ -164,6 +164,12 @@ class Parser {
       groupBy = this.parseGroupBy();
     }
 
+    let setOperation: SelectStmt["setOperation"];
+    if (this.check(TokenType.UNION) || this.check(TokenType.INTERSECT) || this.check(TokenType.EXCEPT)) {
+      setOperation = this.parseSetOperation();
+    }
+
+    // ORDER BY / LIMIT / OFFSET after set operations apply to the combined result
     let orderBy: SqlOrderBy[] | undefined;
     if (this.check(TokenType.ORDER)) {
       orderBy = this.parseOrderBy();
@@ -179,11 +185,6 @@ class Parser {
     if (this.match(TokenType.OFFSET)) {
       const tok = this.expect(TokenType.NUMBER);
       offset = parseInt(tok.lexeme, 10);
-    }
-
-    let setOperation: SelectStmt["setOperation"];
-    if (this.check(TokenType.UNION) || this.check(TokenType.INTERSECT) || this.check(TokenType.EXCEPT)) {
-      setOperation = this.parseSetOperation();
     }
 
     const stmt: SelectStmt = { distinct, columns, from, where, groupBy, orderBy, limit, offset, setOperation };
@@ -250,8 +251,12 @@ class Parser {
     if (tok.type === TokenType.IDENTIFIER || tok.type === TokenType.STRING) {
       this.advance();
       // Strip quotes from identifiers
-      if (tok.lexeme.startsWith('"') || tok.lexeme.startsWith("`")) {
-        return tok.lexeme.slice(1, -1);
+      if (tok.lexeme.startsWith('"') || tok.lexeme.startsWith("`") || tok.lexeme.startsWith("'")) {
+        let inner = tok.lexeme.slice(1, -1);
+        const q = tok.lexeme[0];
+        if (q === '"') inner = inner.replace(/""/g, '"');
+        else if (q === '`') inner = inner.replace(/``/g, '`');
+        return inner;
       }
       return tok.lexeme;
     }
@@ -418,8 +423,31 @@ class Parser {
       throw this.error("Expected UNION, INTERSECT, or EXCEPT");
     }
 
-    const right = this.parseSelect();
+    // Parse only the core SELECT for the right side — ORDER BY/LIMIT/OFFSET
+    // after a set op belong to the outer combined query, not the right side
+    const right = this.parseSelectCore();
     return { opType, right };
+  }
+
+  /** Parse a SELECT without trailing ORDER BY/LIMIT/OFFSET (used for right side of set operations) */
+  private parseSelectCore(): SelectStmt {
+    this.expect(TokenType.SELECT);
+    const distinct = this.match(TokenType.DISTINCT);
+    const columns = this.parseSelectList();
+    this.expect(TokenType.FROM);
+    const from = this.parseTableRef();
+
+    let where: SqlExpr | undefined;
+    if (this.match(TokenType.WHERE)) {
+      where = this.parseExpr();
+    }
+
+    let groupBy: SqlGroupBy | undefined;
+    if (this.check(TokenType.GROUP)) {
+      groupBy = this.parseGroupBy();
+    }
+
+    return { distinct, columns, from, where, groupBy };
   }
 
   // --- Expression parsing (precedence climbing) ---
@@ -674,9 +702,17 @@ class Parser {
       return { kind: "star" };
     }
 
-    // Function call or column reference (including aggregate/window function keywords)
-    if (tok.type === TokenType.IDENTIFIER || isFunctionKeyword(tok.type)) {
-      const name = tok.lexeme;
+    // Function call or column reference (including aggregate/window function keywords
+    // and keyword identifiers like VERSION, DATA, LEFT, etc.)
+    if (tok.type === TokenType.IDENTIFIER || isFunctionKeyword(tok.type) || isKeywordIdentifier(tok.type)) {
+      let name = tok.lexeme;
+      // Strip surrounding quotes from identifiers (double-quoted or backtick-quoted)
+      if ((name.startsWith('"') && name.endsWith('"')) || (name.startsWith('`') && name.endsWith('`'))) {
+        const q = name[0];
+        name = name.slice(1, -1);
+        if (q === '"') name = name.replace(/""/g, '"');
+        else name = name.replace(/``/g, '`');
+      }
       this.advance();
 
       // Check for table.column

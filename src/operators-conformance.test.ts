@@ -235,8 +235,8 @@ describe("HashJoinOperator", () => {
     sortByKeys(ours, ["id"]);
     sortByKeys(duck, ["id"]);
 
-    // Verify unmatched rows have null value (ours: missing property, duck: null)
-    const oursUnmatched = ours.filter(r => !("value" in r) || r.value === undefined);
+    // Verify unmatched rows have null value
+    const oursUnmatched = ours.filter(r => r.value === null);
     const duckUnmatched = duck.filter(r => r.value === null);
     expect(oursUnmatched.length).toBe(duckUnmatched.length);
   }, 60_000);

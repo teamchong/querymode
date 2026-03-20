@@ -225,7 +225,7 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
       case DTYPE_F64: {
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          view.setFloat64(offset + ri * 8, typeof val === "number" ? val : 0, true);
+          view.setFloat64(offset + ri * 8, typeof val === "number" ? val : typeof val === "bigint" ? Number(val) : 0, true);
         }
         offset += rowCount * 8;
         break;
@@ -233,7 +233,7 @@ export function encodeColumnarRun(rows: Row[]): ArrayBuffer {
       case DTYPE_I64: {
         for (let ri = 0; ri < rowCount; ri++) {
           const val = rows[ri][name];
-          view.setBigInt64(offset + ri * 8, typeof val === "bigint" ? val : 0n, true);
+          view.setBigInt64(offset + ri * 8, typeof val === "bigint" ? val : typeof val === "number" ? (Number.isFinite(val) ? BigInt(Math.trunc(val)) : 0n) : 0n, true);
         }
         offset += rowCount * 8;
         break;
@@ -496,7 +496,7 @@ export class R2SpillBackend implements SpillBackend {
   async cleanup(): Promise<void> {
     const keys = this.spillKeys.splice(0);
     await Promise.all(
-      keys.map(key => this.bucket.delete(key).catch(() => {})),
+      keys.map(key => withTimeout(this.bucket.delete(key), 10_000).catch(() => {})),
     );
   }
 }

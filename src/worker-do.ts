@@ -168,8 +168,8 @@ export class WorkerDO extends DurableObject<WorkerEnv> implements WorkerDORpc {
       }
     }
 
-    // Emit unmatched right rows for full join
-    if (joinType === "full") {
+    // Emit unmatched right rows for full/right join
+    if (joinType === "full" || joinType === "right") {
       const matchedRightKeys = new Set<string>();
       for (const leftRow of leftRows) {
         const val = leftRow[joinKey];

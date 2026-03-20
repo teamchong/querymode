@@ -62,7 +62,8 @@ export class QueryModeError extends Error {
     }
 
     // Memory exceeded
-    if (msg.includes("OOM") || msg.includes("memory") || msg.includes("budget")) {
+    const msgLwr = msg.toLowerCase();
+    if (msg.includes("OOM") || msgLwr.includes("memory") || msgLwr.includes("budget")) {
       return new QueryModeError(
         "MEMORY_EXCEEDED",
         `Memory budget exceeded${table ? ` querying ${table}` : ""}. Try adding filters, reducing projections, or increasing memoryBudgetBytes.`,

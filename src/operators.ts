@@ -949,7 +949,7 @@ function evaluateWindow(rows: Row[], win: WindowSpec): void {
     if (win.orderBy.length > 0) {
       indices.sort((a, b) => {
         for (const ob of win.orderBy) {
-          const av = rows[a][ob.column], bv = rows[b][ob.column];
+          const av = rows[a][ob.column] ?? null, bv = rows[b][ob.column] ?? null;
           if (av === null && bv === null) continue;
           if (av === null) return 1;  // nulls-last regardless of direction
           if (bv === null) return -1;
@@ -1741,6 +1741,9 @@ export class TopKOperator implements Operator {
       if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
       if (av === null || av === undefined) return 1;  // nulls-last
       if (bv === null || bv === undefined) return -1;
+      // NaN sorts last (like null)
+      if (typeof av === "number" && isNaN(av)) return typeof bv === "number" && isNaN(bv) ? 0 : 1;
+      if (typeof bv === "number" && isNaN(bv)) return -1;
       const c = av < bv ? -1 : av > bv ? 1 : 0;
       return desc ? -c : c;
     };
@@ -1749,6 +1752,9 @@ export class TopKOperator implements Operator {
       const nv = row[col], rv = heap[0][col];
       if (nv === null || nv === undefined) return false;
       if (rv === null || rv === undefined) return true;
+      // NaN sorts last — any non-NaN should replace NaN at root
+      if (typeof rv === "number" && isNaN(rv)) return true;
+      if (typeof nv === "number" && isNaN(nv)) return false;
       return desc ? nv > rv : nv < rv;
     };
 
@@ -1993,7 +1999,7 @@ export class WasmAggregateOperator implements Operator {
 
       for (let pi = 0; pi < pageCount; pi++) {
         if (canSkipPageMultiCol(frag.columns, pi, filters, filterGroups)) {
-          this.pagesSkipped++;
+          this.pagesSkipped += frag.columns.length;
           continue;
         }
 
@@ -2038,9 +2044,8 @@ export class WasmAggregateOperator implements Operator {
           // Copy indices to WASM for indexed aggregates
           this.wasm.resetHeap();
           indicesPtr = this.wasm.exports.alloc(currentIndices.byteLength);
-          if (indicesPtr) {
-            new Uint32Array(this.wasm.exports.memory.buffer, indicesPtr, currentIndices.length).set(currentIndices);
-          }
+          if (!indicesPtr) continue; // skip page if WASM can't allocate index buffer
+          new Uint32Array(this.wasm.exports.memory.buffer, indicesPtr, currentIndices.length).set(currentIndices);
           matchCount = currentIndices.length;
         }
 
@@ -2083,9 +2088,9 @@ export class WasmAggregateOperator implements Operator {
             }
           } else {
             // Filtered: use indexed aggregates on matching rows only
-            acc[ai].count += matchCount;
             const dataPtr = this.wasm.exports.alloc(buf.byteLength);
             if (!dataPtr) continue;
+            acc[ai].count += matchCount;
             new Uint8Array(this.wasm.exports.memory.buffer, dataPtr, buf.byteLength).set(new Uint8Array(buf));
 
             if (col.dtype === "float64") {
@@ -2189,7 +2194,9 @@ export class WasmAggregateOperator implements Operator {
     return currentIndices ?? new Uint32Array(0);
   }
 
-  async close(): Promise<void> { /* no-op */ }
+  async close(): Promise<void> {
+    for (const frag of this.fragments) await frag.close?.();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2222,8 +2229,10 @@ export class HashJoinOperator implements Operator {
   private crossRightIdx = 0;
   private crossDone = false;
 
-  // Column name tracking for null-fill in right/full joins
+  // Column name tracking for null-fill in outer joins
   private leftColumns: string[] | null = null;
+  private rightColumns: string[] | null = null;
+  private inMemNullRight: Row[] | null = null; // null-keyed right rows for RIGHT/FULL joins (in-memory path)
 
   // Partitioned spill state (Grace hash join)
   private partitionCount = 0;
@@ -2268,10 +2277,29 @@ export class HashJoinOperator implements Operator {
 
   private mergeRow(leftRow: Row, rightRow: Row): Row {
     const merged: Row = { ...leftRow };
+    if (!this.rightColumns) {
+      this.rightColumns = [];
+      for (const k in rightRow) {
+        if (k === this.rightKey) continue;
+        this.rightColumns.push(k);
+      }
+    }
     for (const k in rightRow) {
       if (k === this.rightKey) continue;
       const outKey = k in merged ? `right_${k}` : k;
       merged[outKey] = rightRow[k];
+    }
+    return merged;
+  }
+
+  /** Create a row with right-side columns null-filled for an unmatched left row. */
+  private nullFilledLeft(leftRow: Row): Row {
+    const merged: Row = { ...leftRow };
+    if (this.rightColumns) {
+      for (const k of this.rightColumns) {
+        const outKey = k in merged ? `right_${k}` : k;
+        merged[outKey] = null;
+      }
     }
     return merged;
   }
@@ -2287,6 +2315,8 @@ export class HashJoinOperator implements Operator {
     if (this.leftColumns) {
       for (const k of this.leftColumns) merged[k] = null;
     }
+    // Preserve the join key value from the right side
+    merged[this.leftKey] = rightRow[this.rightKey];
     for (const k in rightRow) {
       if (k === this.rightKey) continue;
       const outKey = k in merged ? `right_${k}` : k;
@@ -2304,6 +2334,12 @@ export class HashJoinOperator implements Operator {
         if (!this.rightMatched.has(this.rightRowId(key, i))) {
           result.push(this.nullFilledRight(rows[i]));
         }
+      }
+    }
+    // Null-keyed right rows never match — always emit for RIGHT/FULL joins
+    if (this.inMemNullRight) {
+      for (const row of this.inMemNullRight) {
+        result.push(this.nullFilledRight(row));
       }
     }
     return result;
@@ -2374,10 +2410,23 @@ export class HashJoinOperator implements Operator {
 
       if (!exceeds) {
         // Fits in memory — build hash map directly
+        // Discover right column names for null-fill in outer joins
+        if (!this.rightColumns && inMemoryRows.length > 0) {
+          this.rightColumns = [];
+          for (const k in inMemoryRows[0]) {
+            if (k !== this.rightKey) this.rightColumns.push(k);
+          }
+        }
         this.hashMap = new Map<string, Row[]>();
+        if (this.joinType === "right" || this.joinType === "full") {
+          this.inMemNullRight = [];
+        }
         for (const row of inMemoryRows) {
           const val = row[this.rightKey];
-          if (val === null || val === undefined) continue; // NULL never matches in SQL joins
+          if (val === null || val === undefined) {
+            if (this.inMemNullRight) this.inMemNullRight.push(row);
+            continue; // NULL never matches in SQL joins
+          }
           const key = this.toJoinKey(val);
           const bucket = this.hashMap.get(key);
           if (bucket) bucket.push(row);
@@ -2533,6 +2582,17 @@ export class HashJoinOperator implements Operator {
       else rightMap.set(key, [row]);
     }
 
+    // Discover right column names for null-fill if not yet known
+    if (!this.rightColumns) {
+      const sample = rightNullRows[0] ?? rightMap.values().next().value?.[0];
+      if (sample) {
+        this.rightColumns = [];
+        for (const k in sample) {
+          if (k !== this.rightKey) this.rightColumns.push(k);
+        }
+      }
+    }
+
     // Track matched right rows for right/full joins
     const matched = (this.joinType === "right" || this.joinType === "full") ? new Set<string>() : null;
 
@@ -2543,7 +2603,7 @@ export class HashJoinOperator implements Operator {
       if (!this.leftColumns) this.leftColumns = Object.keys(leftRow);
       const leftVal = leftRow[this.leftKey];
       if (leftVal === null || leftVal === undefined) {
-        if (this.joinType === "left" || this.joinType === "full") result.push({ ...leftRow });
+        if (this.joinType === "left" || this.joinType === "full") result.push(this.nullFilledLeft(leftRow));
         continue;
       }
       const key = this.toJoinKey(leftVal);
@@ -2554,7 +2614,7 @@ export class HashJoinOperator implements Operator {
           if (matched) matched.add(`${key}\x00${i}`);
         }
       } else if (this.joinType === "left" || this.joinType === "full") {
-        result.push({ ...leftRow });
+        result.push(this.nullFilledLeft(leftRow));
       }
     }
 
@@ -2624,7 +2684,7 @@ export class HashJoinOperator implements Operator {
           return null;
         }
 
-        // Capture left column names on first batch (for null-fill in right/full unmatched rows)
+        // Capture left column names on first batch (for null-fill in outer joins)
         if (!this.leftColumns && batch.length > 0) {
           this.leftColumns = Object.keys(batch[0]);
         }
@@ -2633,7 +2693,7 @@ export class HashJoinOperator implements Operator {
         for (const leftRow of batch) {
           const leftVal = leftRow[this.leftKey];
           if (leftVal === null || leftVal === undefined) {
-            if (this.joinType === "left" || this.joinType === "full") result.push({ ...leftRow });
+            if (this.joinType === "left" || this.joinType === "full") result.push(this.nullFilledLeft(leftRow));
             continue;
           }
           const key = this.toJoinKey(leftVal);
@@ -2644,7 +2704,7 @@ export class HashJoinOperator implements Operator {
               if (this.rightMatched) this.rightMatched.add(this.rightRowId(key, i));
             }
           } else if (this.joinType === "left" || this.joinType === "full") {
-            result.push({ ...leftRow });
+            result.push(this.nullFilledLeft(leftRow));
           }
         }
 
@@ -2668,6 +2728,7 @@ export class HashJoinOperator implements Operator {
   async close(): Promise<void> {
     this.hashMap = null;
     this.rightMatched = null;
+    this.inMemNullRight = null;
     this.crossRightBuffer = null;
     this.crossLeftBatch = null;
     if (this.spill) await this.spill.cleanup();
@@ -3009,7 +3070,7 @@ export function buildEdgePipeline(
 }
 
 /** Shared pipeline assembly: filter → subquery → computed → pipe → window → distinct → agg → sort → project */
-function assemblePipeline(
+export function assemblePipeline(
   source: Operator,
   query: QueryDescriptor,
   outputColumns: string[],

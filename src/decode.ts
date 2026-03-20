@@ -20,7 +20,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
 
     // Coerce bigint↔number for cross-type comparisons (skip non-finite numbers — BigInt(NaN) throws)
     if (typeof min === "bigint" && typeof val === "number") { if (!Number.isFinite(val)) continue; val = BigInt(Math.trunc(val as number)); }
-    else if (typeof min === "number" && typeof val === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
+    else if (typeof min === "number" && typeof val === "bigint") { if (!Number.isFinite(min) || !Number.isFinite(max as number)) continue; min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
 
     switch (filter.op) {
       case "gt":  if (max <= val) return true; break;
@@ -35,9 +35,10 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value)) break;
         if (filter.value.every(v => {
           let cv = v;
-          if (typeof min === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
-          else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
-          return cv < min || cv > max;
+          let cmin = min, cmax = max;
+          if (typeof cmin === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
+          else if (typeof cmin === "number" && typeof cv === "bigint") { if (!Number.isFinite(cmin as number) || !Number.isFinite(cmax as number)) return false; cmin = BigInt(Math.trunc(cmin as number)); cmax = BigInt(Math.trunc(cmax as number)); }
+          return cv < cmin || cv > cmax;
         })) return true;
         break;
       }
@@ -46,9 +47,10 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         if (!Array.isArray(filter.value) || min !== max) break;
         if (filter.value.some(v => {
           let cv = v;
-          if (typeof min === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
-          else if (typeof min === "number" && typeof cv === "bigint") { min = BigInt(Math.trunc(min as number)); max = BigInt(Math.trunc(max as number)); }
-          return cv === min;
+          let cmin = min;
+          if (typeof cmin === "bigint" && typeof cv === "number") { if (!Number.isFinite(cv)) return false; cv = BigInt(Math.trunc(cv)); }
+          else if (typeof cmin === "number" && typeof cv === "bigint") { if (!Number.isFinite(cmin as number)) return false; cmin = BigInt(Math.trunc(cmin as number)); }
+          return cv === cmin;
         })) return true;
         break;
       }
@@ -57,7 +59,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         let lo = filter.value[0];
         let hi = filter.value[1];
         if (typeof min === "bigint" && typeof lo === "number") { if (!Number.isFinite(lo) || !Number.isFinite(hi as number)) break; lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
-        else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
+        else if (typeof min === "number" && typeof lo === "bigint") { if (!Number.isFinite(min) || !Number.isFinite(max as number)) break; min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
         if (max < lo || min > hi) return true;
         break;
       }
@@ -66,7 +68,7 @@ export function canSkipPage(page: PageInfo, filters: QueryDescriptor["filters"],
         let lo = filter.value[0];
         let hi = filter.value[1];
         if (typeof min === "bigint" && typeof lo === "number") { if (!Number.isFinite(lo) || !Number.isFinite(hi as number)) break; lo = BigInt(Math.trunc(lo)); hi = BigInt(Math.trunc(hi as number)); }
-        else if (typeof min === "number" && typeof lo === "bigint") { min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
+        else if (typeof min === "number" && typeof lo === "bigint") { if (!Number.isFinite(min) || !Number.isFinite(max as number)) break; min = BigInt(Math.trunc(min)); max = BigInt(Math.trunc(max as number)); }
         // Skip if all values are within [lo, hi] — NOT BETWEEN would exclude them all
         if (min >= lo && max <= hi) return true;
         break;
@@ -367,6 +369,8 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
     if ((av === null || av === undefined) && (bv === null || bv === undefined)) return 0;
     if (av === null || av === undefined) return 1;
     if (bv === null || bv === undefined) return -1;
+    if (typeof av === "number" && isNaN(av)) return typeof bv === "number" && isNaN(bv) ? 0 : 1;
+    if (typeof bv === "number" && isNaN(bv)) return -1;
     const c = av < bv ? -1 : av > bv ? 1 : 0;
     return desc ? -c : c;
   };
@@ -374,7 +378,9 @@ function topK(rows: Row[], k: number, col: string, desc: boolean): Row[] {
   const shouldReplace = (row: Row): boolean => {
     const nv = row[col], rv = heap[0][col];
     if (nv === null || nv === undefined) return false;
+    if (typeof nv === "number" && isNaN(nv)) return false;
     if (rv === null || rv === undefined) return true;
+    if (typeof rv === "number" && isNaN(rv)) return true;
     return desc ? nv > rv : nv < rv;
   };
 

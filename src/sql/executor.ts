@@ -125,10 +125,13 @@ export class SqlWrappingExecutor implements QueryExecutor {
           if (av === null || av === undefined) return 1;
           if (bv === null || bv === undefined) return -1;
           let cmp: number;
-          if (typeof av === "number" && typeof bv === "number") cmp = av < bv ? -1 : av > bv ? 1 : 0;
+          if (typeof av === "number" && typeof bv === "number") {
+            const aN = isNaN(av), bN = isNaN(bv);
+            cmp = aN && bN ? 0 : aN ? 1 : bN ? -1 : av < bv ? -1 : av > bv ? 1 : 0;
+          }
           else if (typeof av === "bigint" && typeof bv === "bigint") cmp = av < bv ? -1 : av > bv ? 1 : 0;
-          else if (typeof av === "bigint" && typeof bv === "number") { if (!Number.isFinite(bv)) { cmp = bv === Infinity ? -1 : 1; } else { const bb = BigInt(Math.trunc(bv)); cmp = av < bb ? -1 : av > bb ? 1 : 0; } }
-          else if (typeof av === "number" && typeof bv === "bigint") { if (!Number.isFinite(av)) { cmp = av === Infinity ? 1 : -1; } else { const ab = BigInt(Math.trunc(av)); cmp = ab < bv ? -1 : ab > bv ? 1 : 0; } }
+          else if (typeof av === "bigint" && typeof bv === "number") { if (!Number.isFinite(bv)) { cmp = bv === Infinity ? -1 : 1; } else { const bb = BigInt(Math.trunc(bv)); if (av < bb) cmp = -1; else if (av > bb) cmp = 1; else { const fr = bv - Math.trunc(bv); cmp = fr > 0 ? -1 : fr < 0 ? 1 : 0; } } }
+          else if (typeof av === "number" && typeof bv === "bigint") { if (!Number.isFinite(av)) { cmp = av === Infinity ? 1 : -1; } else { const ab = BigInt(Math.trunc(av)); if (ab < bv) cmp = -1; else if (ab > bv) cmp = 1; else { const fr = av - Math.trunc(av); cmp = fr > 0 ? 1 : fr < 0 ? -1 : 0; } } }
           else cmp = String(av).localeCompare(String(bv));
           if (cmp !== 0) return direction === "desc" ? -cmp : cmp;
         }
@@ -136,9 +139,15 @@ export class SqlWrappingExecutor implements QueryExecutor {
       });
     }
 
-    // 5b. Apply deferred projections (after HAVING/ORDER BY which may reference non-SELECT columns)
+    // 5b. Apply deferred projections (after HAVING/ORDER BY which may reference non-SELECT columns).
+    // Only keep SELECT columns + computed expressions — aggregate columns used only for
+    // HAVING/ORDER BY have already been evaluated and should not appear in output.
     if (savedProjections && savedProjections.length > 0) {
-      const keep = new Set([...savedProjections, ...((this.opts.computedExprs ?? []).map(e => e.alias))]);
+      const keep = new Set([
+        ...savedProjections,
+        ...((this.opts.computedExprs ?? []).map(e => e.alias)),
+        ...((query.windows ?? []).map(w => w.alias)),
+      ]);
       rows = rows.map(row => {
         const out: Row = {};
         for (const k of keep) if (k in row) out[k] = row[k];
@@ -153,7 +162,11 @@ export class SqlWrappingExecutor implements QueryExecutor {
     }
 
     const finalColumns = savedProjections && savedProjections.length > 0
-      ? [...new Set([...savedProjections, ...((this.opts.computedExprs ?? []).map(e => e.alias))])]
+      ? [...new Set([
+          ...savedProjections,
+          ...((this.opts.computedExprs ?? []).map(e => e.alias)),
+          ...((query.windows ?? []).map(w => w.alias)),
+        ])]
       : result.columns;
     return { ...result, rows, rowCount: rows.length, columns: finalColumns };
   }
