@@ -239,6 +239,31 @@ export interface VectorOpts {
   encoder?: (text: string) => Promise<Float32Array>;
 }
 
+/** Full-text search parameters */
+export interface SearchParams {
+  /** The query text to search for */
+  query: string;
+  /** Columns to search (with optional weights). If not specified, searches all indexed text columns. */
+  fields?: Record<string, number>;
+  /** Maximum typo tolerance: 0 = exact, 1 = 1 edit, 2 = 2 edits (default: 0) */
+  typoTolerance?: number;
+  /** Match mode: "and" requires all terms, "or" requires any (default: "and") */
+  mode?: "and" | "or";
+  /** BM25 tuning */
+  bm25?: { k1?: number; b?: number };
+  /** Columns to compute facet counts for (e.g., ["brand", "category"]) */
+  facets?: string[];
+}
+
+/** Full-text search options (client-facing) */
+export interface SearchOpts {
+  fields?: Record<string, number>;
+  typoTolerance?: number;
+  mode?: "and" | "or";
+  bm25?: { k1?: number; b?: number };
+  facets?: string[];
+}
+
 /** Version info for time travel */
 export interface VersionInfo {
   version: number;
@@ -292,6 +317,10 @@ export interface QueryResult<T extends Row = Row> {
   spillBytesWritten?: number;
   /** Total bytes read back from spill storage during sort/join */
   spillBytesRead?: number;
+  /** Facet counts computed alongside search results (single-pass). */
+  facets?: Record<string, Record<string, number>>;
+  /** Total matching documents before LIMIT (for full-text search). */
+  totalHits?: number;
 }
 
 /** Schema field extracted from Lance manifest */
@@ -382,6 +411,26 @@ export interface DropResult {
   table: string;
   fragmentsDeleted: number;
   bytesFreed: number;
+}
+
+/** Pre-execution cost estimate for a query. Use to reject expensive queries before they run. */
+export interface QueryCost {
+  /** Estimated rows to scan (after page/fragment pruning) */
+  estimatedRows: number;
+  /** Estimated bytes to read from storage */
+  estimatedBytes: number;
+  /** Estimated R2/disk read operations */
+  estimatedReads: number;
+  /** Number of fragments to scan */
+  fragmentsScanned: number;
+  /** Whether edge mode would fan out to Fragment DOs */
+  fanOut: boolean;
+  /** Estimated Fragment DOs spawned (0 in local mode) */
+  estimatedDOs: number;
+  /** Whether a hierarchical reducer tier would be used */
+  hierarchicalReduction: boolean;
+  /** Cost rating: "trivial" | "light" | "moderate" | "heavy" | "extreme" */
+  rating: "trivial" | "light" | "moderate" | "heavy" | "extreme";
 }
 
 /** Vector index metadata for IVF-PQ acceleration */
@@ -475,6 +524,7 @@ export function queryCacheKey(query: {
   subqueryIn?: { column: string; valueSet: Set<string> | string[] }[];
   join?: { type?: string; leftKey: string; rightKey: string; right: unknown };
   vectorSearch?: { column: string; topK: number; metric?: string; queryVector?: Float32Array };
+  search?: { query: string; fields?: Record<string, number>; typoTolerance?: number; mode?: string; facets?: string[] };
 }): string {
   let h = 0x811c9dc5;
   const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } };
@@ -511,6 +561,7 @@ export function queryCacheKey(query: {
   if (query.subqueryIn) for (const sq of query.subqueryIn) { feed(sq.column); feed("\0"); for (const v of sq.valueSet) { feed(v); feed("\0"); } }
   if (query.join) { feed(query.join.type ?? "inner"); feed("\0"); feed(query.join.leftKey); feed("\0"); feed(query.join.rightKey); feed("\0"); feed(queryCacheKey(query.join.right as Parameters<typeof queryCacheKey>[0])); feed("\0"); }
   if (query.vectorSearch) { feed("vs"); feed("\0"); feed(query.vectorSearch.column); feed("\0"); feed(String(query.vectorSearch.topK)); feed("\0"); feed(query.vectorSearch.metric ?? "cosine"); feed("\0"); if (query.vectorSearch.queryVector) { for (let i = 0; i < query.vectorSearch.queryVector.length; i++) feed(String(query.vectorSearch.queryVector[i])); feed("\0"); } }
+  if (query.search) { feed("fts"); feed("\0"); feed(query.search.query); feed("\0"); if (query.search.fields) { for (const [k, v] of Object.entries(query.search.fields).sort()) { feed(k); feed(String(v)); feed("\0"); } } if (query.search.typoTolerance !== undefined) { feed(String(query.search.typoTolerance)); feed("\0"); } if (query.search.mode) { feed(query.search.mode); feed("\0"); } if (query.search.facets) { for (const f of [...query.search.facets].sort()) { feed(f); feed("\0"); } } }
   return `qr:${query.table}:${(h >>> 0).toString(36)}`;
 }
 

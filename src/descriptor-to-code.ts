@@ -142,6 +142,21 @@ export function descriptorToCode(
     chains.push(`.limit(${desc.limit})`);
   }
 
+  // Full-text search
+  if (desc.search) {
+    const s = desc.search;
+    const optsparts: string[] = [];
+    if (s.fields) optsparts.push(`fields: { ${Object.entries(s.fields).map(([k, v]) => `${str(k)}: ${v}`).join(", ")} }`);
+    if (s.typoTolerance !== undefined) optsparts.push(`typoTolerance: ${s.typoTolerance}`);
+    if (s.mode) optsparts.push(`mode: ${str(s.mode)}`);
+    if (s.bm25) optsparts.push(`bm25: { k1: ${s.bm25.k1 ?? 1.2}, b: ${s.bm25.b ?? 0.75} }`);
+    const optsStr = optsparts.length > 0 ? `, { ${optsparts.join(", ")} }` : "";
+    chains.push(`.search(${str(s.query)}${optsStr})`);
+    if (s.facets && s.facets.length > 0) {
+      chains.push(`.facets([${s.facets.map(f => str(f)).join(", ")}])`);
+    }
+  }
+
   // Vector search
   if (desc.vectorSearch) {
     const vs = desc.vectorSearch;

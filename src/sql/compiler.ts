@@ -115,6 +115,12 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     vectorSearch = extractVectorSearch(stmt.where);
   }
 
+  // Process full-text search (MATCH in WHERE)
+  let search: QueryDescriptor["search"];
+  if (stmt.where) {
+    search = extractMatchSearch(stmt.where);
+  }
+
   // ORDER BY
   let sortColumn: string | undefined;
   let sortDirection: "asc" | "desc" | undefined;
@@ -176,6 +182,7 @@ export function compileFull(stmt: SelectStmt): SqlCompileResult {
     aggregates: aggregates.length > 0 ? aggregates : undefined,
     groupBy: stmt.groupBy ? stmt.groupBy.columns : undefined,
     vectorSearch,
+    search,
     join,
     setOperation,
     distinct,
@@ -457,6 +464,11 @@ function tryFlattenFilters(expr: SqlExpr, filters: FilterOp[]): boolean {
     return true;
   }
 
+  // MATCH expressions are handled separately by extractMatchSearch
+  if (expr.kind === "match") {
+    return true;
+  }
+
   // Everything else (OR, subqueries, etc.) can't be flattened
   return false;
 }
@@ -556,6 +568,19 @@ function extractVectorSearch(expr: SqlExpr): QueryDescriptor["vectorSearch"] {
   }
   if (expr.kind === "binary" && expr.op === "and") {
     return extractVectorSearch(expr.left) ?? extractVectorSearch(expr.right);
+  }
+  return undefined;
+}
+
+function extractMatchSearch(expr: SqlExpr): QueryDescriptor["search"] {
+  if (expr.kind === "match") {
+    const fields = expr.fields
+      ? Object.fromEntries(expr.fields.map(f => [f.name, f.weight]))
+      : undefined;
+    return { query: expr.query, fields };
+  }
+  if (expr.kind === "binary" && expr.op === "and") {
+    return extractMatchSearch(expr.left) ?? extractMatchSearch(expr.right);
   }
   return undefined;
 }

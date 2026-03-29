@@ -183,6 +183,28 @@ describe("SQL Compiler", () => {
     expect(desc.vectorSearch).toBeDefined();
     expect(desc.vectorSearch!.topK).toBe(3);
   });
+
+  it("compiles MATCH full-text search", () => {
+    const desc = sql("SELECT * FROM products WHERE MATCH('wireless headphones')");
+    expect(desc.search).toBeDefined();
+    expect(desc.search!.query).toBe("wireless headphones");
+    expect(desc.search!.fields).toBeUndefined();
+    expect(desc.filters).toEqual([]);
+  });
+
+  it("compiles MATCH with field weights", () => {
+    const desc = sql("SELECT * FROM products WHERE MATCH('iphone', title^3, description^1)");
+    expect(desc.search).toBeDefined();
+    expect(desc.search!.query).toBe("iphone");
+    expect(desc.search!.fields).toEqual({ title: 3, description: 1 });
+  });
+
+  it("handles AND with MATCH (mixed filters)", () => {
+    const desc = sql("SELECT * FROM products WHERE MATCH('laptop') AND price < 1000");
+    expect(desc.search).toBeDefined();
+    expect(desc.search!.query).toBe("laptop");
+    expect(desc.filters).toEqual([{ column: "price", op: "lt", value: 1000 }]);
+  });
 });
 
 describe("SQL Compiler - compileFull", () => {

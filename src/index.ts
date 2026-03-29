@@ -13,7 +13,7 @@ export { WorkerDO } from "./worker-do.js";
 export type { R2Partition, WorkerDORpc } from "./worker-pool.js";
 export { ReaderRegistry, FileDataSource, UrlDataSource } from "./reader.js";
 export type { FormatReader, DataSource } from "./reader.js";
-export { DataFrame, TableQuery, MaterializedExecutor, Pipeline } from "./client.js";
+export { DataFrame, TableQuery, MaterializedExecutor, Pipeline, deriveQueryCost } from "./client.js";
 export { LazyResultHandle } from "./client.js";
 export type { PipelineStage } from "./client.js";
 export { descriptorToCode } from "./descriptor-to-code.js";
@@ -43,6 +43,7 @@ export { SqlParseError, SqlLexerError } from "./sql/index.js";
 export { PgConnectionHandler } from "./pg-wire/handler.js";
 export type { PgConnectionOptions } from "./pg-wire/handler.js";
 export { HnswIndex, cosineDistance, l2DistanceSq, dotDistance } from "./hnsw.js";
+export { SearchIndex, tokenize as tokenizeText, tokenizeTerms, type SearchResult, type SearchIndexConfig, type SearchIndexMeta } from "./search/index.js";
 export type { HnswOptions } from "./hnsw.js";
 export { MaterializationCache, queryHashKey } from "./lazy.js";
 export type { MaterializationCacheOptions } from "./lazy.js";
@@ -77,12 +78,15 @@ export type {
   QueryResult,
   Row,
   VectorSearchParams,
+  SearchParams,
+  SearchOpts,
   IcebergSchema,
   IcebergDatasetMeta,
   AppendOptions,
   AppendResult,
   DropResult,
   ExplainResult,
+  QueryCost,
   VectorIndexInfo,
   VersionInfo,
   DiffResult,

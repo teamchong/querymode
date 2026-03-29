@@ -20,6 +20,9 @@ export function evaluateExpr(expr: SqlExpr, row: Row): unknown {
     case "near":
       return true; // NEAR is handled by vectorSearch, always pass through
 
+    case "match":
+      return true; // MATCH is handled by executeSearchQuery, always pass through
+
     case "binary":
       return evaluateBinary(expr.op, expr.left, expr.right, row);
 

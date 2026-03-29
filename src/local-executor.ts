@@ -37,6 +37,8 @@ export interface LocalExecutorOptions {
   wasmModule?: WebAssembly.Module;
   /** Memory budget in bytes for external sort (default 256MB). */
   memoryBudgetBytes?: number;
+  /** Maximum rows a query is allowed to scan. Throws QUERY_TOO_EXPENSIVE if exceeded. Set 0 for unlimited. */
+  maxScanRows?: number;
 }
 
 export class LocalExecutor implements QueryExecutor {
@@ -50,11 +52,19 @@ export class LocalExecutor implements QueryExecutor {
   private readerRegistry?: import("./reader.js").ReaderRegistry;
   /** Cache of reader-produced FragmentSources keyed by table path. */
   private readerFragmentCache: Map<string, import("./operators.js").FragmentSource[]> = new Map();
+  /** In-memory search indexes keyed by "{table}:{column}". */
+  private searchIndexCache: Map<string, import("./search/search-index.js").SearchIndex> = new Map();
+  /** All row data cached at append time, keyed by table path. Used by search to read text columns
+   *  that the WASM pipeline may not return. Falls back to disk read if not cached. */
+  private appendedRowsCache: Map<string, Record<string, unknown>[]> = new Map();
+
+  private maxScanRows?: number;
 
   constructor(wasmModuleOrOpts?: WebAssembly.Module | LocalExecutorOptions) {
     if (wasmModuleOrOpts && typeof wasmModuleOrOpts === "object" && "wasmModule" in wasmModuleOrOpts) {
       this.wasmModule = wasmModuleOrOpts.wasmModule;
       this.memoryBudgetBytes = wasmModuleOrOpts.memoryBudgetBytes;
+      this.maxScanRows = wasmModuleOrOpts.maxScanRows;
     } else {
       this.wasmModule = wasmModuleOrOpts as WebAssembly.Module | undefined;
     }
@@ -170,6 +180,22 @@ export class LocalExecutor implements QueryExecutor {
     this.metaCache.delete(tablePath);
     this.datasetCache.delete(tablePath);
     this.resultCache.invalidateByPrefix(`qr:${tablePath}:`);
+    // Invalidate search indexes for this table
+    for (const key of this.searchIndexCache.keys()) {
+      if (key.startsWith(tablePath + ":")) this.searchIndexCache.delete(key);
+    }
+
+    // Cache appended rows so search can read text columns (WASM pipeline may drop utf8).
+    // Cap at 1M rows per table to prevent unbounded memory growth.
+    const existingAppended = this.appendedRowsCache.get(tablePath) ?? [];
+    const combined = [...existingAppended, ...rows];
+    if (combined.length <= 1_000_000) {
+      this.appendedRowsCache.set(tablePath, combined);
+    } else {
+      // Over the cap — drop the cache. Search will fall back to disk read.
+      this.appendedRowsCache.delete(tablePath);
+    }
+    evictOldest(this.appendedRowsCache, 50);
 
     return {
       version: newVersion,
@@ -177,6 +203,260 @@ export class LocalExecutor implements QueryExecutor {
       retries: 0,
       rowsWritten: rows.length,
     };
+  }
+
+  /**
+   * Build or retrieve a search index for a text column.
+   * Uses appended rows cache if available, falls back to reading text column from disk.
+   */
+  private async getOrBuildSearchIndex(tablePath: string, column: string, allRows?: Record<string, unknown>[]): Promise<import("./search/search-index.js").SearchIndex> {
+    const cacheKey = `${tablePath}:${column}`;
+    const cached = this.searchIndexCache.get(cacheKey);
+    if (cached) return cached;
+
+    const { SearchIndex } = await import("./search/search-index.js");
+
+    // Use provided rows, or appended rows cache, or fall back to disk read
+    const sourceRows = allRows ?? this.appendedRowsCache.get(tablePath);
+    let texts: (string | null)[];
+
+    if (sourceRows && sourceRows.length > 0) {
+      texts = sourceRows.map(r => {
+        const v = r[column];
+        return v === null || v === undefined ? null : String(v);
+      });
+    } else {
+      // Disk fallback: read column via execute pipeline
+      const result = await this.execute({
+        table: tablePath,
+        filters: [],
+        projections: [column],
+      });
+      texts = result.rows.map(r => {
+        const v = r[column];
+        return v === null || v === undefined ? null : String(v);
+      });
+    }
+
+    const index = SearchIndex.build(texts, { column });
+    this.searchIndexCache.set(cacheKey, index);
+    evictOldest(this.searchIndexCache, 100);
+    return index;
+  }
+
+  /**
+   * Execute a full-text search query: build/load index, BM25 score, fetch matching rows.
+   *
+   * The canonical row source is `appendedRowsCache` (populated during `append()`).
+   * DocIds in the search index correspond 1:1 with indices in this cache — the same
+   * array is used for both index building and row materialization, guaranteeing alignment.
+   *
+   * For pre-existing datasets with no append cache, `getOrBuildSearchIndex` falls back
+   * to reading text via `execute()` (which may return empty text due to WASM limitations).
+   */
+  private async executeSearchQuery(query: QueryDescriptor, startTime: number): Promise<QueryResult> {
+    const searchParams = query.search!;
+    const topK = query.limit ?? 10;
+    const cachedRows = this.appendedRowsCache.get(query.table);
+
+    // Step 1: Determine which columns to search
+    let searchColumns: string[];
+    if (searchParams.fields) {
+      searchColumns = Object.keys(searchParams.fields);
+    } else if (cachedRows && cachedRows.length > 0) {
+      const sample = cachedRows[0];
+      searchColumns = Object.keys(sample).filter(k => typeof sample[k] === "string");
+    } else {
+      const meta = await this.getOrLoadMeta(query.table);
+      searchColumns = meta.columns.filter(c => c.dtype === "utf8").map(c => c.name);
+    }
+
+    if (searchColumns.length === 0) {
+      return { rows: [], rowCount: 0, columns: [], bytesRead: 0, pagesSkipped: 0, durationMs: Date.now() - startTime };
+    }
+
+    // Step 2: Build search indexes from the canonical row source.
+    // The index docIds are indices into `cachedRows` (or the fallback execute result).
+    const mode = (searchParams.mode ?? "and") as "and" | "or";
+    const allHits = new Map<number, { docId: number; score: number; matchedTerms: Set<string> }>();
+
+    for (const col of searchColumns) {
+      const weight = searchParams.fields?.[col] ?? 1;
+      const index = await this.getOrBuildSearchIndex(
+        query.table, col,
+        cachedRows as Record<string, unknown>[] | undefined,
+      );
+      const searchResult = index.search(searchParams.query, topK * 3, mode, searchParams.typoTolerance ?? 0);
+
+      for (const hit of searchResult.hits) {
+        const existing = allHits.get(hit.docId);
+        if (existing) {
+          existing.score += hit.score * weight;
+          for (const t of searchResult.queryTerms) existing.matchedTerms.add(t);
+        } else {
+          allHits.set(hit.docId, {
+            docId: hit.docId,
+            score: hit.score * weight,
+            matchedTerms: new Set(searchResult.queryTerms),
+          });
+        }
+      }
+    }
+
+    if (allHits.size === 0) {
+      return { rows: [], rowCount: 0, columns: [], bytesRead: 0, pagesSkipped: 0, durationMs: Date.now() - startTime };
+    }
+
+    // Step 3: Materialize rows. Use the SAME source as the index to guarantee docId alignment.
+    // If we built the index from cachedRows, materialize from cachedRows.
+    // If we built from the execute fallback, materialize from execute.
+    let sourceRows: Row[];
+    let bytesRead = 0;
+
+    if (cachedRows && cachedRows.length > 0) {
+      // Convert Record<string, unknown>[] to Row[] with proper types
+      sourceRows = cachedRows.map(r => {
+        const row: Row = {};
+        for (const [k, v] of Object.entries(r)) {
+          row[k] = v as Row[string];
+        }
+        return row;
+      });
+    } else {
+      const allRowsResult = await this.execute({
+        table: query.table,
+        filters: [],
+        projections: [],
+      });
+      sourceRows = allRowsResult.rows;
+      bytesRead = allRowsResult.bytesRead;
+    }
+
+    // Step 4: Hybrid fusion — if vectorSearch is also present, run vector scoring and merge via RRF
+    let ranked = [...allHits.values()].sort((a, b) => b.score - a.score);
+
+    if (query.vectorSearch && sourceRows.length > 0) {
+      const { reciprocalRankFusion } = await import("./search/fusion.js");
+      const vs = query.vectorSearch;
+
+      // Simple brute-force vector scoring on source rows
+      const vecColumn = sourceRows.map(r => r[vs.column]);
+      const vectorHits: { docId: number; score: number }[] = [];
+      const qv = vs.queryVector;
+
+      for (let i = 0; i < vecColumn.length; i++) {
+        const vec = vecColumn[i];
+        if (!(vec instanceof Float32Array) || vec.length !== qv.length) continue;
+
+        // Cosine similarity
+        let dot = 0, normA = 0, normB = 0;
+        for (let j = 0; j < qv.length; j++) {
+          dot += qv[j] * vec[j];
+          normA += qv[j] * qv[j];
+          normB += vec[j] * vec[j];
+        }
+        const denom = Math.sqrt(normA) * Math.sqrt(normB);
+        const sim = denom > 0 ? dot / denom : 0;
+        if (sim > 0) vectorHits.push({ docId: i, score: sim });
+      }
+
+      vectorHits.sort((a, b) => b.score - a.score);
+
+      // Fuse BM25 results with vector results via RRF
+      const bm25List = ranked.map(h => ({ docId: h.docId, score: h.score }));
+      const vecList = vectorHits.slice(0, vs.topK);
+      const fused = reciprocalRankFusion([bm25List, vecList], topK);
+
+      // Rebuild ranked with fused scores, preserving matchedTerms from BM25
+      ranked = fused.map(f => {
+        const original = allHits.get(f.docId);
+        return {
+          docId: f.docId,
+          score: f.score,
+          matchedTerms: original?.matchedTerms ?? new Set<string>(),
+        };
+      });
+    }
+
+    // Step 5: Filter, compute facets, project
+    const { rowPassesFilters } = await import("./decode.js");
+    const hasFilters = query.filters.length > 0 || (query.filterGroups && query.filterGroups.length > 0);
+    const facetColumns = searchParams.facets;
+
+    // Single pass: collect top-K rows AND compute facet counts over all matching docs
+    const facetCounts: Record<string, Map<string, number>> = {};
+    if (facetColumns) {
+      for (const col of facetColumns) facetCounts[col] = new Map();
+    }
+
+    const rows: Row[] = [];
+    let totalHits = 0;
+
+    for (const hit of ranked) {
+      if (hit.docId >= sourceRows.length) continue;
+      const row = sourceRows[hit.docId];
+
+      // Apply WHERE filters (both AND filters and OR filterGroups)
+      if (hasFilters && !rowPassesFilters(row, query.filters, query.filterGroups)) continue;
+
+      totalHits++;
+
+      // Facet counting: runs over ALL matching docs, not just top-K
+      if (facetColumns) {
+        for (const col of facetColumns) {
+          const val = row[col];
+          if (val !== null && val !== undefined) {
+            const key = String(val);
+            const map = facetCounts[col];
+            map.set(key, (map.get(key) ?? 0) + 1);
+          }
+        }
+      }
+
+      // Top-K collection: stop adding rows after limit, but continue counting facets
+      if (rows.length < topK) {
+        let outputRow: Row;
+        if (query.projections.length > 0) {
+          outputRow = {} as Row;
+          for (const p of query.projections) outputRow[p] = row[p];
+        } else {
+          outputRow = { ...row };
+        }
+        outputRow._score = hit.score;
+        outputRow._matched_terms = [...hit.matchedTerms].join(", ");
+        rows.push(outputRow);
+      }
+    }
+
+    // Convert facet Maps to plain objects, sorted by count descending
+    let facets: Record<string, Record<string, number>> | undefined;
+    if (facetColumns) {
+      facets = {};
+      for (const col of facetColumns) {
+        const entries = [...facetCounts[col].entries()].sort((a, b) => b[1] - a[1]);
+        facets[col] = Object.fromEntries(entries);
+      }
+    }
+
+    const result: QueryResult = {
+      rows,
+      rowCount: rows.length,
+      columns: [...new Set([
+        ...(query.projections.length > 0 ? query.projections : Object.keys(rows[0] ?? {})),
+        "_score",
+        "_matched_terms",
+      ])],
+      bytesRead,
+      pagesSkipped: 0,
+      durationMs: Date.now() - startTime,
+      facets,
+      totalHits,
+    };
+
+    if (query.cacheTTL) {
+      this.resultCache.setWithTTL(queryCacheKey(query), result, query.cacheTTL);
+    }
+    return result;
   }
 
   /** Count matching rows. No-filter case uses metadata only (zero I/O). */
@@ -204,6 +484,12 @@ export class LocalExecutor implements QueryExecutor {
     const desc = { ...query, limit: 1 };
     const result = await this.execute(desc);
     return result.rows[0] ?? null;
+  }
+
+  async estimateCost(query: QueryDescriptor): Promise<import("./types.js").QueryCost> {
+    const { deriveQueryCost } = await import("./client.js");
+    const plan = await this.explain(query);
+    return deriveQueryCost(plan);
   }
 
   async explain(query: QueryDescriptor): Promise<ExplainResult> {
@@ -387,11 +673,27 @@ export class LocalExecutor implements QueryExecutor {
     const startTime = Date.now();
     const isUrl = query.table.startsWith("http://") || query.table.startsWith("https://");
 
+    // maxScanRows guard: reject queries that would scan too many rows
+    if (this.maxScanRows && this.maxScanRows > 0 && !query.search) {
+      const plan = await this.explain(query);
+      if (plan.estimatedRows > this.maxScanRows) {
+        throw new QueryModeError(
+          "QUERY_FAILED",
+          `Query would scan ~${plan.estimatedRows.toLocaleString()} rows, exceeding maxScanRows limit of ${this.maxScanRows.toLocaleString()}. Add filters or increase the limit.`,
+        );
+      }
+    }
+
     // Check result cache (skip for vector search — non-deterministic with IVF-PQ)
     if (query.cacheTTL && !query.vectorSearch) {
       const cacheKey = queryCacheKey(query);
       const cached = this.resultCache.get(cacheKey);
       if (cached) return { ...cached, cacheHit: true, durationMs: Date.now() - startTime };
+    }
+
+    // Full-text search: intercept early — works on both single files and datasets
+    if (query.search) {
+      return this.executeSearchQuery(query, startTime);
     }
 
     // Check if this is a Lance dataset directory (has _versions/ subdir)

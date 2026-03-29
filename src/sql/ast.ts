@@ -27,6 +27,7 @@ export type SqlExpr =
   | { kind: "cast"; expr: SqlExpr; targetType: string }
   | { kind: "star" }
   | { kind: "near"; column: SqlExpr; vector: number[]; topK?: number }
+  | { kind: "match"; query: string; fields?: { name: string; weight: number }[] }
   | { kind: "exists"; subquery: SelectStmt; negated: boolean }
   | { kind: "parameter"; index: number };
 

@@ -697,6 +697,30 @@ class Parser {
       return { kind: "cast", expr, targetType };
     }
 
+    // MATCH('query text') or MATCH('query', col1^3, col2^1)
+    if (this.match(TokenType.MATCH)) {
+      this.expect(TokenType.LPAREN);
+      const queryTok = this.expect(TokenType.STRING);
+      const queryText = queryTok.lexeme.slice(1, -1).replace(/''/g, "'").replace(/\\'/g, "'");
+      let fields: { name: string; weight: number }[] | undefined;
+      // Optional field weights: MATCH('query', title^3, description^1)
+      if (this.match(TokenType.COMMA)) {
+        fields = [];
+        do {
+          const fieldName = this.parseIdentifier();
+          let weight = 1;
+          // Check for ^N weight syntax
+          if (this.match(TokenType.CARET)) {
+            const wTok = this.expect(TokenType.NUMBER);
+            weight = parseFloat(wTok.lexeme);
+          }
+          fields.push({ name: fieldName, weight });
+        } while (this.match(TokenType.COMMA));
+      }
+      this.expect(TokenType.RPAREN);
+      return { kind: "match", query: queryText, fields };
+    }
+
     // STAR (for SELECT *)
     if (this.match(TokenType.STAR)) {
       return { kind: "star" };

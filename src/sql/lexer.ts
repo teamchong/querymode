@@ -33,6 +33,9 @@ export enum TokenType {
   // Vector search
   NEAR, TOPK,
 
+  // Full-text search
+  MATCH,
+
   // Logic table extension
   WITH, DATA, LOGIC_TABLE, LOGIC,
 
@@ -58,7 +61,7 @@ export enum TokenType {
   STAR, EQ, NE, LT, LE, GT, GE,
   PLUS, MINUS, SLASH, CONCAT,
   COMMA, DOT, LPAREN, RPAREN, SEMICOLON, LBRACKET, RBRACKET,
-  PARAMETER,
+  PARAMETER, CARET,
 
   EOF,
 }
@@ -98,6 +101,7 @@ const KEYWORDS = new Map<string, TokenType>([
   ["UNBOUNDED", TokenType.UNBOUNDED], ["PRECEDING", TokenType.PRECEDING],
   ["FOLLOWING", TokenType.FOLLOWING], ["CURRENT", TokenType.CURRENT],
   ["NEAR", TokenType.NEAR], ["TOPK", TokenType.TOPK],
+  ["MATCH", TokenType.MATCH],
   ["WITH", TokenType.WITH], ["DATA", TokenType.DATA],
   ["LOGIC_TABLE", TokenType.LOGIC_TABLE], ["LOGIC", TokenType.LOGIC],
   ["COUNT", TokenType.COUNT], ["SUM", TokenType.SUM], ["AVG", TokenType.AVG],
@@ -224,6 +228,7 @@ export function tokenize(sql: string): Token[] {
       case "[": tokens.push({ type: TokenType.LBRACKET, lexeme: "[", position: start }); break;
       case "]": tokens.push({ type: TokenType.RBRACKET, lexeme: "]", position: start }); break;
       case "?": tokens.push({ type: TokenType.PARAMETER, lexeme: "?", position: start }); break;
+      case "^": tokens.push({ type: TokenType.CARET, lexeme: "^", position: start }); break;
       case "=": tokens.push({ type: TokenType.EQ, lexeme: "=", position: start }); break;
       case "!":
         if (pos < len && sql[pos] === "=") {

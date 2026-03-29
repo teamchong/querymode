@@ -11,10 +11,13 @@ import type {
   JoinType,
   QueryResult,
   Row,
+  SearchOpts,
+  SearchParams,
   VectorOpts,
   VectorSearchParams,
   WindowSpec,
 } from "./types.js";
+import type { QueryCost } from "./types.js";
 import { NULL_SENTINEL, rowComparator, groupKey } from "./types.js";
 import type { Operator, RowBatch } from "./operators.js";
 import { applyWindowsToRows } from "./operators.js";
@@ -95,6 +98,7 @@ export class DataFrame<T extends Row = Row> {
   private _limit?: number;
   private _offset?: number;
   private _vectorSearch?: VectorSearchParams;
+  private _search?: SearchParams;
   private _aggregates: AggregateOp[];
   private _groupBy: string[];
   private _cacheTTL?: number;
@@ -122,6 +126,7 @@ export class DataFrame<T extends Row = Row> {
     this._limit = init?.limit;
     this._offset = init?.offset;
     this._vectorSearch = init?.vectorSearch;
+    this._search = init?.search;
     this._aggregates = init?.aggregates ?? [];
     this._groupBy = init?.groupBy ?? [];
     this._cacheTTL = init?.cacheTTL;
@@ -152,6 +157,7 @@ export class DataFrame<T extends Row = Row> {
       limit: this._limit,
       offset: this._offset,
       vectorSearch: this._vectorSearch,
+      search: this._search,
       aggregates: this._aggregates,
       groupBy: this._groupBy,
       cacheTTL: this._cacheTTL,
@@ -348,6 +354,50 @@ export class DataFrame<T extends Row = Row> {
         nprobe: opts?.nprobe,
         efSearch: opts?.efSearch,
       },
+    });
+  }
+
+  /**
+   * Full-text search with BM25 ranking. Requires a search index on the table.
+   *
+   * Usage:
+   *   const results = await qm.table("products")
+   *     .search("wireless headphones")
+   *     .filter("price", "lt", 100)
+   *     .limit(10)
+   *     .collect()
+   *
+   * Results include `_score` (BM25 relevance) and `_matched_terms` columns.
+   */
+  search(query: string, opts?: SearchOpts): DataFrame<T> {
+    return this.derive({
+      search: {
+        query,
+        fields: opts?.fields,
+        typoTolerance: opts?.typoTolerance,
+        mode: opts?.mode,
+        bm25: opts?.bm25,
+        facets: opts?.facets,
+      },
+    });
+  }
+
+  /**
+   * Request facet counts alongside search results. Must be chained with `.search()`.
+   *
+   * Usage:
+   *   const result = await qm.table("products")
+   *     .search("laptop")
+   *     .facets(["brand", "category"])
+   *     .limit(20).exec()
+   *   // result.facets = { brand: { "Apple": 12, "Dell": 8, ... }, ... }
+   */
+  facets(columns: string[]): DataFrame<T> {
+    if (!this._search) {
+      throw new QueryModeError("QUERY_FAILED", "facets() requires search() — call .search() before .facets()");
+    }
+    return this.derive({
+      search: { ...this._search, facets: columns },
     });
   }
 
@@ -598,6 +648,23 @@ export class DataFrame<T extends Row = Row> {
   /** Inspect the query plan without executing. No data I/O is performed. */
   async explain(): Promise<ExplainResult> {
     return this._executor.explain(this.toDescriptor());
+  }
+
+  /**
+   * Estimate query cost before execution. Returns row/byte/DO estimates and a cost rating.
+   * Use this to reject expensive queries before they consume resources.
+   *
+   * Usage:
+   *   const cost = await df.estimateCost()
+   *   if (cost.rating === "extreme") throw new Error("Query too expensive")
+   */
+  async estimateCost(): Promise<import("./types.js").QueryCost> {
+    if (this._executor.estimateCost) {
+      return this._executor.estimateCost(this.toDescriptor());
+    }
+    // Fallback: derive cost from explain()
+    const plan = await this._executor.explain(this.toDescriptor());
+    return deriveQueryCost(plan);
   }
 
   /**
@@ -884,6 +951,7 @@ export class DataFrame<T extends Row = Row> {
       limit: this._limit,
       offset: this._offset,
       vectorSearch: this._vectorSearch,
+      search: this._search,
       aggregates: this._aggregates.length > 0 ? this._aggregates : undefined,
       groupBy: this._groupBy.length > 0 ? this._groupBy : undefined,
       cacheTTL: this._cacheTTL,
@@ -923,6 +991,48 @@ export class DataFrame<T extends Row = Row> {
 /** Backward-compatible alias */
 export type TableQuery<T extends Row = Row> = DataFrame<T>;
 export const TableQuery = DataFrame;
+
+// ---------------------------------------------------------------------------
+// Query cost estimation
+// ---------------------------------------------------------------------------
+
+const FANOUT_ROW_THRESHOLD = 100_000;
+const FANOUT_FRAGMENT_MIN = 2;
+const REDUCER_TIER_THRESHOLD = 50;
+
+/**
+ * Derive a QueryCost from an ExplainResult. Used when the executor
+ * doesn't implement estimateCost() directly.
+ */
+export function deriveQueryCost(plan: ExplainResult): QueryCost {
+  const fragmentsScanned = plan.fragmentsScanned ?? (plan.fragments - (plan.fragmentsSkipped ?? 0));
+  const fanOut = fragmentsScanned >= FANOUT_FRAGMENT_MIN && plan.estimatedRows > FANOUT_ROW_THRESHOLD;
+  const estimatedDOs = fanOut ? fragmentsScanned : 0;
+  const hierarchicalReduction = fanOut && fragmentsScanned >= REDUCER_TIER_THRESHOLD;
+
+  // Cost rating based on estimated rows
+  let rating: QueryCost["rating"];
+  if (plan.estimatedRows <= 1_000) rating = "trivial";
+  else if (plan.estimatedRows <= 100_000) rating = "light";
+  else if (plan.estimatedRows <= 1_000_000) rating = "moderate";
+  else if (plan.estimatedRows <= 10_000_000) rating = "heavy";
+  else rating = "extreme";
+
+  // Upgrade rating if join or complex operations are present
+  if (plan.estimatedBytes > 500_000_000) rating = "extreme"; // >500MB
+  if (hierarchicalReduction && rating !== "extreme") rating = "heavy";
+
+  return {
+    estimatedRows: plan.estimatedRows,
+    estimatedBytes: plan.estimatedBytes,
+    estimatedReads: plan.estimatedR2Reads,
+    fragmentsScanned,
+    fanOut,
+    estimatedDOs,
+    hierarchicalReduction,
+    rating,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // LazyResultHandle — deferred page-at-a-time execution
@@ -1230,6 +1340,7 @@ interface DataFrameInit {
   limit?: number;
   offset?: number;
   vectorSearch?: VectorSearchParams;
+  search?: SearchParams;
   aggregates: AggregateOp[];
   groupBy: string[];
   cacheTTL?: number;
@@ -1262,11 +1373,12 @@ export interface QueryDescriptor {
   limit?: number;
   offset?: number;
   vectorSearch?: VectorSearchParams;
+  /** Full-text search parameters */
+  search?: SearchParams;
   aggregates?: AggregateOp[];
   groupBy?: string[];
   cacheTTL?: number;
   join?: JoinDescriptor;
-  // New fields:
   computedColumns?: { alias: string; fn: (row: Row) => unknown }[];
   windows?: WindowSpec[];
   distinct?: string[];
@@ -1297,6 +1409,8 @@ export interface QueryExecutor {
   dropColumn?(table: string, column: string): Promise<import("./types.js").SchemaEvolutionResult>;
   /** Plan inspection without execution */
   explain(query: QueryDescriptor): Promise<ExplainResult>;
+  /** Pre-execution cost estimate. Use to reject expensive queries before they run. */
+  estimateCost?(query: QueryDescriptor): Promise<import("./types.js").QueryCost>;
   /** Optional: lazy batch iteration */
   cursor?(query: QueryDescriptor, batchSize: number): AsyncIterable<Row[]>;
   /** Optional: return the raw Operator pipeline for escape-hatch composition */

@@ -70,7 +70,7 @@ pnpm wasm
 
 ## What exists
 
-- 600+ tests, 110+ conformance tests validated against DuckDB at 1M-5M row scale
+- 755+ tests, 110+ conformance tests validated against DuckDB at 1M-5M row scale
 - CI benchmarks: QueryMode (Miniflare) vs DuckDB (native) on every push
 - Multi-format: Lance, Parquet, Iceberg, CSV, JSON
 - Memory-bounded operators with R2 spill (sort, join, aggregate)
@@ -83,6 +83,22 @@ pnpm wasm
 - No deployed instance
 - No browser mode
 - No npm package published (install from source)
+
+## Project Structure
+
+```
+specs/           Specifications (start here for understanding behavior)
+  invariants.md    Rules that must never break
+  api.md           Public API contract
+  query-lifecycle.md  Every query path, step by step
+  data-formats.md    Byte-level format layouts
+  full-text-search.md  Full-text search spec (next major feature)
+
+docs/design/     Architecture decisions and rationale
+src/             TypeScript orchestration (65K lines) — see src/README.md
+wasm/            Zig WASM engine (90K lines) — see wasm/README.md
+docs/            Astro Starlight docs site (19 pages)
+```
 
 ## License
 
