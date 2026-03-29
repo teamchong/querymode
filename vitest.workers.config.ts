@@ -11,6 +11,10 @@ export default defineWorkersConfig({
       "src/manifest.test.ts",
       "src/wasm-engine.integration.test.ts",
       "src/query-do.integration.test.ts",
+      // Search tests use LocalExecutor with node:fs for append + disk I/O
+      "src/search/search-e2e.test.ts",
+      "src/search/search.bench.ts",
+      "src/search/cost-guard.test.ts",
       "node_modules/**",
     ],
     hookTimeout: 300_000,
