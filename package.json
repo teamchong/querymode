@@ -42,7 +42,7 @@
     "@types/node": "^25.3.3",
     "duckdb": "^1.4.4",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.0.0"
   },
   "files": [
