@@ -21,8 +21,6 @@ overrides:
   vite@>=7.0.0 <7.3.5: '>=7.3.5'
   tar@<7.5.16: '>=7.5.16'
 
-pnpmfileChecksum: sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
-
 importers:
 
   .:
